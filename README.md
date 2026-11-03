@@ -22,6 +22,10 @@ bun run dev:editor
 
 `bun run build` builds both native applications (Viewer, then Editor) and audits the packaged outputs—including compressed `.tar.zst` resources—for bundled `data/` directories, catalog paths, source-workspace references, and Windows launcher files/signatures. Archives are streamed and inspected without extraction. `bun run audit:release` reruns that audit; optionally provide OS-delimited `BA_SPINE_FORBIDDEN_PATHS` and `BA_SPINE_BUILD_LOGS` lists to check additional source paths and captured build logs.
 
+## Packaged builds
+
+The root build creates separate platform-specific Electrobun outputs under `apps/viewer/desktop/build/` and `apps/editor/desktop/build/`. On Windows, each stable output includes its app's Setup executable, compressed package, and per-user app bundle. The asset library is deliberately not bundled; launch the desired app and choose the library folder, or set `BA_SPINE_DATA` before launching. A release update feed is not configured in this workspace, so local builds do not exercise the in-app update cycle.
+
 In desktop development, `./data/` is offered as the fallback library when present. To use another library, set `BA_SPINE_DATA` to its root. The app also supports choosing a library from its native dialog. Startup priority is explicit `BA_SPINE_DATA`, then the app's last-selected library from OS app data, then the development-only `./data/` fallback. If a drive is unavailable or the library moved, choose its new folder and the preference is updated. Only the path is remembered—not an asset copy—and project-relative references remain rooted in the selected library.
 
 ## Asset and project data
@@ -50,9 +54,20 @@ Copy selected animation, color, subtitle, or audio clips with **Ctrl/Cmd+C**, th
 
 Animation fields in the interaction and timeline editors use searchable pickers. Type to filter names, then use the arrow keys and Enter to choose; existing animation names that are missing from the loaded rig remain visible and marked rather than being silently cleared.
 
+## Keyboard shortcuts
+
+The Viewer displays its playback shortcuts below the preview; press `?` in the Editor or choose **Show keyboard shortcuts** from the command palette for context-sensitive Editor bindings. `Ctrl/⌘+K` opens commands, while focused text fields keep their normal editing keys. Timeline help includes copy/paste, undo/redo, frame stepping, fit, and save; interaction help covers selection, pan, draw, test, bones, and project editing.
+
 ## Viewer and Editor handoff
 
 **Edit this lobby** in Viewer sends the selected library/lobby and available playback context to Editor. **Preview saved in Viewer** sends the Editor's selected library/lobby and timeline context back to Viewer; save authored changes first. When the Editor project is dirty, **Preview unsaved draft in Viewer** sends a debounced, read-only project snapshot through the authenticated loopback companion channel. Draft data is held in Editor memory only, never written to the asset library; Viewer visibly marks draft mode and offers **Return to saved files**. Draft preview ends when its session is revoked or Editor disconnects. Handoffs do not upload data. If the target is not running, the sender starts it from its per-user launch plan (or discovers the Electrobun install) and waits up to 12 seconds for registration. Handoffs and duplicate app launches activate the existing window. On same-lobby saved-file reloads, Viewer keeps its language, camera framing/pose, voice volume, and playback position/speed/loop/pause state; explicit handoff sequence/time takes precedence when supplied. Editor asks before replacing a dirty project and refuses replacement during a save or save error.
+
+## Troubleshooting
+
+- **Library missing or moved:** use the native folder chooser to select the library's new root. Each app remembers its own path outside the library and keeps an unavailable removable-drive path until you select a replacement.
+- **Handoff does not open the expected content:** launch the target app once, select the same library root in both apps, then retry. Handoff is authenticated and loopback-only; it does not upload projects or assets.
+- **Editor reports an external save conflict:** review the conflict in the Editor before overwriting. Prior project JSON is retained in `.editor/backups/`; browser recovery snapshots are separate and require an explicit restore choice.
+- **Packaged app update testing:** this workspace has no configured release `baseUrl` or update feed. Local package builds and archive audits do not verify update delivery.
 
 ## Workspace map
 

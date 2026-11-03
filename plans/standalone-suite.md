@@ -164,6 +164,8 @@ Ctrl/Cmd+C copies selected animation, color, subtitle, and audio clips to an in-
 
 Editor global shortcuts yield while text-like controls and editable content are focused. Ctrl/⌘+K now follows the same rule instead of opening the command palette from a search or text field; regression tests cover both modifier variants and text-input focus.
 
+The Editor's context help now lists timeline clip copy/paste and undo/redo alongside its existing bindings. The README documents local package output, library relocation, handoff/save troubleshooting, and current update-feed limitations.
+
 #### Subtitle search and navigation slice (2026-11-04)
 
 The timeline inspector searches English, Japanese, Korean, or all subtitle translations using case-insensitive Unicode-normalized matching. Results are ordered by cue time; choosing one stops playback, selects the cue, moves the playhead, and scrolls the timeline into view. Search/navigation do not modify authored data. Fixture tests cover language filtering, normalization, blank queries, and chronological ordering.
