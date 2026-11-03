@@ -50,7 +50,7 @@ import { captureEditorProjectBaseline, editorProjectDraftValue, pendingProjectFo
 import { contentVersion } from "@ba-spine/platform-contracts/contentVersion";
 import { persistRecoverySnapshot, readLegacyRecoveryRecord, readRecoveryRecord, validRecoveryProject } from "./recoverySnapshots";
 import { confirmProjectReplacement } from "./projectReplacement";
-import { isTextEditingTarget } from "./editorKeyboard";
+import { isCommandPaletteShortcut, isTextEditingTarget } from "./editorKeyboard";
 import "./validationIssues.css";
 import type { EditorMcpCommand, EditorMcpState, EditorMcpTimelineBridge, EditorMcpTimelineSnapshot } from "./editorMcp";
 import { DEFAULT_EDITOR_LAYOUT_PREFERENCES, EDITOR_LAYOUT_PREFERENCES_KEY, normalizeEditorLayoutPreferences, type WorkspaceLayoutPreset } from "./editorLayout";
@@ -800,7 +800,7 @@ export function Editor() {
   editorKeydownRef.current = (event: KeyboardEvent) => {
     const key = event.key.toLowerCase();
     const modifier = event.ctrlKey || event.metaKey;
-    if (modifier && key === "k") { event.preventDefault(); setCommandPaletteOpen(true); return; }
+    if (isCommandPaletteShortcut(event)) { event.preventDefault(); setCommandPaletteOpen(true); return; }
     if (key === "escape" && commandPaletteOpen) { event.preventDefault(); setCommandPaletteOpen(false); return; }
     if (isTextEditingTarget(event.target)) return;
     if (workspace === "timeline" && key !== "?" && key !== "escape" && !(modifier && ["z", "y"].includes(key))) return;

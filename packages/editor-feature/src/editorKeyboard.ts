@@ -26,3 +26,12 @@ export function isTextEditingTarget(target: EventTarget | null): boolean {
   const type = field.getAttribute("type")?.toLocaleLowerCase() || "text";
   return TEXT_INPUT_TYPES.has(type);
 }
+
+/** The command-palette chord must not steal keys while a text-like field is being edited. */
+export function isCommandPaletteShortcut(
+  event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "target">,
+): boolean {
+  return event.key.toLocaleLowerCase() === "k"
+    && (event.ctrlKey || event.metaKey)
+    && !isTextEditingTarget(event.target);
+}

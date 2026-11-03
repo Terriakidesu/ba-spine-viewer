@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isTextEditingTarget } from "./editorKeyboard";
+import { isCommandPaletteShortcut, isTextEditingTarget } from "./editorKeyboard";
 
 function elementTarget(options: { tagName?: string; type?: string; contentEditable?: string } = {}): EventTarget {
   const editable = options.contentEditable === undefined ? null : { getAttribute: () => options.contentEditable! };
@@ -30,5 +30,20 @@ describe("focus-safe editor shortcuts", () => {
     expect(isTextEditingTarget(elementTarget({ tagName: "select" }))).toBe(false);
     expect(isTextEditingTarget(elementTarget({ contentEditable: "false" }))).toBe(false);
     expect(isTextEditingTarget(null)).toBe(false);
+  });
+
+  test("opens the command palette only for Ctrl/Command+K outside text editing", () => {
+    const shortcut = (target: EventTarget | null, modifiers: { ctrlKey?: boolean; metaKey?: boolean } = {}) => ({
+      key: "k",
+      ctrlKey: modifiers.ctrlKey ?? false,
+      metaKey: modifiers.metaKey ?? false,
+      target,
+    });
+    expect(isCommandPaletteShortcut(shortcut(elementTarget(), { ctrlKey: true }))).toBe(true);
+    expect(isCommandPaletteShortcut(shortcut(elementTarget(), { metaKey: true }))).toBe(true);
+    expect(isCommandPaletteShortcut(shortcut(elementTarget({ tagName: "input", type: "search" }), { ctrlKey: true }))).toBe(false);
+    expect(isCommandPaletteShortcut(shortcut(elementTarget({ tagName: "textarea" }), { metaKey: true }))).toBe(false);
+    expect(isCommandPaletteShortcut({ ...shortcut(elementTarget(), { ctrlKey: true }), key: "s" })).toBe(false);
+    expect(isCommandPaletteShortcut(shortcut(elementTarget()))).toBe(false);
   });
 });

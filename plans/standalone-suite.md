@@ -160,6 +160,10 @@ The Editor transport also plays the combined selected range once or loops within
 
 Ctrl/Cmd+C copies selected animation, color, subtitle, and audio clips to an in-memory sequence-local clipboard; Ctrl/Cmd+V pastes at the playhead with relative offsets, link remapping, locked-track skips, and color-track collision handling. It does not use the OS clipboard or write library files until the user saves.
 
+#### Focus-safe shortcut slice (2026-11-04)
+
+Editor global shortcuts yield while text-like controls and editable content are focused. Ctrl/⌘+K now follows the same rule instead of opening the command palette from a search or text field; regression tests cover both modifier variants and text-input focus.
+
 #### Subtitle search and navigation slice (2026-11-04)
 
 The timeline inspector searches English, Japanese, Korean, or all subtitle translations using case-insensitive Unicode-normalized matching. Results are ordered by cue time; choosing one stops playback, selects the cue, moves the playhead, and scrolls the timeline into view. Search/navigation do not modify authored data. Fixture tests cover language filtering, normalization, blank queries, and chronological ordering.
