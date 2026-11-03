@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
 import { lstat, open, readdir } from "node:fs/promises";
 import { delimiter, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { createZstdDecompress } from "node:zlib";
 
 const DEFAULT_ARTIFACT_MARKERS = ["data/catalog.json"];
 const SCAN_CHUNK_BYTES = 64 * 1024;
@@ -32,20 +33,196 @@ function byteMarkers(markers: readonly string[]): ByteMarker[] {
 }
 
 async function findMarkersInFile(path: string, markers: readonly ByteMarker[]): Promise<string[]> {
-  if (markers.length === 0) return [];
-  const found = new Set<string>();
-  const markerLabels = new Set(markers.map((marker) => marker.label));
-  const longest = Math.max(...markers.map((marker) => marker.bytes.byteLength));
-  let carry: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-  for await (const chunk of createReadStream(path, { highWaterMark: SCAN_CHUNK_BYTES })) {
-    const bytes = carry.length ? Buffer.concat([carry, chunk as Buffer]) : chunk as Buffer;
-    for (const marker of markers) {
-      if (!found.has(marker.label) && bytes.indexOf(marker.bytes) !== -1) found.add(marker.label);
-    }
-    if (found.size === markerLabels.size) break;
-    carry = bytes.subarray(Math.max(0, bytes.length - longest + 1));
+  const scanner = new MarkerScanner(markers);
+  for await (const chunk of createReadStream(path, { highWaterMark: SCAN_CHUNK_BYTES })) scanner.push(chunk);
+  return scanner.results();
+}
+
+class MarkerScanner {
+  private readonly found = new Set<string>();
+  private readonly markerLabels: Set<string>;
+  private readonly longest: number;
+  private carry: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+
+  constructor(private readonly markers: readonly ByteMarker[]) {
+    this.markerLabels = new Set(markers.map((marker) => marker.label));
+    this.longest = markers.length ? Math.max(...markers.map((marker) => marker.bytes.byteLength)) : 0;
   }
-  return [...found];
+
+  push(chunk: Uint8Array): void {
+    if (!this.markers.length || this.found.size === this.markerLabels.size) return;
+    const input = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const bytes = this.carry.length ? Buffer.concat([this.carry, input]) : input;
+    for (const marker of this.markers) {
+      if (!this.found.has(marker.label) && bytes.indexOf(marker.bytes) !== -1) this.found.add(marker.label);
+    }
+    if (this.found.size !== this.markerLabels.size) {
+      this.carry = bytes.subarray(Math.max(0, bytes.length - this.longest + 1));
+    }
+  }
+
+  results(): string[] {
+    return [...this.found];
+  }
+}
+
+class AsyncByteReader {
+  private readonly iterator: AsyncIterator<Uint8Array>;
+  private current = Buffer.alloc(0);
+  private offset = 0;
+  private ended = false;
+
+  constructor(source: AsyncIterable<Uint8Array>) {
+    this.iterator = source[Symbol.asyncIterator]();
+  }
+
+  private async nextChunk(): Promise<boolean> {
+    while (this.offset >= this.current.length && !this.ended) {
+      const next = await this.iterator.next();
+      this.ended = next.done ?? false;
+      if (this.ended) return false;
+      this.current = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value);
+      this.offset = 0;
+    }
+    return this.offset < this.current.length;
+  }
+
+  async readExactly(size: number): Promise<Buffer | null> {
+    const parts: Buffer[] = [];
+    let remaining = size;
+    while (remaining > 0) {
+      if (!(await this.nextChunk())) {
+        if (remaining === size) return null;
+        throw new Error("truncated TAR header");
+      }
+      const count = Math.min(remaining, this.current.length - this.offset);
+      parts.push(this.current.subarray(this.offset, this.offset + count));
+      this.offset += count;
+      remaining -= count;
+    }
+    return parts.length === 1 ? parts[0] : Buffer.concat(parts, size);
+  }
+
+  async consumeExactly(size: number, consume: (chunk: Buffer) => void): Promise<void> {
+    let remaining = size;
+    while (remaining > 0) {
+      if (!(await this.nextChunk())) throw new Error("truncated TAR entry");
+      const count = Math.min(remaining, this.current.length - this.offset);
+      consume(this.current.subarray(this.offset, this.offset + count));
+      this.offset += count;
+      remaining -= count;
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.iterator.return?.();
+  }
+}
+
+function tarString(field: Buffer): string {
+  const end = field.indexOf(0);
+  return field.subarray(0, end < 0 ? field.length : end).toString("utf8");
+}
+
+function tarSize(field: Buffer): number | null {
+  if (field[0] & 0x80) {
+    let value = BigInt(field[0] & 0x7f);
+    for (const byte of field.subarray(1)) value = (value << 8n) | BigInt(byte);
+    return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null;
+  }
+  const text = tarString(field).trim();
+  if (!text) return 0;
+  if (!/^[0-7]+$/.test(text)) return null;
+  const value = Number.parseInt(text, 8);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function paxPath(body: Buffer): string | null {
+  let offset = 0;
+  while (offset < body.length) {
+    const separator = body.indexOf(0x20, offset);
+    if (separator < 0) return null;
+    const recordLength = Number(body.subarray(offset, separator).toString("ascii"));
+    if (!Number.isSafeInteger(recordLength) || recordLength <= separator - offset + 1 || offset + recordLength > body.length) return null;
+    const record = body.subarray(separator + 1, offset + recordLength - 1).toString("utf8");
+    if (record.startsWith("path=")) return record.slice(5);
+    offset += recordLength;
+  }
+  return null;
+}
+
+function includesDataDirectory(path: string, directory: boolean): boolean {
+  const segments = path.replaceAll("\\", "/").split("/").filter(Boolean);
+  const candidates = directory ? segments : segments.slice(0, -1);
+  return candidates.some((segment) => segment.toLowerCase() === "data");
+}
+
+/** Inspect a compressed TAR without extracting it, including its directory table and file contents. */
+async function auditTarZstdFile(path: string, relativePath: string, markers: readonly ByteMarker[]): Promise<string[]> {
+  const issues: string[] = [];
+  const scanner = new MarkerScanner(markers);
+  const reader = new AsyncByteReader(createReadStream(path, { highWaterMark: SCAN_CHUNK_BYTES }).pipe(createZstdDecompress()));
+  let pendingLongName: string | null = null;
+  let pendingPaxPath: string | null = null;
+  let globalPaxPath: string | null = null;
+
+  try {
+    for (;;) {
+      const header = await reader.readExactly(512);
+      if (!header) break;
+      scanner.push(header);
+      if (header.every((byte) => byte === 0)) continue;
+
+      const type = header[156] === 0 ? "0" : String.fromCharCode(header[156]);
+      const size = tarSize(header.subarray(124, 136));
+      if (size === null) throw new Error("invalid or oversized TAR entry length");
+
+      const isMetadata = ["L", "K", "x", "g"].includes(type);
+      const collectMetadata = isMetadata && size <= 1024 * 1024;
+      if (isMetadata && !collectMetadata) issues.push(`${relativePath}: compressed TAR metadata entry exceeds the inspection limit.`);
+      const metadata: Buffer[] = [];
+      await reader.consumeExactly(size, (chunk) => {
+        scanner.push(chunk);
+        if (collectMetadata) metadata.push(Buffer.from(chunk));
+      });
+      const padding = (512 - (size % 512)) % 512;
+      await reader.consumeExactly(padding, (chunk) => scanner.push(chunk));
+
+      if (type === "L") {
+        pendingLongName = metadata.length ? tarString(Buffer.concat(metadata)) : null;
+        continue;
+      }
+      if (type === "x" || type === "g") {
+        const pathOverride = metadata.length ? paxPath(Buffer.concat(metadata)) : null;
+        if (type === "g") globalPaxPath = pathOverride ?? globalPaxPath;
+        else pendingPaxPath = pathOverride;
+        continue;
+      }
+      if (type === "K") continue;
+
+      const rawName = tarString(header.subarray(0, 100));
+      const prefix = tarString(header.subarray(345, 500));
+      const headerName = prefix ? `${prefix}/${rawName}` : rawName;
+      const entryName = pendingPaxPath ?? globalPaxPath ?? pendingLongName ?? headerName;
+      pendingPaxPath = null;
+      pendingLongName = null;
+      const directory = type === "5" || entryName.endsWith("/");
+
+      if (includesDataDirectory(entryName, directory)) {
+        issues.push(`${relativePath}: compressed TAR contains forbidden asset-library data directory "${entryName}".`);
+      }
+      if (type === "1" || type === "2") {
+        issues.push(`${relativePath}: compressed TAR contains an unexpected link entry "${entryName}".`);
+      }
+    }
+  } catch {
+    issues.push(`${relativePath}: compressed TAR could not be safely inspected.`);
+  } finally {
+    await reader.close().catch(() => undefined);
+  }
+
+  for (const marker of scanner.results()) issues.push(`${relativePath}: compressed TAR contains forbidden marker "${marker}".`);
+  return issues;
 }
 
 /** Scan one packaged directory without following symlinks or loading large binaries into memory. */
@@ -71,12 +248,16 @@ export async function auditPackagedDirectory(root: string, forbiddenPaths: reado
         if (entry.name.toLowerCase() === "data") issues.push(`${relativePath}: packaged asset-library data directory is forbidden.`);
         await visit(path);
       } else if (entry.isFile()) {
-        try {
-          for (const marker of await findMarkersInFile(path, markers)) {
-            issues.push(`${relativePath}: contains forbidden marker "${marker}".`);
+        if (entry.name.toLowerCase().endsWith(".tar.zst")) {
+          issues.push(...await auditTarZstdFile(path, relativePath, markers));
+        } else {
+          try {
+            for (const marker of await findMarkersInFile(path, markers)) {
+              issues.push(`${relativePath}: contains forbidden marker "${marker}".`);
+            }
+          } catch {
+            issues.push(`${relativePath}: could not be inspected.`);
           }
-        } catch {
-          issues.push(`${relativePath}: could not be inspected.`);
         }
       }
     }
@@ -169,6 +350,6 @@ if (import.meta.main) {
     for (const issue of issues) console.error(`[release-audit] ${issue}`);
     process.exitCode = 1;
   } else {
-    console.log("[release-audit] Viewer and Editor stable packages passed the data/workspace-path audit.");
+    console.log("[release-audit] Viewer and Editor stable packages passed the archive, data, and workspace-path audit.");
   }
 }

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { zstdCompressSync } from "node:zlib";
 import { auditPackagedDirectory, auditReleaseArtifacts } from "./releaseArtifactAudit";
 
 const temporaryDirectories: string[] = [];
@@ -22,11 +23,42 @@ async function writeWindowsLauncher(packageRoot: string, app: "viewer" | "editor
   await writeFile(launcher, bytes);
 }
 
+function tarEntry(name: string, content: string, type = "0"): Buffer {
+  const body = Buffer.from(content, "utf8");
+  const header = Buffer.alloc(512);
+  header.write(name, 0, 100, "utf8");
+  header.write("0000644\0", 100, 8, "ascii");
+  header.write("0000000\0", 108, 8, "ascii");
+  header.write("0000000\0", 116, 8, "ascii");
+  header.write(`${body.length.toString(8).padStart(11, "0")}\0`, 124, 12, "ascii");
+  header.write("00000000000\0", 136, 12, "ascii");
+  header.fill(0x20, 148, 156);
+  header.write(type, 156, 1, "ascii");
+  header.write("ustar\0", 257, 6, "ascii");
+  header.write("00", 263, 2, "ascii");
+  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii");
+  const padding = Buffer.alloc((512 - (body.length % 512)) % 512);
+  return Buffer.concat([header, body, padding]);
+}
+
+async function writeTarZstd(path: string, entries: Array<{ name: string; content?: string; type?: string }>): Promise<void> {
+  const archive = Buffer.concat([
+    ...entries.map((entry) => tarEntry(entry.name, entry.content ?? "", entry.type ?? "0")),
+    Buffer.alloc(1024),
+  ]);
+  await writeFile(path, zstdCompressSync(archive));
+}
+
 describe("release artifact audit", () => {
   test("accepts a package without library data or workspace markers", async () => {
     const root = await temporaryRoot("ba-spine-release-clean-");
     await mkdir(join(root, "Resources", "app"), { recursive: true });
     await writeFile(join(root, "Resources", "app", "index.js"), "console.log('standalone');");
+    await writeTarZstd(join(root, "Resources", "app.tar.zst"), [
+      { name: "Resources/app/", type: "5" },
+      { name: "Resources/app/index.js", content: "console.log('standalone');" },
+    ]);
     expect(await auditPackagedDirectory(root, ["C:\\Source Workspace"])).toEqual([]);
   });
 
@@ -44,6 +76,34 @@ describe("release artifact audit", () => {
       expect.stringContaining("Resources/app/data"),
       expect.stringContaining("C:\\Source Workspace"),
     ]));
+  });
+
+  test("inspects compressed TAR contents without extracting them", async () => {
+    const root = await temporaryRoot("ba-spine-release-archive-");
+    const archivePath = join(root, "Resources", "app.tar.zst");
+    await mkdir(join(root, "Resources"), { recursive: true });
+    await writeTarZstd(archivePath, [
+      { name: "BASpineViewer/", type: "5" },
+      { name: "BASpineViewer/Resources/app/data/", type: "5" },
+      { name: "BASpineViewer/Resources/app/main.js", content: "// source C:\\Source Workspace\\packages\\viewer" },
+      { name: "BASpineViewer/Resources/app/link", type: "2" },
+    ]);
+
+    const issues = await auditPackagedDirectory(root, ["C:\\Source Workspace"]);
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.stringContaining('compressed TAR contains forbidden asset-library data directory "BASpineViewer/Resources/app/data/"'),
+      expect.stringContaining('compressed TAR contains forbidden marker "C:\\Source Workspace"'),
+      expect.stringContaining('compressed TAR contains an unexpected link entry "BASpineViewer/Resources/app/link"'),
+    ]));
+  });
+
+  test("fails closed when a compressed TAR cannot be inspected", async () => {
+    const root = await temporaryRoot("ba-spine-release-corrupt-archive-");
+    const archivePath = join(root, "Resources", "broken.tar.zst");
+    await mkdir(join(root, "Resources"), { recursive: true });
+    await writeFile(archivePath, "not a zstandard archive");
+    const issues = await auditPackagedDirectory(root);
+    expect(issues).toEqual([expect.stringContaining("compressed TAR could not be safely inspected")]);
   });
 
   test("requires stable packages for both apps and scans optional build logs", async () => {
