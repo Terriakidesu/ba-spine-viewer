@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, realpath } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { ApplicationMenu, BrowserWindow, Screen, Utils } from "electrobun/main";
 import { isPathWithinLibrary, resolveExistingLibraryPath } from "@ba-spine/desktop-host/pathPolicy";
@@ -11,10 +11,20 @@ import { isEditorIgnored, parseEditorIgnore, type EditorIgnoreRule } from "@ba-s
 import { EditorFileConflictError, saveEditorBatch, type EditorBatchFile } from "@ba-spine/desktop-host/transactionalSave";
 import { SpineEditorMcpBridge } from "./mcpBridge";
 import { defaultDesktopWindowFrame, readDesktopWindowState, restoreDesktopWindowState, startDesktopWindowStatePersistence, type WindowDisplay } from "@ba-spine/desktop-host/windowState";
+import { initialLibraryPath, restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
 
-let assetRoot: string | null = process.env.BA_SPINE_DATA ? resolve(process.env.BA_SPINE_DATA) : null;
+const editorLibraryPreferencePath = join(Utils.paths.appData, "BA Spine Suite", "Editor", "library.json");
+const rememberedLibraryPath = process.env.BA_SPINE_DATA ? null : await restoreLastLibraryPath(editorLibraryPreferencePath);
+const developmentDefaultLibraryPath = process.env.BA_SPINE_WORKSPACE_ROOT
+  ? join(process.env.BA_SPINE_WORKSPACE_ROOT, "data")
+  : null;
+const initialPath = initialLibraryPath(process.env.BA_SPINE_DATA, rememberedLibraryPath, developmentDefaultLibraryPath);
+let assetRoot: string | null = initialPath ? resolve(initialPath) : null;
 if (assetRoot) {
-  try { assetRoot = await realpath(assetRoot); }
+  try {
+    assetRoot = await realpath(assetRoot);
+    if (!(await stat(assetRoot)).isDirectory()) assetRoot = null;
+  }
   catch { assetRoot = null; }
 }
 const mcpBridge = new SpineEditorMcpBridge(process.env.BA_SPINE_EDITOR_MCP === "1" || Bun.argv.includes("--mcp"));
@@ -85,6 +95,8 @@ async function useRoot(path: string): Promise<string> {
   const entries = await readdir(root, { withFileTypes: true });
   if (!entries.some((entry) => entry.isDirectory() || /\.(?:atlas|skel)$/i.test(entry.name))) throw new Error("The recent folder is empty or is not an asset root.");
   assetRoot = root;
+  try { await writeLastLibraryPath(editorLibraryPreferencePath, root); }
+  catch (error) { console.warn("[ba-spine-editor] could not remember the selected library", error); }
   return root;
 }
 
@@ -124,7 +136,7 @@ async function api(request: Request, url: URL): Promise<Response> {
         canChooseDirectory: true,
         allowsMultipleSelection: false,
       });
-      assetRoot = selected[0] ? await useRoot(selected[0]) : null;
+      if (selected[0]) await useRoot(selected[0]);
       return json({ rootPath: assetRoot });
     }
     if (url.pathname === "/__spine/companion/pending" && request.method === "GET") return json({ messages: companionInbox.pending() });

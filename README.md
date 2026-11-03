@@ -22,11 +22,11 @@ bun run dev:editor
 
 `bun run build` builds both native applications (Viewer, then Editor) and audits the packaged outputs for bundled `data/` directories, catalog paths, and the current source-workspace path. `bun run audit:release` reruns that audit; optionally provide OS-delimited `BA_SPINE_FORBIDDEN_PATHS` and `BA_SPINE_BUILD_LOGS` lists to check additional source paths and captured build logs.
 
-In desktop development, `./data/` is offered as the default asset library when present. To use another library, set `BA_SPINE_DATA` to its root. The app also supports choosing a library from its native dialog.
+In desktop development, `./data/` is offered as the fallback library when present. To use another library, set `BA_SPINE_DATA` to its root. The app also supports choosing a library from its native dialog. Startup priority is explicit `BA_SPINE_DATA`, then the app's last-selected library from OS app data, then the development-only `./data/` fallback. If a drive is unavailable or the library moved, choose its new folder and the preference is updated. Only the path is remembered—not an asset copy—and project-relative references remain rooted in the selected library.
 
 ## Asset and project data
 
-`data/` is a local, gitignored library. It is not application source, not included in builds, and should never be force-added to Git. The viewer has read-only access. The editor saves only authored project and established workspace files; source Spine skeletons, atlases, textures, and audio remain untouched.
+`data/` is a local, gitignored library. It is not application source, not included in builds, and should never be force-added to Git. The viewer has read-only access. The editor saves only authored project and established workspace files; source Spine skeletons, atlases, textures, and audio remain untouched. Remembered library paths are stored separately per app under OS app data, never in the library.
 
 Viewer library search matches character names, variants, lobby IDs, and asset IDs. Use the character list's arrow keys or Home/End to browse; mark the selected lobby as a favorite or reopen it from recent lobbies. Desktop favorites and recents are stored locally per library identity. Browser-picked folders use session-only navigation preferences because they do not expose a reliable persistent library identity.
 

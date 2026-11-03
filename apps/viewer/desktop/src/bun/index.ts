@@ -15,10 +15,20 @@ import { manifestReferenceCandidates, normalizeSpineManifest } from "@ba-spine/s
 import { MAX_VIEWER_THUMBNAIL_BYTES, ViewerThumbnailCache } from "@ba-spine/desktop-host/viewerThumbnailCache";
 import { createDebouncedAction } from "@ba-spine/desktop-host/debouncedAction";
 import { defaultDesktopWindowFrame, readDesktopWindowState, restoreDesktopWindowState, startDesktopWindowStatePersistence, type WindowDisplay } from "@ba-spine/desktop-host/windowState";
+import { initialLibraryPath, restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
 
-let assetRoot: string | null = process.env.BA_SPINE_DATA ? resolve(process.env.BA_SPINE_DATA) : null;
+const viewerLibraryPreferencePath = join(Utils.paths.appData, "BA Spine Suite", "Viewer", "library.json");
+const rememberedLibraryPath = process.env.BA_SPINE_DATA ? null : await restoreLastLibraryPath(viewerLibraryPreferencePath);
+const developmentDefaultLibraryPath = process.env.BA_SPINE_WORKSPACE_ROOT
+  ? join(process.env.BA_SPINE_WORKSPACE_ROOT, "data")
+  : null;
+const initialPath = initialLibraryPath(process.env.BA_SPINE_DATA, rememberedLibraryPath, developmentDefaultLibraryPath);
+let assetRoot: string | null = initialPath ? resolve(initialPath) : null;
 if (assetRoot) {
-  try { assetRoot = await realpath(assetRoot); }
+  try {
+    assetRoot = await realpath(assetRoot);
+    if (!(await stat(assetRoot)).isDirectory()) assetRoot = null;
+  }
   catch { assetRoot = null; }
 }
 const EDITOR_DIRECTORIES = new Set([".editor", ".shittim-spine-editor"]);
@@ -66,6 +76,23 @@ function safeRelativePath(value: string): string {
 async function rootPath(): Promise<string> {
   if (!assetRoot) throw new Error("Choose a Spine asset library first.");
   return realpath(assetRoot);
+}
+
+async function selectLibraryRoot(path: string): Promise<string> {
+  const selected = await realpath(resolve(path));
+  if (!(await stat(selected)).isDirectory()) throw new Error("The selected path is not a folder.");
+  const hasCatalog = await Bun.file(join(selected, "catalog.json")).exists();
+  if (!hasCatalog) {
+    const entries = await readdir(selected, { withFileTypes: true });
+    if (!entries.some((entry) => entry.isDirectory() || /\.(?:atlas|skel)$/i.test(entry.name))) {
+      throw new Error("The selected folder does not look like a Spine asset library.");
+    }
+  }
+  assetRoot = selected;
+  catalogCache = null;
+  try { await writeLastLibraryPath(viewerLibraryPreferencePath, selected); }
+  catch (error) { console.warn("[ba-spine-viewer] could not remember the selected library", error); }
+  return selected;
 }
 
 async function rootRelativePath(value: string): Promise<string> {
@@ -302,21 +329,13 @@ async function api(request: Request, url: URL): Promise<Response> {
         canChooseDirectory: true,
         allowsMultipleSelection: false,
       });
-      assetRoot = selected[0] ? await realpath(selected[0]) : null;
-      catalogCache = null;
+      if (selected[0]) await selectLibraryRoot(selected[0]);
       return json({ rootPath: assetRoot });
     }
     if (url.pathname === "/__spine/use-root" && request.method === "POST") {
       const body = await request.json() as { rootPath?: unknown };
       if (typeof body.rootPath !== "string" || !body.rootPath) return errorResponse("A library folder is required.");
-      const selected = await realpath(body.rootPath);
-      const stat = await Bun.file(join(selected, "catalog.json")).exists();
-      if (!stat) {
-        const entries = await readdir(selected, { withFileTypes: true });
-        if (!entries.some((entry) => entry.isDirectory() || /\.(?:atlas|skel)$/i.test(entry.name))) return errorResponse("The selected folder does not look like a Spine asset library.");
-      }
-      assetRoot = selected;
-      catalogCache = null;
+      await selectLibraryRoot(body.rootPath);
       return json({ rootPath: assetRoot });
     }
     if (url.pathname === "/__spine/catalog") {
