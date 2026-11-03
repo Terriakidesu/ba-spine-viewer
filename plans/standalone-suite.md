@@ -319,6 +319,10 @@ The root `bun run build` now runs a streaming audit over every stable Viewer and
 
 Viewer and Editor now reopen their own last-selected library from a small versioned preference under OS app data when `BA_SPINE_DATA` is unset. The preference stores only the canonical path, is atomically replaced, tolerates malformed/stale state, and is retained if a removable drive is unavailable. Selecting a relocated folder updates the preference; a focused fixture test covers a library and authored project JSON with spaces and non-ASCII names without touching `data/`.
 
+#### Clean source-archive install check (2026-11-04)
+
+A fresh temporary checkout made from the committed Git archive (excluding ignored library/build outputs) installed with `bun install --frozen-lockfile`; typecheck and all 364 tests passed without relying on another workspace. This verifies dependency/workspace setup, not native desktop launch or installer behavior.
+
 ## Verification gates
 
 Run the narrowest relevant tests for each commit, then the full workspace checks at integration points. Final release gate:
