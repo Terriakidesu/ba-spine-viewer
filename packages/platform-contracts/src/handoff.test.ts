@@ -1,0 +1,56 @@
+import { describe, expect, test } from "bun:test";
+import { HANDOFF_PROTOCOL_VERSION, HandoffValidationError, parseHandoffMessage } from "./handoff";
+
+const validMessage = {
+  protocolVersion: 1,
+  requestId: "req_00000001",
+  targetApp: "viewer",
+  library: { identity: "sha256:library-fixture", path: "D:\\BA Spine\\data" },
+  lobbyId: "Airi_home",
+  sequenceId: "opening-1",
+  language: "en-US",
+  playheadSeconds: 12.5,
+  draft: { sessionId: "draft_00000001" },
+} as const;
+
+describe("versioned companion handoff contract", () => {
+  test("accepts and returns a normalized handoff message", () => {
+    expect(parseHandoffMessage(validMessage)).toEqual({ ...validMessage, protocolVersion: HANDOFF_PROTOCOL_VERSION });
+  });
+
+  test("supports the minimal saved-project message without optional context", () => {
+    expect(parseHandoffMessage({
+      protocolVersion: 1,
+      requestId: "req_00000002",
+      targetApp: "editor",
+      library: { identity: "local-library", path: "/mnt/library" },
+      lobbyId: "Airi_home",
+    })).toEqual({
+      protocolVersion: 1,
+      requestId: "req_00000002",
+      targetApp: "editor",
+      library: { identity: "local-library", path: "/mnt/library" },
+      lobbyId: "Airi_home",
+    });
+  });
+
+  test("rejects unknown versions, fields, invalid targets, and path-like project IDs", () => {
+    const invalidMessages = [
+      { ...validMessage, protocolVersion: 2 },
+      { ...validMessage, extra: "not in v1" },
+      { ...validMessage, targetApp: "other" },
+      { ...validMessage, lobbyId: "../outside" },
+      { ...validMessage, sequenceId: "nested/sequence" },
+      { ...validMessage, library: { ...validMessage.library, path: "relative/library" } },
+    ];
+    for (const message of invalidMessages) expect(() => parseHandoffMessage(message)).toThrow(HandoffValidationError);
+  });
+
+  test("rejects invalid optional playback and draft values", () => {
+    for (const playheadSeconds of [-0.1, Number.NaN, Number.POSITIVE_INFINITY, 604_801]) {
+      expect(() => parseHandoffMessage({ ...validMessage, playheadSeconds })).toThrow(HandoffValidationError);
+    }
+    expect(() => parseHandoffMessage({ ...validMessage, language: "english language" })).toThrow(HandoffValidationError);
+    expect(() => parseHandoffMessage({ ...validMessage, draft: { sessionId: "short" } })).toThrow(HandoffValidationError);
+  });
+});

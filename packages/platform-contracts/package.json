@@ -1,0 +1,9 @@
+{
+  "name": "@ba-spine/platform-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./handoff": "./src/handoff.ts"
+  }
+}

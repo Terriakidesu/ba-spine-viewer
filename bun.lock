@@ -94,6 +94,10 @@
         "react-dom": "^19.0.0",
       },
     },
+    "packages/platform-contracts": {
+      "name": "@ba-spine/platform-contracts",
+      "version": "0.1.0",
+    },
     "packages/spine-runtime": {
       "name": "@ba-spine/spine-runtime",
       "version": "0.1.0",
@@ -127,6 +131,8 @@
     "@ba-spine/editor-desktop": ["@ba-spine/editor-desktop@workspace:apps/editor/desktop"],
 
     "@ba-spine/editor-feature": ["@ba-spine/editor-feature@workspace:packages/editor-feature"],
+
+    "@ba-spine/platform-contracts": ["@ba-spine/platform-contracts@workspace:packages/platform-contracts"],
 
     "@ba-spine/spine-runtime": ["@ba-spine/spine-runtime@workspace:packages/spine-runtime"],
 
