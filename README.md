@@ -20,7 +20,7 @@ bun run dev:viewer
 bun run dev:editor
 ```
 
-`bun run build` builds both native applications (Viewer, then Editor) and audits the packaged outputs for bundled `data/` directories, catalog paths, and the current source-workspace path. `bun run audit:release` reruns that audit; optionally provide OS-delimited `BA_SPINE_FORBIDDEN_PATHS` and `BA_SPINE_BUILD_LOGS` lists to check additional source paths and captured build logs.
+`bun run build` builds both native applications (Viewer, then Editor) and audits the packaged outputs for bundled `data/` directories, catalog paths, source-workspace references, and Windows launcher files/signatures. `bun run audit:release` reruns that audit; optionally provide OS-delimited `BA_SPINE_FORBIDDEN_PATHS` and `BA_SPINE_BUILD_LOGS` lists to check additional source paths and captured build logs.
 
 In desktop development, `./data/` is offered as the fallback library when present. To use another library, set `BA_SPINE_DATA` to its root. The app also supports choosing a library from its native dialog. Startup priority is explicit `BA_SPINE_DATA`, then the app's last-selected library from OS app data, then the development-only `./data/` fallback. If a drive is unavailable or the library moved, choose its new folder and the preference is updated. Only the path is remembered—not an asset copy—and project-relative references remain rooted in the selected library.
 

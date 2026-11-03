@@ -313,7 +313,7 @@ Keep commits small, reviewable, and buildable. Each commit should include its fo
 
 #### Packaged artifact audit slice (2026-11-04)
 
-The root `bun run build` now runs a streaming audit over every stable Viewer and Editor package. It rejects bundled `data/` directories, embedded catalog paths, symbolic links, and references to the current source workspace; optional OS-delimited environment lists extend the check to external source paths and captured build logs. Synthetic tests use temporary directories only.
+The root `bun run build` now runs a streaming audit over every stable Viewer and Editor package. It rejects bundled `data/` directories, embedded catalog paths, symbolic links, and references to the current source workspace; for Windows packages it also requires each app's `bin/launcher.exe` and validates its PE signature. Optional OS-delimited environment lists extend the path check to external source paths and captured build logs. Synthetic tests use temporary directories only; the signature check is not a substitute for interactive launch smoke testing.
 
 #### Per-app last-library preference slice (2026-11-04)
 

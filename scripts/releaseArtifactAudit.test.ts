@@ -15,6 +15,13 @@ async function temporaryRoot(prefix: string): Promise<string> {
   return root;
 }
 
+async function writeWindowsLauncher(packageRoot: string, app: "viewer" | "editor", bytes: Uint8Array = Buffer.from("MZ\u0000\u0000")): Promise<void> {
+  const bundleDirectory = app === "viewer" ? "BASpineViewer" : "BASpineEditor";
+  const launcher = join(packageRoot, bundleDirectory, "bin", "launcher.exe");
+  await mkdir(join(packageRoot, bundleDirectory, "bin"), { recursive: true });
+  await writeFile(launcher, bytes);
+}
+
 describe("release artifact audit", () => {
   test("accepts a package without library data or workspace markers", async () => {
     const root = await temporaryRoot("ba-spine-release-clean-");
@@ -41,14 +48,32 @@ describe("release artifact audit", () => {
 
   test("requires stable packages for both apps and scans optional build logs", async () => {
     const root = await temporaryRoot("ba-spine-release-layout-");
-    const viewer = join(root, "apps", "viewer", "desktop", "build", "stable-test");
-    const editor = join(root, "apps", "editor", "desktop", "build", "stable-test");
+    const viewer = join(root, "apps", "viewer", "desktop", "build", "stable-win-x64");
+    const editor = join(root, "apps", "editor", "desktop", "build", "stable-win-x64");
     await mkdir(viewer, { recursive: true });
     await mkdir(editor, { recursive: true });
+    await writeWindowsLauncher(viewer, "viewer");
+    await writeWindowsLauncher(editor, "editor");
     const log = join(root, "build.log");
     await writeFile(log, "Bundled data/catalog.json and data\\catalog.json");
     const issues = await auditReleaseArtifacts(root, ["C:\\Old Workspace"], [log]);
     expect(issues).toHaveLength(1);
     expect(issues[0]).toContain("build log contains forbidden marker");
+  });
+
+  test("rejects missing or malformed Windows app launchers", async () => {
+    const root = await temporaryRoot("ba-spine-release-launcher-");
+    const viewer = join(root, "apps", "viewer", "desktop", "build", "stable-win-x64");
+    const editor = join(root, "apps", "editor", "desktop", "build", "stable-win-x64");
+    await mkdir(viewer, { recursive: true });
+    await mkdir(editor, { recursive: true });
+    await writeWindowsLauncher(viewer, "viewer", Buffer.from("not a PE"));
+
+    const issues = await auditReleaseArtifacts(root);
+    expect(issues).toHaveLength(2);
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.stringContaining("packaged launcher does not have a valid Windows PE signature"),
+      expect.stringContaining("packaged Windows launcher is missing"),
+    ]));
   });
 });

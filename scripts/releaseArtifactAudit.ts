@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, open, readdir } from "node:fs/promises";
 import { delimiter, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 
 const DEFAULT_ARTIFACT_MARKERS = ["data/catalog.json"];
@@ -85,6 +85,31 @@ export async function auditPackagedDirectory(root: string, forbiddenPaths: reado
   return issues;
 }
 
+async function auditWindowsLauncher(packageRoot: string, app: "viewer" | "editor"): Promise<string[]> {
+  const bundleDirectory = app === "viewer" ? "BASpineViewer" : "BASpineEditor";
+  const relativePath = `${bundleDirectory}/bin/launcher.exe`;
+  const executablePath = join(packageRoot, bundleDirectory, "bin", "launcher.exe");
+  let info;
+  try { info = await lstat(executablePath); }
+  catch { return [`${relativePath}: packaged Windows launcher is missing.`]; }
+  if (!info.isFile() || info.isSymbolicLink()) return [`${relativePath}: packaged Windows launcher is not a regular file.`];
+
+  let file;
+  try {
+    file = await open(executablePath, "r");
+    const signature = Buffer.alloc(2);
+    const { bytesRead } = await file.read(signature, 0, signature.length, 0);
+    if (bytesRead !== 2 || signature[0] !== 0x4d || signature[1] !== 0x5a) {
+      return [`${relativePath}: packaged launcher does not have a valid Windows PE signature.`];
+    }
+  } catch {
+    return [`${relativePath}: packaged Windows launcher could not be inspected.`];
+  } finally {
+    await file?.close().catch(() => undefined);
+  }
+  return [];
+}
+
 async function auditBuildLog(path: string, forbiddenPaths: readonly string[]): Promise<string[]> {
   try {
     const markers = byteMarkers([...DEFAULT_ARTIFACT_MARKERS, ...forbiddenPaths]);
@@ -120,6 +145,9 @@ export async function auditReleaseArtifacts(
     for (const item of packages) {
       const packageRoot = join(buildRoot, item.name);
       issues.push(...(await auditPackagedDirectory(packageRoot, forbiddenPaths)).map((issue) => `${app}/${item.name}: ${issue}`));
+      if (item.name.toLowerCase().startsWith("stable-win-")) {
+        issues.push(...(await auditWindowsLauncher(packageRoot, app)).map((issue) => `${app}/${item.name}: ${issue}`));
+      }
     }
   }
   for (const path of buildLogs) issues.push(...await auditBuildLog(path, forbiddenPaths));
