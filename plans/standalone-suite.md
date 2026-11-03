@@ -146,7 +146,11 @@ Define a versioned local handoff message with at least: request ID, target app, 
 
 #### Desktop library refresh slice (2026-11-03)
 
-The Viewer host watches the selected library recursively, coalesces filesystem events over a 300 ms quiet period, ignores `.editorignore`-excluded paths, and reports a revision through its authenticated loopback API. The Viewer polls for changes and shows a non-disruptive “Changes available” status; **Refresh library** remains available if watching is unsupported. Refresh rebuilds the catalog and preserves the selected lobby and still-valid playback, sequence, playhead, camera, language, volume, and playback settings. Primary and composition asset requests are aborted when their load becomes stale. Fake-timer tests cover debounce/cancel behavior; authenticated bridge tests cover change status, refresh, and request cancellation. Manual two-app GUI smoke testing remains a release gate.
+The Viewer host watches the selected library recursively, coalesces filesystem events over a 300 ms quiet period, ignores `.editorignore`-excluded paths, and reports a revision through its authenticated loopback API. The Viewer polls for changes and shows a non-disruptive "Changes available" status; **Refresh library** remains available if watching is unsupported. Refresh rebuilds the catalog and preserves the selected lobby and still-valid playback, sequence, playhead, camera, language, volume, and playback settings. Primary and composition asset requests are aborted when their load becomes stale. Fake-timer tests cover debounce/cancel behavior; authenticated bridge tests cover change status, refresh, and request cancellation. Manual two-app GUI smoke testing remains a release gate.
+
+#### Timeline diagnostics slice (2026-11-04)
+
+The Editor timeline inspector validates the active sequence without writing files: layer availability and manifest-declared file references, loaded animation names, unsupported manifest versions, clip and sequence bounds, subtitle overlaps and preview-language gaps, missing audio, and stale explicit subtitle links. Each issue navigates to its affected timeline item. Manifest reference checks reuse the already-loaded file set rather than rereading asset bytes; fixes remain explicit authoring actions. Future project schema versions remain rejected with a clear load error.
 
 ### Editor-to-viewer handoff
 

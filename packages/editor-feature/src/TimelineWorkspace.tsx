@@ -38,6 +38,7 @@ import { TimelineSplitHandle } from "./TimelineSplitHandle";
 import { DEFAULT_TIMELINE_LAYOUT_PREFERENCES, normalizeTimelineLayoutPreferences, TIMELINE_LAYOUT_PREFERENCES_KEY, type TimelineLayoutPreferences } from "./timelineLayout";
 import { zoomTimelineAtCursor } from "./timelineView";
 import { audioEnvelopePeaks } from "./audioEnvelope";
+import { missingManifestAssetFiles, validateTimeline, type TimelineDiagnostic } from "./timelineDiagnostics";
 import { IconChevronDown, IconChevronLeft, IconChevronRight, IconEye, IconEyeOff, IconExpand, IconLink, IconLock, IconMinus, IconPause, IconPlay, IconPlus, IconSkipBack, IconSkipForward, IconSound, IconSync, IconUnlock, IconUnlink } from "@ba-spine/app-ui/icons";
 import "./timelineSnapFeedback.css";
 
@@ -290,6 +291,8 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
   const [metas, setMetas] = useState<Record<string, SpineMeta | null>>({});
   const [sharedCameraPose, setSharedCameraPose] = useState<SpineCameraPose | null>(null);
   const [files, setFiles] = useState<Record<string, SpineFiles | null>>({});
+  const [layerLoadErrors, setLayerLoadErrors] = useState<Record<string, string>>({});
+  const [layerManifestVersions, setLayerManifestVersions] = useState<Record<string, number>>({});
   const [animationDurations, setAnimationDurations] = useState<Record<string, number>>({});
   const [zoom, setZoom] = useState(1);
   const [timelineLayout, setTimelineLayout] = useState(readTimelineLayoutPreferences);
@@ -591,6 +594,20 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
   const duration = timeline
     ? timelinePlaybackDuration(timeline, timeline.sequenceId === "opening" && !explicitAnimationClips ? openingIntroStart + (openingMode === "skip" ? 0 : introDuration) : 0, layerEnd, talkMixDuration)
     : MIN_TIMELINE_DURATION;
+  const animationsByLayer = useMemo(() => Object.fromEntries(Object.entries(metas)
+    .flatMap(([id, meta]) => meta ? [[id, meta.animations] as const] : [])), [metas]);
+  const timelineDiagnostics = useMemo(() => timeline ? validateTimeline(timeline, {
+    availableDirectories: directories,
+    animationsByLayer,
+    duration,
+    layerLoadErrors,
+    manifestSchemaVersionsByLayer: layerManifestVersions,
+    missingAudioPaths: missingAudio,
+  }) : [], [animationsByLayer, directories, duration, layerLoadErrors, layerManifestVersions, missingAudio, timeline]);
+  const timelineChecksPending = Boolean(source && (
+    displayLayers.some((layer) => !Object.prototype.hasOwnProperty.call(files, layer.directory))
+    || (timeline?.audio ?? []).some((clip) => audioPreloadStates[clip.id] !== "ready" && audioPreloadStates[clip.id] !== "missing")
+  ));
   const autoTalkDuration = timeline && isTalkSequence
     ? timelinePlaybackDuration({ ...timeline, durationMode: "auto" }, 0, layerEnd, talkMixDuration)
     : 0;
@@ -1106,19 +1123,39 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
   useEffect(() => {
     if (!source || displayLayers.length === 0) {
       setFiles({});
+      setLayerLoadErrors({});
+      setLayerManifestVersions({});
       return;
     }
     let cancelled = false;
     setFiles({});
+    setLayerLoadErrors({});
+    setLayerManifestVersions({});
     void Promise.all(displayLayers.map(async (layer) => {
       try {
         const assetPath = project?.timeline.assetPaths?.[layer.directory];
         const files = assetPath && source.getSetFilesAtPath
           ? await source.getSetFilesAtPath(assetPath)
           : await source.getSetFiles(layer.directory);
+        const manifest = await source.getManifest?.(layer.directory);
+        const assetSet = manifest?.manifest.assets[layer.directory];
+        if (manifest && !cancelled) setLayerManifestVersions((current) => ({ ...current, [layer.id]: manifest.manifest.schemaVersion }));
+        if (manifest && assetSet) {
+          const missingReferences = missingManifestAssetFiles(assetSet.files, [...files.keys()]);
+          if (missingReferences.length > 0) {
+            const firstMissing = missingReferences.slice(0, 4).join(", ");
+            const suffix = missingReferences.length > 4 ? `, and ${missingReferences.length - 4} more` : "";
+            throw new Error(`Manifest references missing files: ${firstMissing}${suffix}.`);
+          }
+        }
+        if (files.size === 0) throw new Error("No Spine files were found for this layer.");
         return [layer.directory, files] as const;
       } catch (value) {
-        if (!cancelled) onError(`${layer.directory}: ${value instanceof Error ? value.message : String(value)}`);
+        if (!cancelled) {
+          const message = value instanceof Error ? value.message : String(value);
+          setLayerLoadErrors((current) => ({ ...current, [layer.id]: message }));
+          onError(`${layer.directory}: ${message}`);
+        }
         return [layer.directory, null] as const;
       }
     })).then((entries) => {
@@ -2315,6 +2352,21 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     ["audio", selectedClipDetails.filter((item) => item.kind === "audio").length, "audio"],
   ] as const).filter(([, count]) => count > 0).map(([, count, label]) => `${count} ${label}${count === 1 ? "" : "s"}`).join(" · ");
   const deletableSelectionCount = selectedClipDetails.filter((item) => item.removable).length;
+  function reviewTimelineDiagnostic(diagnostic: TimelineDiagnostic) {
+    const target = diagnostic.target;
+    if (!target) return;
+    let targetTime: number | null = null;
+    if (target.kind === "layer") targetTime = timeline?.layers.find((item) => item.id === target.id)?.start ?? null;
+    else if (target.kind === "animation") targetTime = findAnimationClip(target.id)?.clip.start ?? null;
+    else if (target.kind === "color-layer") targetTime = 0;
+    else if (target.kind === "color") targetTime = findColorClip(target.id)?.clip.start ?? null;
+    else if (target.kind === "cue") targetTime = timeline?.subtitles.find((item) => item.id === target.id)?.start ?? null;
+    else targetTime = timeline?.audio.find((item) => item.id === target.id)?.start ?? null;
+    setPlaying(false);
+    setSelectedClips([target]);
+    focusTimelineClip(target);
+    if (targetTime !== null && Number.isFinite(targetTime)) setCurrentTime(Math.min(duration, Math.max(0, targetTime)));
+  }
   const selectedAudioDuration = selectedAudio ? audioDurations[selectedAudio.id] : undefined;
   const selectedAudioLinkedSubtitle = selectedAudio && timeline ? linkedSubtitleForAudio(timeline, selectedAudio) : null;
   const selectedAudioLinkCandidate = selectedAudioLinkedSubtitle ?? (selectedAudio && timeline
@@ -2397,10 +2449,11 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
                 <button className="editor-preview-button danger" onClick={stopTalkAutoplay} title="Stop playback and cancel Talk autoplay">Stop</button>
               </>}
               {timeline.sequenceId === "opening" && <><button className="editor-button" onClick={() => stepSelectedTrackClip(-1)} disabled={selectedColorLayer ? !selectedColorLayer.clips.some((clip) => clip.enabled) : !selectedTrackAnimationClips()?.clips.length}><IconChevronLeft /> Track clip</button><button className="editor-button" onClick={() => stepSelectedTrackClip(1)} disabled={selectedColorLayer ? !selectedColorLayer.clips.some((clip) => clip.enabled) : !selectedTrackAnimationClips()?.clips.length}>Track clip <IconChevronRight /></button></>}
-             <button className="editor-button" onClick={() => { setPreviewUntil(null); setCurrentTime(duration); setPlaying(false); }}>End <IconSkipForward /></button>
-           <NumberField label="Speed" value={speed} min={0.1} max={3} step={0.1} precision={1} unit="×" scrub={false} compact onCommit={setSpeed} />
-          <label className="timeline-loop"><input type="checkbox" checked={timeline.loop} onChange={(event) => updateTimeline((value) => ({ ...value, loop: event.target.checked }))} /> Loop</label>
-          <span className="editor-time">{seconds(currentTime)} / {seconds(duration)}</span>
+            <button className="editor-button" onClick={() => { setPreviewUntil(null); setCurrentTime(duration); setPlaying(false); }}>End <IconSkipForward /></button>
+            <NumberField label="Speed" value={speed} min={0.1} max={3} step={0.1} precision={1} unit="×" scrub={false} compact onCommit={setSpeed} />
+            <NumberField label="Playhead" value={Number(currentTime.toFixed(3))} min={0} max={duration} step={0.001} precision={3} unit="s" scrub={false} compact onCommit={(time) => { setPlaying(false); setPreviewUntil(null); setCurrentTime(Math.min(duration, Math.max(0, time))); }} />
+            <label className="timeline-loop"><input type="checkbox" checked={timeline.loop} onChange={(event) => updateTimeline((value) => ({ ...value, loop: event.target.checked }))} /> Loop</label>
+           <span className="editor-time">/ {seconds(duration)}</span>
          </div>
 
          <TimelineSplitHandle
@@ -2510,8 +2563,16 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
        </section>
 
       {!inspectorPanelCollapsed && <TimelinePanelResizer side="inspector" value={inspectorPanelWidth} onChange={(inspectorPanelWidth) => updateTimelineLayout({ inspectorPanelWidth })} />}
-      <aside id="timeline-inspector" className="editor-panel timeline-inspector" hidden={inspectorPanelCollapsed}>
-         {inspector === "sequence" && <section className="editor-section editor-inspector">
+       <aside id="timeline-inspector" className="editor-panel timeline-inspector" hidden={inspectorPanelCollapsed}>
+          <details className={`editor-section editor-validation timeline-diagnostics${timelineDiagnostics.length ? " has-warnings" : ""}`}>
+            <summary>{timelineChecksPending ? "Checking timeline assets…" : timelineDiagnostics.length ? `${timelineDiagnostics.length} timeline checks to review` : "No current timeline warnings"}</summary>
+            <div className="editor-section-title"><strong>Timeline diagnostics</strong><span>{timelineDiagnostics.length ? `${timelineDiagnostics.length} warning${timelineDiagnostics.length === 1 ? "" : "s"}` : "Ready"}</span></div>
+            {timelineChecksPending && <p className="editor-muted" role="status">Checking manifest references and audio. Animation checks are added as Spine metadata loads.</p>}
+            {timelineDiagnostics.length === 0 && !timelineChecksPending
+              ? <p className="editor-muted">No current issues. Animation checks appear once Spine metadata is available.</p>
+              : <div className="editor-validation-list">{timelineDiagnostics.map((diagnostic) => <button key={diagnostic.id} type="button" className="editor-validation-issue" onClick={() => reviewTimelineDiagnostic(diagnostic)} title={diagnostic.target ? "Select the affected timeline item" : diagnostic.message}><b>{diagnostic.kind.replaceAll("-", " ")}</b><span>{diagnostic.message}</span>{diagnostic.target && <small>Go to item →</small>}</button>)}</div>}
+          </details>
+          {inspector === "sequence" && <section className="editor-section editor-inspector">
           <div className="editor-section-title"><strong>Sequence settings</strong><span>{seconds(duration)}</span></div>
             <NumberField label={timeline.sequenceId === "opening" ? "Total duration" : isTalkSequence ? "Total Talk playback" : "Length"} value={Number(duration.toFixed(3))} min={1} step={0.1} precision={3} unit="s" disabled={(timeline.sequenceId === "opening" || isTalkSequence) && timeline.durationMode === "auto"} onCommit={(totalDuration) => updateTimeline((value) => ({ ...value, durationMode: value.sequenceId === "opening" || /^talk-\d+$/i.test(value.sequenceId ?? "") ? "manual" : value.durationMode, duration: Math.max(1, totalDuration - (isTalkSequence ? talkMixDuration : 0)) }))} />
             <label><span className="timeline-inline-check"><input type="checkbox" checked={timeline.loop} onChange={(event) => updateTimeline((value) => ({ ...value, loop: event.target.checked }))} /> Loop sequence</span></label>
@@ -2532,8 +2593,7 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
             </>}
            <div className="timeline-context-summary"><span>Layers <b>{displayVisualTracks.length}</b></span><span>Subtitles <b>{timeline.subtitles.length}</b></span><span>Audio <b>{timeline.audio.length}</b></span></div>
            <p className="editor-muted">Select a clip in the timeline to edit its properties. Add content from the <b>Add</b> menu.</p>
-           {timeline.subtitles.some((cue, index, all) => all.some((other, j) => index !== j && cue.start < other.end && cue.end > other.start)) && <p className="editor-error">Overlapping subtitle cues: review timing before export.</p>}
-         </section>}
+          </section>}
 
           {inspector === "multi" && <section className="editor-section editor-inspector">
            <div className="editor-section-title"><strong>{selectedClipDetails.length} clips selected</strong><span>{selectedTypeSummary}</span></div>

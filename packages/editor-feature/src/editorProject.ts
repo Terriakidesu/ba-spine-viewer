@@ -1,7 +1,7 @@
 import { EDITOR_SCHEMA_VERSION, normalizeProject, type EditorProject } from "./editorModel";
 import { editorProjectPath, editorProjectPaths } from "./editorStorage";
 import { manifestProjectValue, readManifestProjectData } from "@ba-spine/spine-runtime/spine/spineProject";
-import { manifestPath, manifestReferenceCandidates, sequencePath, type SpineManifest, type SpineManifestRecord, type SpineManifestPath } from "@ba-spine/spine-runtime/spine/spineManifest";
+import { SPINE_MANIFEST_SCHEMA_VERSION, manifestPath, manifestReferenceCandidates, sequencePath, type SpineManifest, type SpineManifestRecord, type SpineManifestPath } from "@ba-spine/spine-runtime/spine/spineManifest";
 import { contentVersion } from "@ba-spine/platform-contracts/contentVersion";
 
 export interface SavedEditorProjectSource {
@@ -130,6 +130,7 @@ export async function prepareManifestEditorProjectSave(source: SavedEditorProjec
   const workspace = current.workspace ?? manifestPath("lobby", ".editor/workspace.json");
   const nextManifest: SpineManifest = {
     ...current,
+    schemaVersion: SPINE_MANIFEST_SCHEMA_VERSION,
     entrySequence: entrySequence && sequenceRefs[entrySequence] ? entrySequence : null,
     entryMode: entrySequence && sequenceRefs[entrySequence] ? "authored-sequence" : "runtime-intro",
     sequences: sequenceRefs,

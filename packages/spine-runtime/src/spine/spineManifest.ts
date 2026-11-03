@@ -1,4 +1,6 @@
 export type SpineManifestPathScope = "lobby" | "root";
+export const SPINE_MANIFEST_SCHEMA_VERSION = 1;
+export const SPINE_CATALOG_SCHEMA_VERSION = 1;
 
 export interface SpineManifestPath {
   scope: SpineManifestPathScope;
@@ -118,7 +120,7 @@ export function normalizeSpineManifest(value: unknown, fallbackId?: string): Spi
   const optionalPath = (value: unknown): SpineManifestPath | undefined => normalizePath(value, "lobby") ?? undefined;
   const entrySequence = raw.entrySequence === null ? null : text(raw.entrySequence);
   return {
-    schemaVersion: typeof raw.schemaVersion === "number" && Number.isFinite(raw.schemaVersion) ? Math.max(1, Math.trunc(raw.schemaVersion)) : 1,
+    schemaVersion: typeof raw.schemaVersion === "number" && Number.isFinite(raw.schemaVersion) ? Math.max(1, Math.trunc(raw.schemaVersion)) : SPINE_MANIFEST_SCHEMA_VERSION,
     id,
     entrySequence,
     entryMode: raw.entryMode === "runtime-intro" || entrySequence === null ? "runtime-intro" : "authored-sequence",
@@ -144,7 +146,7 @@ export function normalizeSpineCatalog(value: unknown): SpineCatalog | null {
     })
     .filter((entry): entry is [string, SpineCatalogLobby] => entry[1] !== null));
   return {
-    schemaVersion: typeof raw.schemaVersion === "number" && Number.isFinite(raw.schemaVersion) ? Math.max(1, Math.trunc(raw.schemaVersion)) : 1,
+    schemaVersion: typeof raw.schemaVersion === "number" && Number.isFinite(raw.schemaVersion) ? Math.max(1, Math.trunc(raw.schemaVersion)) : SPINE_CATALOG_SCHEMA_VERSION,
     ...(raw.characters && typeof raw.characters === "object" && !Array.isArray(raw.characters) ? { characters: raw.characters as Record<string, unknown> } : {}),
     ...(Array.isArray(raw.unmatched) ? { unmatched: raw.unmatched } : {}),
     lobbies,
