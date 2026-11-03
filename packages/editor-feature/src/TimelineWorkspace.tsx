@@ -36,7 +36,7 @@ import { SubtitleTextEditor } from "./SubtitleTextEditor";
 import { TimelinePanelResizer } from "./TimelinePanelResizer";
 import { TimelineSplitHandle } from "./TimelineSplitHandle";
 import { DEFAULT_TIMELINE_LAYOUT_PREFERENCES, normalizeTimelineLayoutPreferences, TIMELINE_LAYOUT_PREFERENCES_KEY, type TimelineLayoutPreferences } from "./timelineLayout";
-import { zoomTimelineAtCursor } from "./timelineView";
+import { fitTimelineToRange, zoomTimelineAtCursor } from "./timelineView";
 import { audioEnvelopePeaks } from "./audioEnvelope";
 import { missingManifestAssetFiles, validateTimeline, type TimelineDiagnostic } from "./timelineDiagnostics";
 import { IconChevronDown, IconChevronLeft, IconChevronRight, IconEye, IconEyeOff, IconExpand, IconLink, IconLock, IconMinus, IconPause, IconPlay, IconPlus, IconSkipBack, IconSkipForward, IconSound, IconSync, IconUnlock, IconUnlink } from "@ba-spine/app-ui/icons";
@@ -2352,6 +2352,20 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     ["audio", selectedClipDetails.filter((item) => item.kind === "audio").length, "audio"],
   ] as const).filter(([, count]) => count > 0).map(([, count, label]) => `${count} ${label}${count === 1 ? "" : "s"}`).join(" · ");
   const deletableSelectionCount = selectedClipDetails.filter((item) => item.removable).length;
+  function fitTimelineToSelection() {
+    const scroller = scrollRef.current;
+    if (!scroller || selectedClipDetails.length === 0) return;
+    const range = {
+      start: Math.min(...selectedClipDetails.map((item) => item.start)),
+      end: Math.max(...selectedClipDetails.map((item) => item.end)),
+    };
+    const fit = fitTimelineToRange(range, scroller.clientWidth, trackLabelWidth, TIMELINE_SCALE);
+    if (!fit) return;
+    setZoom(fit.zoom);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (scrollRef.current) scrollRef.current.scrollLeft = fit.scrollLeft;
+    }));
+  }
   function reviewTimelineDiagnostic(diagnostic: TimelineDiagnostic) {
     const target = diagnostic.target;
     if (!target) return;
@@ -2542,8 +2556,9 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
          </div>
          <div className="timeline-bottom-tools">
            <label>Snap <select value={timeline.snap} onChange={(event) => updateTimeline((value) => ({ ...value, snap: Number(event.target.value) }))}><option value="0">Off</option><option value="0.01">10 ms</option><option value="0.1">100 ms</option><option value="0.25">250 ms</option><option value="0.5">500 ms</option></select></label>
-             <BoundedSliderField label="Timeline scale" value={zoom} defaultValue={1} min={0.1} max={3} step={0.1} precision={2} unit="×" compact onCommit={setZoom} />
-             <button className="editor-button" onClick={fitTimeline} title="Fit the full sequence in the timeline (F)"><IconExpand /> Fit timeline (F)</button>
+           <BoundedSliderField label="Timeline scale" value={zoom} defaultValue={1} min={0.1} max={3} step={0.1} precision={2} unit="×" compact onCommit={setZoom} />
+           <button className="editor-button" type="button" disabled={!selectedClipDetails.length} onClick={fitTimelineToSelection} title="Fit the selected clips in the timeline">Fit selection</button>
+           <button className="editor-button" onClick={fitTimeline} title="Fit the full sequence in the timeline (F)"><IconExpand /> Fit timeline (F)</button>
              <details ref={addMenuRef} className="timeline-add-menu">
                <summary className="editor-button"><IconPlus /> Add <IconChevronDown /></summary>
                <div className="timeline-add-menu-popover">
