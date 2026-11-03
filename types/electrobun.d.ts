@@ -16,8 +16,28 @@ declare module "electrobun" {
 }
 
 declare module "electrobun/main" {
+  export interface WindowFrame {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }
+
+  export interface Display {
+    id: number;
+    bounds: WindowFrame;
+    workArea: WindowFrame;
+    scaleFactor: number;
+    isPrimary: boolean;
+  }
+
   export const ApplicationMenu: {
     setApplicationMenu(items: unknown[]): void;
+  };
+
+  export const Screen: {
+    getAllDisplays(): Display[];
+    getPrimaryDisplay(): Display;
   };
 
   export class BrowserWindow {
@@ -25,10 +45,14 @@ declare module "electrobun/main" {
     constructor(options: {
       title: string;
       url: string;
-      frame?: { width: number; height: number };
+      frame?: { x?: number; y?: number; width: number; height: number };
     });
     activate(): void;
     isMinimized(): boolean;
+    isMaximized(): boolean;
+    maximize(): void;
+    getFrame(): WindowFrame;
+    on(name: string, handler: (event: { data: unknown }) => void): void;
     show(): void;
     unminimize(): void;
   }

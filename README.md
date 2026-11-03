@@ -34,6 +34,8 @@ The desktop Viewer creates small previews lazily for visible character rows, usi
 
 The desktop Viewer debounces selected-library filesystem events and marks changes as available without interrupting playback. Use **Refresh library** to reload; the current lobby, sequence, playhead, camera, language, voice volume, and playback settings are retained where still valid. The manual action remains available if filesystem watching is unsupported or unavailable.
 
+Viewer and Editor save their window size, position, and maximized state separately in OS app data. On restart, the saved frame is adjusted for the current display scale and clamped to a connected monitor's work area; invalid state or a disconnected display safely falls back to the default/primary display. First-run defaults are also centered and shrunk to fit. This state never touches the asset library.
+
 Automated persistence tests must use synthetic fixtures under `tests/fixtures/` or a disposable copy—not `data/`.
 
 Editor saves stage the project and linked subtitle JSON as one batch, compare each file with its session baseline, and ask before overwriting external edits. Replacements are atomic per file, prior project JSON is kept in a bounded `.editor/backups/` history, and a failed multi-file commit attempts rollback and reports any incomplete rollback. Local recovery snapshots are separate, bounded browser storage; the Editor always prompts before restoring them, and restore marks the project unsaved. Linked subtitle files are not written until **Save to root**.

@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
-import { ApplicationMenu, BrowserWindow, Utils } from "electrobun/main";
+import { ApplicationMenu, BrowserWindow, Screen, Utils } from "electrobun/main";
 import { isPathWithinLibrary, resolveExistingLibraryPath } from "@ba-spine/desktop-host/pathPolicy";
 import { createNodeLibraryReader } from "@ba-spine/desktop-host/nodeLibraryReader";
 import { COMPANION_ACTIVATE_PATH, COMPANION_DRAFT_PATH, COMPANION_HANDOFF_PATH, COMPANION_HEALTH_PATH, CompanionAlreadyRunningError, CompanionInbox, CompanionUnavailableError, readBoundedBody, registerCompanionEndpoint, sendCompanionHandoff, type CompanionRegistration } from "@ba-spine/desktop-host/companion";
@@ -10,6 +10,7 @@ import { libraryIdentityForPath, MAX_SPINE_DRAFT_SNAPSHOT_BYTES, parseHandoffMes
 import { isEditorIgnored, parseEditorIgnore, type EditorIgnoreRule } from "@ba-spine/spine-runtime/spine/editorIgnore";
 import { EditorFileConflictError, saveEditorBatch, type EditorBatchFile } from "@ba-spine/desktop-host/transactionalSave";
 import { SpineEditorMcpBridge } from "./mcpBridge";
+import { defaultDesktopWindowFrame, readDesktopWindowState, restoreDesktopWindowState, startDesktopWindowStatePersistence, type WindowDisplay } from "@ba-spine/desktop-host/windowState";
 
 let assetRoot: string | null = process.env.BA_SPINE_DATA ? resolve(process.env.BA_SPINE_DATA) : null;
 if (assetRoot) {
@@ -338,12 +339,29 @@ if (mcpConnectionFile) {
   process.on("exit", () => mcpBridge.cleanup());
 }
 
+const editorWindowStatePath = join(Utils.paths.appData, "BA Spine Suite", "Editor", "window-state.json");
+function connectedDisplays(): WindowDisplay[] {
+  try {
+    const displays = Screen.getAllDisplays();
+    return displays.length ? displays : [Screen.getPrimaryDisplay()];
+  } catch {
+    try { return [Screen.getPrimaryDisplay()]; } catch { return []; }
+  }
+}
+const initialDisplays = connectedDisplays();
+const editorMinimumWindowSize = { width: 760, height: 560 };
+const restoredWindowState = restoreDesktopWindowState(await readDesktopWindowState(editorWindowStatePath), initialDisplays, editorMinimumWindowSize);
+const defaultWindowFrame = defaultDesktopWindowFrame(initialDisplays, { width: 1440, height: 900 }, editorMinimumWindowSize);
+
+let nativeWindow: BrowserWindow;
 try {
-  window = new BrowserWindow({
+  nativeWindow = new BrowserWindow({
     title: "BA Spine Editor",
     url: `http://${server.hostname}:${server.port}/`,
-    frame: { width: 1440, height: 900 },
+    frame: restoredWindowState?.frame ?? defaultWindowFrame ?? { width: 1440, height: 900 },
   });
+  window = nativeWindow;
+  if (restoredWindowState?.maximized) nativeWindow.maximize();
   console.log(`[ba-spine-editor] window ${window.id} opened`);
 } catch (value) {
   console.error("[ba-spine-editor] native window failed", value);
@@ -352,6 +370,8 @@ try {
   mcpBridge.cleanup();
   throw value;
 }
+
+startDesktopWindowStatePersistence(nativeWindow, editorWindowStatePath, connectedDisplays, (error) => console.warn("[ba-spine-editor] could not save window state", error));
 
 ApplicationMenu.setApplicationMenu([
   {

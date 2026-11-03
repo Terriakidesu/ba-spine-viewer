@@ -2,7 +2,7 @@ import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
 import { extname, join, relative, resolve, sep } from "node:path";
-import { ApplicationMenu, BrowserWindow, Utils } from "electrobun/main";
+import { ApplicationMenu, BrowserWindow, Screen, Utils } from "electrobun/main";
 import { normalizeLibraryRelativePath, resolveLibraryPath } from "@ba-spine/desktop-host/pathPolicy";
 import { createNodeLibraryReader } from "@ba-spine/desktop-host/nodeLibraryReader";
 import { COMPANION_ACTIVATE_PATH, COMPANION_HANDOFF_PATH, COMPANION_HEALTH_PATH, CompanionAlreadyRunningError, CompanionInbox, CompanionUnavailableError, readCompanionDraftSnapshot, registerCompanionEndpoint, sendCompanionHandoff, type CompanionRegistration } from "@ba-spine/desktop-host/companion";
@@ -14,6 +14,7 @@ import { isEditorIgnored, parseEditorIgnore, type EditorIgnoreRule } from "@ba-s
 import { manifestReferenceCandidates, normalizeSpineManifest } from "@ba-spine/spine-runtime/spine/spineManifest";
 import { MAX_VIEWER_THUMBNAIL_BYTES, ViewerThumbnailCache } from "@ba-spine/desktop-host/viewerThumbnailCache";
 import { createDebouncedAction } from "@ba-spine/desktop-host/debouncedAction";
+import { defaultDesktopWindowFrame, readDesktopWindowState, restoreDesktopWindowState, startDesktopWindowStatePersistence, type WindowDisplay } from "@ba-spine/desktop-host/windowState";
 
 let assetRoot: string | null = process.env.BA_SPINE_DATA ? resolve(process.env.BA_SPINE_DATA) : null;
 if (assetRoot) {
@@ -442,11 +443,27 @@ process.on("exit", () => {
   companionRegistration.close();
 });
 
-window = new BrowserWindow({
+const viewerWindowStatePath = join(Utils.paths.appData, "BA Spine Suite", "Viewer", "window-state.json");
+function connectedDisplays(): WindowDisplay[] {
+  try {
+    const displays = Screen.getAllDisplays();
+    return displays.length ? displays : [Screen.getPrimaryDisplay()];
+  } catch {
+    try { return [Screen.getPrimaryDisplay()]; } catch { return []; }
+  }
+}
+const initialDisplays = connectedDisplays();
+const viewerMinimumWindowSize = { width: 760, height: 560 };
+const restoredWindowState = restoreDesktopWindowState(await readDesktopWindowState(viewerWindowStatePath), initialDisplays, viewerMinimumWindowSize);
+const defaultWindowFrame = defaultDesktopWindowFrame(initialDisplays, { width: 1440, height: 940 }, viewerMinimumWindowSize);
+const nativeWindow = new BrowserWindow({
   title: "BA Spine Viewer",
   url: `http://${server.hostname}:${server.port}/`,
-  frame: { width: 1440, height: 940 },
+  frame: restoredWindowState?.frame ?? defaultWindowFrame ?? { width: 1440, height: 940 },
 });
+window = nativeWindow;
+if (restoredWindowState?.maximized) nativeWindow.maximize();
+startDesktopWindowStatePersistence(nativeWindow, viewerWindowStatePath, connectedDisplays, (error) => console.warn("[ba-spine-viewer] could not save window state", error));
 
 ApplicationMenu.setApplicationMenu([
   { label: "BA Spine Viewer", submenu: [{ role: "quit" }] },

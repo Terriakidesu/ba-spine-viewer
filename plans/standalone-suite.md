@@ -168,6 +168,10 @@ The timeline inspector searches English, Japanese, Korean, or all subtitle trans
 
 Interaction-phase, preview, and timeline animation fields use a shared searchable picker with normalized, ranked name matching and arrow/Enter/Escape keyboard navigation. Existing values absent from the loaded rig remain selectable and are visibly marked as missing. Picker filtering does not alter authored values; only choosing an option invokes the existing edit action. Tests cover exact/prefix ranking, normalized matching, empty queries, and missing-name retention.
 
+#### Native window restoration slice (2026-11-04)
+
+Viewer and Editor persist versioned window geometry and maximized state separately under OS app data. Native move/resize events are debounced and the latest captured frame is flushed on close/exit. Restore uses Electrobun's display work areas and scale factors, adjusts dimensions for DPI changes, clamps the complete frame to a connected display, and falls back to a centered, bounded default when the saved monitor or state is unavailable. First-run defaults use the same work-area bounds. Tests cover scale changes, unplugged monitors, small work areas, invalid/oversized files, and event flushing; the Editor root can shrink to a small work area without retaining its fixed minimum width.
+
 ### Editor-to-viewer handoff
 
 - **Open in Viewer** focuses or starts the viewer and opens the selected lobby/sequence.
