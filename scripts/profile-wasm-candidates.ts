@@ -28,13 +28,17 @@ function measure(name: string, run: () => number, iterations: number, warmup = 4
 
 const fiveSeconds = signal(5);
 const tenSeconds = signal(10);
+const fifteenSeconds = signal(15);
 const thirtySeconds = signal(30);
+const representativeTimelineBatch = Array.from({ length: 4 }, () => signal(8));
 const timelineBatch = Array.from({ length: 32 }, () => signal(5));
 
 const results = [
   measure("single decoded 5s mono clip / 160 peaks", () => audioEnvelopePeaks(fiveSeconds).reduce((sum, peak) => sum + peak, 0), 80),
   measure("single decoded 10s mono clip / 160 peaks", () => audioEnvelopePeaks(tenSeconds).reduce((sum, peak) => sum + peak, 0), 60),
+  measure("single decoded 15s mono clip / 160 peaks", () => audioEnvelopePeaks(fifteenSeconds).reduce((sum, peak) => sum + peak, 0), 40),
   measure("single decoded 30s mono clip / 160 peaks", () => audioEnvelopePeaks(thirtySeconds).reduce((sum, peak) => sum + peak, 0), 25),
+  measure("data-informed batch of 4 decoded 8s mono clips", () => representativeTimelineBatch.reduce((sum, channel) => sum + audioEnvelopePeaks(channel).reduce((peaks, peak) => peaks + peak, 0), 0), 30),
   measure("batch of 32 decoded 5s mono clips", () => timelineBatch.reduce((sum, channel) => sum + audioEnvelopePeaks(channel).reduce((peaks, peak) => peaks + peak, 0), 0), 12, 2),
 ];
 

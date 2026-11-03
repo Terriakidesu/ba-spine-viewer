@@ -88,7 +88,7 @@ editor-feature/src/
 
 ### WebAssembly optimization strategy
 
-Use WASM deliberately, behind stable TypeScript interfaces, and only where profiling shows CPU time—not filesystem I/O, Spine rendering, or image/audio decoding—is a material bottleneck. The first candidate is **batch waveform-envelope generation** from already-decoded PCM if/when the editor adds waveform displays. Bulk metadata/project normalization is a secondary candidate only if profiling the real library shows meaningful CPU cost. Do not move directory traversal, filesystem access, WebGL rendering, or native media decoding into WASM.
+Use WASM deliberately, behind stable TypeScript interfaces, and only where profiling shows CPU time—not filesystem I/O, Spine rendering, or image/audio decoding—is a material bottleneck. The Editor already displays timeline waveforms; **batch waveform-envelope generation** from decoded PCM remains the first candidate only if measurements show the current JS/UI path misses frames. Bulk metadata/project normalization is a secondary candidate only if profiling the real library shows meaningful CPU cost. Do not move directory traversal, filesystem access, WebGL rendering, or native media decoding into WASM.
 
 - Establish JavaScript baselines first with representative synthetic fixtures and read-only profiling of `data/`; separate disk time, decode time, UI work, and pure computation.
 - Put Rust source and worker glue in `packages/wasm-kernels/`. Build for `wasm32-unknown-unknown`, bind the small public API with `wasm-bindgen`, and optimize release artifacts. Keep generated `.wasm` output out of Git; package it as a lazy-loaded app resource.
@@ -109,7 +109,15 @@ Use WASM deliberately, behind stable TypeScript interfaces, and only where profi
 | One 30-second clip, 160 peaks | 3.723 ms | 4.583 ms |
 | Synthetic batch of 32 five-second clips | 19.591 ms | 21.240 ms |
 
-Keep WASM deferred: individual clips stay well below a 16.67 ms frame, and the only over-frame result is a deliberately synchronous 32-clip aggregate, not yet observed as one production UI task. Profile actual timeline interaction and decode scheduling before considering worker/WASM batching; any candidate must still beat the JS kernel by the documented gate and demonstrate an end-to-end win.
+Keep WASM deferred. The 32-clip aggregate is deliberately synchronous and not representative of observed project timelines. The Editor computes each waveform on the main thread after `AudioContext.decodeAudioData`; read-only project and decoded-audio samples show the current JS kernel below a frame for the largest observed timeline, but browser decode scheduling and React/UI frame impact are not yet measured. Profile those stages before considering a bounded worker; WASM would still need to beat the JS kernel by the documented gate and demonstrate an end-to-end win.
+
+#### Timeline waveform profiling recheck (2026-11-04)
+
+`TimelineWorkspace` already renders one `AudioWaveform` per timeline clip. It fetches and decodes audio asynchronously, then synchronously runs the production `audioEnvelopePeaks` helper (160 buckets) on the first decoded channel. A read-only aggregate of the local library's authored projects reported 24 projects, 125 sequences, and 168 OGG clip references; timelines had a median of 2 audio clips and a maximum of 4. Authored clip intervals had p50 4.67 s, p95 8.02 s, and maximum 14.08 s. No paths, dialogue, or file contents were recorded.
+
+The reproducible synthetic profile now includes a 15-second clip and a data-informed batch of four 8-second clips. On Bun 1.4.2 / Windows x64 / Intel i3-1115G4, that run measured 3.369 ms median / 7.435 ms p95 for one 15-second envelope; four 8-second envelopes measured 6.681 ms / 13.431 ms. The 32×5-second stress batch measured 46.188 ms / 72.293 ms, but exceeds observed timeline clip counts.
+
+A separate read-only profile decoded the four OGG files referenced by one maximum-size local sequence to 48 kHz PCM with FFmpeg, then timed the production JS helper: the synchronous four-clip batch measured 5.364 ms median / 8.773 ms p95. This excludes `AudioContext` decode, fetch, React work, and actual frame scheduling; it supports keeping WASM deferred, not claiming the complete UI path is proven under budget. A repeatable in-app decode/UI profile is the next evidence gate before adding a worker or WASM kernel.
 
 ## Shared app and data contracts
 
@@ -209,7 +217,7 @@ Viewer and Editor persist versioned window geometry and maximized state separate
 - Save linked files with staging/atomic replacement where supported; validate all outputs before writing and report partial multi-file failures honestly.
 - Recovery autosaves are separate snapshots, not silent canonical-project overwrites. Add bounded backups and an explicit restore prompt.
 - Timeline QoL: range loop/play selection, snapping controls/feedback, exact time fields, duplicate/copy/paste, multi-select, track lock/mute/visibility, zoom-to-selection, and fit timeline.
-- Subtitle/audio QoL: language-aware search, jump-to-cue, viewer-matched subtitle preview, missing-translation visibility, overlap/duplicate checks, linked-file preview, and waveform as a later enhancement.
+- Subtitle/audio QoL: language-aware search, jump-to-cue, viewer-matched subtitle preview, missing-translation visibility, overlap/duplicate checks, linked-file preview, and timeline waveform previews (implemented; see the profiling gate above).
 - Workspace QoL: command palette, searchable animation/bone pickers, panel presets, shortcut help, focus-safe shortcuts, and DPI/monitor-safe window restoration.
 - Validation panel: broken manifest references, missing files/audio, invalid timeline ranges, unknown animations, missing bones, subtitle bounds, and unsupported versions. Repairs require confirmation and should be undoable.
 
