@@ -16,7 +16,7 @@ import {
   EDITOR_VIEW_SETTINGS_KEY,
   normalizeProject,
   normalizeViewSettings,
-  projectStorageKey,
+  LEGACY_EDITOR_SCHEMA_VERSION,
   repairPinchRegions,
   validateProject,
   type EditorValidationWarning,
@@ -30,9 +30,8 @@ import { InteractionPreview, type InteractionPreviewDebug } from "./preview";
 import { hitRegion, inversePoint, regionMatrix, screenToWorld } from "./geometry";
 import { detectHeadRegion, repairPatRegions, type HeadRegion } from "./headRegion";
 import { TimelineWorkspace } from "./TimelineWorkspace";
-import { LEGACY_PROJECT_STORAGE_PREFIX } from "./editorModel";
-import { acknowledgeDesktopHandoff, chooseDesktopProject, chooseDesktopSource, chooseDesktopSourceAt, isDesktopHost, receiveDesktopHandoffs, sendDesktopHandoff, type DesktopAssetSource } from "./desktopSource";
-import { libraryIdentityForPath } from "@ba-spine/platform-contracts/handoff";
+import { acknowledgeDesktopHandoff, chooseDesktopProject, chooseDesktopSource, chooseDesktopSourceAt, DesktopSaveConflictError, isDesktopHost, publishDesktopDraft, receiveDesktopHandoffs, revokeDesktopDraft, sendDesktopHandoff, type DesktopAssetSource, type DesktopSaveFile } from "./desktopSource";
+import { libraryIdentityForPath, type SpineDraftSnapshot } from "@ba-spine/platform-contracts/handoff";
 import { normalizeRecentFiles, RECENT_FILES_KEY, rememberRecentFile, removeRecentFile, type RecentFile, type RecentFileKind } from "./recentFiles";
 import { AssetPickerModal } from "./AssetPickerModal";
 import { BonePicker } from "./BonePicker";
@@ -46,8 +45,10 @@ import { SaveStatus } from "./components/SaveStatus";
 import { WorkspacePresetMenu } from "./components/WorkspacePresetMenu";
 import { suggestInteractionPhases } from "./interactionSuggestions";
 import { characterDirectoryLabel, parseCharacterDirectoryCatalog, type CharacterDirectoryInfo, type CharacterDirectoryLabels } from "./characterCatalog";
-import { editorProjectPath } from "./editorStorage";
-import { pendingProjectForDirectory, readSavedEditorProject, saveManifestEditorProject } from "./editorProject";
+import { captureEditorProjectBaseline, editorProjectDraftValue, pendingProjectForDirectory, prepareEditorProjectSave, readSavedEditorProject, type EditorSaveFile } from "./editorProject";
+import { contentVersion } from "@ba-spine/platform-contracts/contentVersion";
+import { persistRecoverySnapshot, readLegacyRecoveryRecord, readRecoveryRecord, validRecoveryProject } from "./recoverySnapshots";
+import { confirmProjectReplacement } from "./projectReplacement";
 import { isTextEditingTarget } from "./editorKeyboard";
 import "./validationIssues.css";
 import type { EditorMcpCommand, EditorMcpState, EditorMcpTimelineBridge, EditorMcpTimelineSnapshot } from "./editorMcp";
@@ -405,6 +406,8 @@ export function Editor() {
   const [assetPickerOpen, setAssetPickerOpen] = useState(false);
   const [initialTimelineHandoff, setInitialTimelineHandoff] = useState<{ requestId: string; sequenceId: string; playheadSeconds?: number } | null>(null);
   const [companionStatus, setCompanionStatus] = useState<string | null>(null);
+  const [draftPreviewSessionId, setDraftPreviewSessionId] = useState<string | null>(null);
+  const draftPreviewSessionRef = useRef<{ sessionId: string; rootPath: string; lobbyId: string; revision: number } | null>(null);
   const [previewStatus, setPreviewStatus] = useState("Idle");
   const [source, setSource] = useState<DesktopAssetSource | null>(null);
   const [directories, setDirectories] = useState<string[]>([]);
@@ -419,9 +422,10 @@ export function Editor() {
   const [speed, setSpeed] = useState(1);
   const [selectedAnimation, setSelectedAnimation] = useState("");
   const [project, setProject] = useState<EditorProject | null>(null);
-  const timelineSaveRef = useRef<((getProject: () => EditorProject | null) => Promise<string[]>) | null>(null);
+  const timelineSaveRef = useRef<((getProject: () => EditorProject | null) => Promise<EditorSaveFile[]>) | null>(null);
   const workspaceRef = useRef<"interaction" | "timeline">(workspace);
   const sourceRef = useRef<DesktopAssetSource | null>(source);
+  const saveBaselineRef = useRef<{ rootPath: string; directory: string; versions: Record<string, string> } | null>(null);
   const projectSaveQueueRef = useRef(Promise.resolve());
   const pendingProjectRef = useRef<EditorProject | null>(null);
   const handledHandoffIdsRef = useRef(new Set<string>());
@@ -436,6 +440,7 @@ export function Editor() {
   const [assetLoading, setAssetLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState<SpineLoadProgress>({ stage: "files", loaded: 0, total: 0 });
   const [saveState, setSaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
+  const [recoveryPrompt, setRecoveryPrompt] = useState<{ rootPath: string; directory: string; current: EditorProject | null; backups: EditorProject[]; savedAt: number } | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>(() => readRecentFiles());
   const [pendingSubtitlePath, setPendingSubtitlePath] = useState<string | null>(null);
@@ -451,6 +456,7 @@ export function Editor() {
   const mcpRuntimeErrorsRef = useRef<Array<{ time: string; message: string }>>([]);
   const saveStateRef = useRef(saveState);
   const saveResultRef = useRef<{ ok: boolean; error: string | null } | null>(null);
+  const recoveryPromptRef = useRef<{ rootPath: string; directory: string; current: EditorProject | null; backups: EditorProject[]; savedAt: number } | null>(null);
 
   projectRef.current = project;
   directoryRef.current = directory;
@@ -634,26 +640,37 @@ export function Editor() {
     if (timelineMode && (!projectRef.current || projectRef.current.assetDirectory !== directoryRef.current || initializedAssetRef.current !== key)) setFrame(value);
     if (loadedMeta && key !== initializedAssetRef.current) {
       initializedAssetRef.current = key;
-      let restored: EditorProject | null = null;
-      try {
-         const stored = localStorage.getItem(projectStorageKey(directoryRef.current))
-           ?? localStorage.getItem(`${LEGACY_PROJECT_STORAGE_PREFIX}${directoryRef.current}`);
-        restored = stored ? normalizeProject(JSON.parse(stored) as unknown, directoryRef.current) : null;
-      } catch {
-        restored = null;
-      }
-       const original = restored ?? createProject(directoryRef.current, loadedMeta.animations, value.bones);
+       let recovery: ReturnType<typeof readRecoveryRecord> = null;
+       try {
+         recovery = readRecoveryRecord(localStorage, directoryRef.current)
+           ?? readLegacyRecoveryRecord(localStorage, `shittim-spine-editor:v${LEGACY_EDITOR_SCHEMA_VERSION}:${directoryRef.current}`);
+       } catch {
+         recovery = null;
+       }
+        const original = createProject(directoryRef.current, loadedMeta.animations, value.bones);
         const pending = pendingProjectForDirectory(pendingProjectRef.current, directoryRef.current);
-       if (pending) pendingProjectRef.current = null;
-       const loadedProject = pending ?? original;
-       const repair = repairPatRegions(loadedProject, headRegionRef.current);
-      const pinchRepair = repairPinchRegions(repair.project, value.bones);
-      const next = withCurrentViewSettings(pinchRepair.project);
-      projectRef.current = next;
-      setProject(next);
-      setUndo(restored && repair.repaired ? [restored] : []);
-      setRedo([]);
-      setStatus(repair.repaired ? `${restored ? "Restored project; repaired" : "Detected"} ${repair.repaired} head region(s). Custom regions kept.` : repair.unresolved ? "Head detection needs review. Uncertain default patting regions were disabled, not guessed." : restored ? "Restored local project." : "Created detected interaction presets.");
+        if (pending) pendingProjectRef.current = null;
+        const loadedProject = pending ?? original;
+        const repair = repairPatRegions(loadedProject, headRegionRef.current);
+       const pinchRepair = repairPinchRegions(repair.project, value.bones);
+       const next = withCurrentViewSettings(pinchRepair.project);
+       const recoveryProject = recovery && validRecoveryProject(recovery.current.project, directoryRef.current)
+         ? normalizeProject(recovery.current.project, directoryRef.current)
+         : null;
+       const recoveryBackups = recovery?.backups.flatMap((item) => validRecoveryProject(item.project, directoryRef.current)
+         ? [normalizeProject(item.project, directoryRef.current)].filter((item): item is EditorProject => item !== null)
+         : []) ?? [];
+       const differsFromLoaded = recoveryProject && JSON.stringify(recoveryProject) !== JSON.stringify(next);
+       const prompt = differsFromLoaded || recoveryBackups.length > 0
+         ? { rootPath: sourceRef.current?.rootPath ?? "", directory: directoryRef.current, current: recoveryProject, backups: recoveryBackups, savedAt: recovery?.current.savedAt ?? 0 }
+         : null;
+       recoveryPromptRef.current = prompt;
+       setRecoveryPrompt(prompt);
+       projectRef.current = next;
+       setProject(next);
+       setUndo(repair.repaired ? [loadedProject] : []);
+       setRedo([]);
+       setStatus(repair.repaired ? `${pending ? "Loaded project; repaired" : "Detected"} ${repair.repaired} head region(s). Custom regions kept.` : repair.unresolved ? "Head detection needs review. Uncertain default patting regions were disabled, not guessed." : pending ? "Loaded saved project." : "Created detected interaction presets.");
     }
   };
 
@@ -748,9 +765,14 @@ export function Editor() {
     // Directory selection commits before the new asset/project finishes loading.
     // Never autosave the previous student's project under the new student's key.
     if (!project || !directory || project.assetDirectory !== directory) return;
-    try { localStorage.setItem(projectStorageKey(directory), JSON.stringify(project)); }
-    catch { setError("Recovery storage is unavailable. Save files to keep your changes."); }
-  }, [project, directory]);
+    const pendingRecovery = recoveryPromptRef.current;
+    if (pendingRecovery && pendingRecovery.rootPath === source?.rootPath && pendingRecovery.directory === directory) return;
+    const timer = window.setTimeout(() => {
+      try { persistRecoverySnapshot(localStorage, project); }
+      catch { setError("Local recovery storage is unavailable or full. Save files to keep your changes."); }
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [project, directory, recoveryPrompt, source?.rootPath]);
 
   useEffect(() => {
     if (!viewSettings) return;
@@ -766,7 +788,7 @@ export function Editor() {
 
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
-      if (saveState !== "dirty") return;
+      if (saveState !== "dirty" && saveState !== "error" && saveState !== "saving") return;
       event.preventDefault();
       event.returnValue = "";
     };
@@ -850,9 +872,7 @@ export function Editor() {
   }
 
   async function confirmOpen(): Promise<boolean> {
-    if (saveState !== "dirty") return true;
-    if (!window.confirm("This project has unsaved changes. Open another file without saving?")) return false;
-    return true;
+    return confirmProjectReplacement(saveState, () => window.confirm("This project has unsaved changes. Open another file without saving?"));
   }
 
   async function useSource(next: DesktopAssetSource, preferredDirectory?: string) {
@@ -877,6 +897,13 @@ export function Editor() {
     if (!pending || pending.assetDirectory !== selectedDirectory) {
       pendingProjectRef.current = await readSavedEditorProject(next, selectedDirectory, (message) => setError(message));
     }
+    const baselineProject = pendingProjectRef.current ?? createProject(selectedDirectory, [], []);
+    saveBaselineRef.current = {
+      rootPath: next.rootPath,
+      directory: selectedDirectory,
+      versions: await captureEditorProjectBaseline(next, baselineProject),
+    };
+    timelineSaveRef.current = null;
     setSource(next);
     setDirectories(found);
     setDirectoryLabels(characterCatalog.labels);
@@ -886,6 +913,14 @@ export function Editor() {
     setError(null);
     setSaveState("idle");
     setSavedAt(null);
+  }
+
+  function stopDraftPreview(status?: string) {
+    const active = draftPreviewSessionRef.current;
+    draftPreviewSessionRef.current = null;
+    setDraftPreviewSessionId(null);
+    if (active) void revokeDesktopDraft(active.sessionId).catch(() => undefined);
+    if (status) setCompanionStatus(status);
   }
 
   async function previewSavedInViewer() {
@@ -912,6 +947,93 @@ export function Editor() {
     }
   }
 
+  async function previewUnsavedDraftInViewer() {
+    const current = projectRef.current;
+    const currentSource = sourceRef.current;
+    const currentDirectory = directoryRef.current;
+    if (!current || !currentSource || !currentDirectory || current.assetDirectory !== currentDirectory || saveStateRef.current === "saving") return;
+    if (saveStateRef.current !== "dirty" && saveStateRef.current !== "error") {
+      setCompanionStatus("Make an unsaved project change before previewing a draft.");
+      return;
+    }
+    const sessionId = `draft_${globalThis.crypto.randomUUID()}`;
+    const revision = 1;
+    try {
+      stopDraftPreview();
+      const snapshot: SpineDraftSnapshot = {
+        protocolVersion: 1,
+        sessionId,
+        library: {
+          identity: await libraryIdentityForPath(currentSource.rootPath),
+          path: currentSource.rootPath,
+        },
+        lobbyId: currentDirectory,
+        revision,
+        project: editorProjectDraftValue(current),
+      };
+      await publishDesktopDraft(snapshot);
+      draftPreviewSessionRef.current = { sessionId, rootPath: currentSource.rootPath, lobbyId: currentDirectory, revision };
+      setDraftPreviewSessionId(sessionId);
+      const timelineSnapshot = mcpTimelineSnapshotRef.current;
+      const sequenceId = timelineSnapshot?.sequenceId ?? current.timeline.sequenceId ?? undefined;
+      await sendDesktopHandoff({
+        protocolVersion: 1,
+        requestId: globalThis.crypto.randomUUID(),
+        targetApp: "viewer",
+        library: snapshot.library,
+        lobbyId: currentDirectory,
+        ...(sequenceId ? { sequenceId } : {}),
+        ...(timelineSnapshot && Number.isFinite(timelineSnapshot.currentTime) ? { playheadSeconds: Math.max(0, timelineSnapshot.currentTime) } : {}),
+        draft: { sessionId },
+      });
+      setCompanionStatus("Unsaved draft sent to BA Spine Viewer. It is read-only and remains in memory only.");
+    } catch (reason) {
+      if (draftPreviewSessionRef.current?.sessionId === sessionId) stopDraftPreview();
+      else void revokeDesktopDraft(sessionId).catch(() => undefined);
+      setCompanionStatus(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  useEffect(() => {
+    if (!draftPreviewSessionId) return;
+    const session = draftPreviewSessionRef.current;
+    if (!session) return;
+    if (session.rootPath !== source?.rootPath || session.lobbyId !== directory) {
+      stopDraftPreview("Draft preview ended because the Editor selection changed.");
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const active = draftPreviewSessionRef.current;
+      const current = projectRef.current;
+      if (!active || !current || active.sessionId !== draftPreviewSessionId || current.assetDirectory !== active.lobbyId) return;
+      const revision = active.revision + 1;
+      active.revision = revision;
+      void (async () => {
+        const snapshot: SpineDraftSnapshot = {
+          protocolVersion: 1,
+          sessionId: active.sessionId,
+          library: { identity: await libraryIdentityForPath(active.rootPath), path: active.rootPath },
+          lobbyId: active.lobbyId,
+          revision,
+          project: editorProjectDraftValue(current),
+        };
+        await publishDesktopDraft(snapshot);
+      })().catch((reason: unknown) => {
+        if (draftPreviewSessionRef.current?.sessionId === draftPreviewSessionId) {
+          stopDraftPreview("Draft preview update failed and was stopped.");
+        }
+        setCompanionStatus(`Draft preview update failed: ${reason instanceof Error ? reason.message : String(reason)}`);
+      });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [directory, draftPreviewSessionId, project, source]);
+
+  useEffect(() => () => {
+    const active = draftPreviewSessionRef.current;
+    draftPreviewSessionRef.current = null;
+    if (active) void revokeDesktopDraft(active.sessionId).catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     if (!isDesktopHost()) return;
     let live = true;
@@ -928,7 +1050,7 @@ export function Editor() {
           }
           try {
             if (!(await confirmOpen())) {
-              setStatus("Handoff dismissed; the unsaved project was kept.");
+              setStatus("Handoff canceled; the current project was kept.");
               continue;
             }
             const next = await chooseDesktopSourceAt(message.library.path);
@@ -936,6 +1058,7 @@ export function Editor() {
             if (await libraryIdentityForPath(next.rootPath) !== message.library.identity) {
               throw new Error("The library identity does not match the handoff path.");
             }
+            if (draftPreviewSessionRef.current) stopDraftPreview("Draft preview ended because the Editor opened another selection.");
             pendingProjectRef.current = null;
             setPendingSubtitlePath(null);
             setPendingAudioPaths(null);
@@ -1048,9 +1171,18 @@ export function Editor() {
 
   async function changeDirectory(next: string) {
     if (!next || next === directory) return;
-    if (saveState === "dirty" && !window.confirm("This project has unsaved changes. Switch asset sets without saving?")) return;
+    if (!(await confirmOpen())) return;
     try {
       pendingProjectRef.current = source ? await readSavedEditorProject(source, next, (message) => setError(message)) : null;
+      if (source) {
+        const baselineProject = pendingProjectRef.current ?? createProject(next, [], []);
+        saveBaselineRef.current = {
+          rootPath: source.rootPath,
+          directory: next,
+          versions: await captureEditorProjectBaseline(source, baselineProject),
+        };
+      }
+      timelineSaveRef.current = null;
       setDirectory(next);
       setSaveState("idle");
       setSavedAt(null);
@@ -1135,25 +1267,64 @@ export function Editor() {
       setError(null);
       try {
         const getCurrentProject = () => projectRef.current ?? current;
-        const subtitlePaths = await timelineSaveRef.current?.(getCurrentProject) ?? [];
+        const subtitleWrites = await timelineSaveRef.current?.(getCurrentProject) ?? [];
         const latest = getCurrentProject();
         if (sourceRef.current !== saveSource || directoryRef.current !== saveDirectory || latest.assetDirectory !== saveDirectory) return;
-        const manifestSave = await saveManifestEditorProject(saveSource, latest);
-        const projectPath = manifestSave?.manifestPath ?? editorProjectPath(saveDirectory);
-        if (!manifestSave) await saveSource.saveText(projectPath, `${JSON.stringify(latest, null, 2)}\n`);
+        const prepared = await prepareEditorProjectSave(saveSource, latest);
+        const writesByPath = new Map<string, EditorSaveFile>();
+        for (const file of [...prepared.files, ...subtitleWrites]) {
+          const prior = writesByPath.get(file.path);
+          if (prior && prior.content !== file.content) throw new Error(`The save plan contains conflicting output for ${file.path}.`);
+          writesByPath.set(file.path, prior ?? file);
+        }
+        const baseline = saveBaselineRef.current?.rootPath === saveSource.rootPath && saveBaselineRef.current.directory === saveDirectory
+          ? saveBaselineRef.current.versions
+          : await captureEditorProjectBaseline(saveSource, latest);
+        const writes: DesktopSaveFile[] = [...writesByPath.values()].map((file) => ({
+          path: file.path,
+          content: file.content,
+          expectedVersion: baseline[file.path]
+            ?? (file.baselineContent !== undefined ? contentVersion(file.baselineContent) : contentVersion(null)),
+        }));
+        let saveResult: { backupPath: string | null };
+        try {
+          saveResult = await saveSource.saveBatch(writes);
+        } catch (value) {
+          if (!(value instanceof DesktopSaveConflictError)) throw value;
+          const changedPaths = Object.keys(value.currentVersions);
+          const decision = window.confirm(
+            `These project files changed outside the Editor:\n\n${changedPaths.join("\n")}\n\nOverwrite exactly the versions detected now? Choose Cancel to keep your files unchanged.`,
+          );
+          if (!decision) throw new Error("Save canceled; external changes were preserved.");
+          saveResult = await saveSource.saveBatch(writes, value.currentVersions);
+        }
+        const projectPath = prepared.manifestSave?.manifestPath ?? prepared.files[0]?.path ?? "";
         recordRecentFile({ kind: "project", path: projectPath, rootPath: saveSource.rootPath, label: displayName(projectPath), directory: saveDirectory });
-        setSaveState("saved");
-        setSavedAt(Date.now());
+        const nextBaseline = { ...baseline };
+        for (const file of writes) nextBaseline[file.path] = contentVersion(file.content);
+        saveBaselineRef.current = { rootPath: saveSource.rootPath, directory: saveDirectory, versions: nextBaseline };
+        const unchangedSinceSave = projectRef.current === latest;
+        setSaveState(unchangedSinceSave ? "saved" : "dirty");
+        if (unchangedSinceSave) setSavedAt(Date.now());
         saveResultRef.current = { ok: true, error: null };
+        if (unchangedSinceSave && draftPreviewSessionRef.current) stopDraftPreview("Draft preview ended after saving; Viewer will return to saved files.");
+        const subtitlePaths = subtitleWrites.map((file) => file.path);
         const subtitleMessage = subtitlePaths.length > 0
-          ? ` · Linked subtitles: ${subtitlePaths.map((path) => nativePath(saveSource.rootPath, path)).join(", ")}`
+          ? ` · Linked subtitles: ${[...new Set(subtitlePaths)].map((path) => nativePath(saveSource.rootPath, path)).join(", ")}`
           : " · No linked subtitle files";
-        setStatus(`${manifestSave ? "Saved manifest project" : "Saved project"}: ${nativePath(saveSource.rootPath, projectPath)}${subtitleMessage}`);
+        const backupMessage = saveResult.backupPath ? ` · Backup: ${saveResult.backupPath}` : " · No prior files needed backup";
+        setStatus(`${prepared.manifestSave ? "Saved manifest project" : "Saved project"}: ${nativePath(saveSource.rootPath, projectPath)}${subtitleMessage}${backupMessage}${unchangedSinceSave ? "" : " · Newer edits remain unsaved"}`);
       } catch (value) {
-        setSaveState("error");
         const message = value instanceof Error ? value.message : String(value);
         saveResultRef.current = { ok: false, error: message };
-        setError(message);
+        if (message.startsWith("Save canceled;")) {
+          setSaveState("dirty");
+          setError(null);
+          setStatus(message);
+        } else {
+          setSaveState("error");
+          setError(message);
+        }
       }
     };
     const queued = projectSaveQueueRef.current.then(save, save);
@@ -1161,10 +1332,29 @@ export function Editor() {
     return queued;
   }
 
+  function dismissRecoveryPrompt() {
+    recoveryPromptRef.current = null;
+    setRecoveryPrompt(null);
+  }
+
+  function restoreRecoveryProject(candidate: EditorProject, label: string) {
+    if (candidate.assetDirectory !== directoryRef.current || recoveryPromptRef.current?.rootPath !== sourceRef.current?.rootPath) return;
+    const restored = withCurrentViewSettings(cloneProject(candidate));
+    recoveryPromptRef.current = null;
+    setRecoveryPrompt(null);
+    projectRef.current = restored;
+    setProject(restored);
+    setUndo([]);
+    setRedo([]);
+    setSaveState("dirty");
+    setSavedAt(null);
+    setStatus(`${label} restored as an unsaved draft. Save explicitly to write it to the library.`);
+  }
+
   mcpCommandRef.current = async (command) => {
     switch (command.name) {
       case "open_asset_root": {
-        if (saveStateRef.current === "dirty" || saveStateRef.current === "saving") throw new Error("Save the current project before opening another asset root.");
+        if (saveStateRef.current === "dirty" || saveStateRef.current === "saving" || saveStateRef.current === "error") throw new Error("Save the current project before opening another asset root.");
         const next = await chooseDesktopSourceAt(command.rootPath);
         if (!next) throw new Error("The asset root could not be opened.");
         pendingProjectRef.current = null;
@@ -1176,7 +1366,7 @@ export function Editor() {
         return { assetRoot: next.rootPath, status: "Loading asset root." };
       }
       case "select_asset_set": {
-        if (saveStateRef.current === "dirty" || saveStateRef.current === "saving") throw new Error("Save the current project before switching asset sets.");
+        if (saveStateRef.current === "dirty" || saveStateRef.current === "saving" || saveStateRef.current === "error") throw new Error("Save the current project before switching asset sets.");
         if (!sourceRef.current) throw new Error("Open an asset root first.");
         if (!directories.includes(command.directory)) throw new Error(`Asset set not found: ${command.directory}`);
         setAssetLoading(true);
@@ -1588,12 +1778,22 @@ export function Editor() {
             </div>
           </details>
           {isDesktopHost() && source && <button className="editor-button" type="button" onClick={() => void previewSavedInViewer()} disabled={!assetLoaded || saveState === "saving"} title="Save changes before previewing the saved library files in BA Spine Viewer">Preview saved in Viewer</button>}
+          {isDesktopHost() && source && <button className="editor-button" type="button" onClick={() => void previewUnsavedDraftInViewer()} disabled={!assetLoaded || (saveState !== "dirty" && saveState !== "error")} title="Send a read-only, in-memory snapshot of the current project to BA Spine Viewer">Preview unsaved draft in Viewer</button>}
+          {draftPreviewSessionId && <button className="editor-button" type="button" onClick={() => stopDraftPreview("Draft preview ended; Viewer will return to saved files.")}>Stop draft preview</button>}
             <SaveStatus state={saveState} savedAt={savedAt} hasProject={Boolean(project)} />
            <button className="editor-button editor-save-button" onClick={() => void saveProject()} disabled={!assetLoaded || saveState === "saving"} title="Write the project and linked subtitles to the selected asset root">Save to root</button>
           <button className="editor-button" onClick={() => setHelp((value) => !value)} title="Keyboard shortcuts (?)">? Help</button>
         </div>
       </header>
       {companionStatus && <div role="status" className="editor-companion-status">{companionStatus}</div>}
+      {recoveryPrompt && recoveryPrompt.rootPath === source?.rootPath && recoveryPrompt.directory === directory && <section className="editor-recovery-prompt" role="region" aria-label="Project recovery">
+        <div><strong>Local recovery snapshots found</strong><span>Nothing was restored automatically. Choose a snapshot to restore as an unsaved draft, or dismiss.</span></div>
+        <div className="editor-recovery-actions">
+          {recoveryPrompt.current && <button type="button" onClick={() => restoreRecoveryProject(recoveryPrompt.current!, "Latest recovery snapshot")}>Restore latest ({recoveryPrompt.savedAt ? new Date(recoveryPrompt.savedAt).toLocaleString() : "legacy snapshot"})</button>}
+          {recoveryPrompt.backups[0] && <button type="button" onClick={() => restoreRecoveryProject(recoveryPrompt.backups[0]!, "Previous recovery backup")}>Restore previous backup</button>}
+          <button type="button" onClick={dismissRecoveryPrompt}>Dismiss</button>
+        </div>
+      </section>}
       <AssetPickerModal open={assetPickerOpen} title="Switch character or asset set" eyebrow="CHARACTER / ASSET SET" description="Search the loaded Spine catalog, then choose the set to edit." directories={directories} selected={directory} assetRoot={source?.rootPath ?? ""} directoryInfo={directoryInfo} renderLabel={(item) => characterDirectoryLabel(item, directoryLabels)} getSearchText={(item) => characterDirectoryLabel(item, directoryLabels)} onClose={() => setAssetPickerOpen(false)} onSelect={(next) => { setAssetPickerOpen(false); void changeDirectory(next); }} />
       <CommandPalette open={commandPaletteOpen} commands={commandPaletteCommands} onClose={() => setCommandPaletteOpen(false)} />
 

@@ -1,7 +1,8 @@
 import type { SpineFiles } from "@ba-spine/spine-runtime/spine/spineRuntime";
 import type { AssetSource } from "@ba-spine/spine-runtime/spine/spineAssets";
 import { normalizeSpineManifest, type SpineManifestRecord } from "@ba-spine/spine-runtime/spine/spineManifest";
-import { parseHandoffMessage, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
+import { parseHandoffMessage, parseSpineDraftSnapshot, type SpineDraftSnapshot, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
+import { contentVersion } from "@ba-spine/platform-contracts/contentVersion";
 
 declare global {
   interface Window {
@@ -17,6 +18,19 @@ export interface DesktopTextFile {
   content: string;
 }
 
+export interface DesktopSaveFile {
+  path: string;
+  content: string;
+  expectedVersion: string;
+}
+
+export class DesktopSaveConflictError extends Error {
+  constructor(readonly currentVersions: Record<string, string>) {
+    super(`External changes detected in: ${Object.keys(currentVersions).join(", ")}`);
+    this.name = "DesktopSaveConflictError";
+  }
+}
+
 export interface DesktopAssetSource extends AssetSource {
   readonly desktop: true;
   readonly rootPath: string;
@@ -25,6 +39,7 @@ export interface DesktopAssetSource extends AssetSource {
   readText: (path: string) => Promise<string | null>;
   openAudio: () => Promise<string[]>;
   saveText: (path: string, content: string) => Promise<void>;
+  saveBatch: (files: readonly DesktopSaveFile[], overwriteVersions?: Readonly<Record<string, string>>) => Promise<{ backupPath: string | null }>;
 }
 
 export function isDesktopHost(): boolean {
@@ -36,7 +51,10 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   if (typeof window !== "undefined" && window.__BA_SPINE_HOST_TOKEN__) headers.set("x-ba-spine-token", window.__BA_SPINE_HOST_TOKEN__);
   const response = await fetch(path, { ...init, headers });
   if (!response.ok) {
-    const body = await response.json().catch(() => ({})) as { error?: string };
+    const body = await response.json().catch(() => ({})) as { error?: string; currentVersions?: unknown };
+    if (response.status === 409 && body.currentVersions && typeof body.currentVersions === "object" && !Array.isArray(body.currentVersions)) {
+      throw new DesktopSaveConflictError(Object.fromEntries(Object.entries(body.currentVersions).filter((entry): entry is [string, string] => typeof entry[1] === "string")));
+    }
     throw new Error(body.error ?? `Desktop editor request failed (${response.status}).`);
   }
   return response;
@@ -97,6 +115,22 @@ export async function sendDesktopHandoff(message: SpineHandoffMessage): Promise<
   });
 }
 
+export async function publishDesktopDraft(snapshot: SpineDraftSnapshot): Promise<void> {
+  await request("/__spine/companion/draft-publish", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(parseSpineDraftSnapshot(snapshot)),
+  });
+}
+
+export async function revokeDesktopDraft(sessionId: string): Promise<void> {
+  await request("/__spine/companion/draft-revoke", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId }),
+  });
+}
+
 export function sourceFromDesktop(rootPath: string): DesktopAssetSource {
   let catalogPromise: Promise<Catalog> | null = null;
   const manifestPromises = new Map<string, Promise<SpineManifestRecord | null>>();
@@ -128,6 +162,10 @@ export function sourceFromDesktop(rootPath: string): DesktopAssetSource {
       return null;
     })();
     manifestPromises.set(directory, promise);
+    void promise.then(
+      () => { if (manifestPromises.get(directory) === promise) manifestPromises.delete(directory); },
+      () => { if (manifestPromises.get(directory) === promise) manifestPromises.delete(directory); },
+    );
     return promise;
   })();
   return {
@@ -164,7 +202,23 @@ export function sourceFromDesktop(rootPath: string): DesktopAssetSource {
       return Array.isArray(selected.paths) ? selected.paths.filter((path): path is string => typeof path === "string") : [];
     },
     saveText: async (path, content) => {
-      await request("/__spine/save", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path, content }) });
+      const original = await (async () => {
+        const file = await loadFile(path);
+        return file ? file.text() : null;
+      })();
+      await request("/__spine/save-batch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ files: [{ path, content, expectedVersion: contentVersion(original) }] }),
+      });
+    },
+    saveBatch: async (files, overwriteVersions = {}) => {
+      const result = await request("/__spine/save-batch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ files, overwriteVersions }),
+      }).then((response) => response.json()) as { backupPath?: unknown };
+      return { backupPath: typeof result.backupPath === "string" ? result.backupPath : null };
     },
   };
 }

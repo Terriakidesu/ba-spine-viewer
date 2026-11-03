@@ -16,6 +16,7 @@ import {
 } from "./editorModel";
 import type { DesktopAssetSource } from "./desktopSource";
 import { manifestReferenceCandidates } from "@ba-spine/spine-runtime/spine/spineManifest";
+import type { EditorSaveFile } from "./editorProject";
 import { audioPlaybackDecision, clampAudioEnd, clampAudioStart, decodedAudioTiming } from "./audioModel";
 import { animationClipEnd, animationEndForLayer, authoredTimelineEnd, deleteAnimationClipRipple, duplicateAnimationClipRipple, effectiveAnimationClips, extendTimelineDuration, insertAnimationClipRipple, linkAudioToSubtitle, linkedSubtitleForAudio, matchAudioAndSubtitleLength, moveAnimationClipRipple, nextTalkSequenceId, openingTimelineDuration, replaceSubtitleImport, resolveTimelineSnap, snapToTargets, splitCue, switchSequence, talkSequenceId } from "./sequenceModel";
 import { advanceSpineTimeline, normalizeColorClipFades, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineLayerAnimation, timelineMainAnimation, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimelineAudioPreloadState } from "@ba-spine/spine-runtime/spine/spineTimeline";
@@ -36,6 +37,7 @@ import { TimelinePanelResizer } from "./TimelinePanelResizer";
 import { TimelineSplitHandle } from "./TimelineSplitHandle";
 import { DEFAULT_TIMELINE_LAYOUT_PREFERENCES, normalizeTimelineLayoutPreferences, TIMELINE_LAYOUT_PREFERENCES_KEY, type TimelineLayoutPreferences } from "./timelineLayout";
 import { zoomTimelineAtCursor } from "./timelineView";
+import { audioEnvelopePeaks } from "./audioEnvelope";
 import { IconChevronDown, IconChevronLeft, IconChevronRight, IconEye, IconEyeOff, IconExpand, IconLink, IconLock, IconMinus, IconPause, IconPlay, IconPlus, IconSkipBack, IconSkipForward, IconSound, IconSync, IconUnlock, IconUnlink } from "@ba-spine/app-ui/icons";
 import "./timelineSnapFeedback.css";
 
@@ -61,15 +63,7 @@ function AudioWaveform({ url, onDuration }: { url?: string; onDuration?: (durati
     void fetch(url).then((response) => response.arrayBuffer()).then((bytes) => context.decodeAudioData(bytes)).then((buffer) => {
       if (!live) return;
       onDurationRef.current?.(buffer.duration);
-      const channel = buffer.getChannelData(0);
-      const samples = Array.from({ length: 160 }, (_, index) => {
-        const start = Math.floor(index * channel.length / 160);
-        const end = Math.floor((index + 1) * channel.length / 160);
-        let peak = 0;
-        for (let sample = start; sample < end; sample++) peak = Math.max(peak, Math.abs(channel[sample]!));
-        return peak;
-      });
-      setPeaks(samples);
+      setPeaks(audioEnvelopePeaks(buffer.getChannelData(0)));
     }).catch(() => undefined).finally(() => { void context.close(); });
     return () => { live = false; };
   }, [url]);
@@ -93,7 +87,7 @@ interface TimelineWorkspaceProps {
   onLive: (mutator: (current: EditorProject) => EditorProject) => void;
   onBeginEdit: () => void;
   onSave: () => void | Promise<void>;
-  onRegisterSave: (callback: ((getProject: () => EditorProject | null) => Promise<string[]>) | null) => void;
+  onRegisterSave: (callback: ((getProject: () => EditorProject | null) => Promise<EditorSaveFile[]>) | null) => void;
   onStatus: (value: string) => void;
   onError: (value: string | null) => void;
   onRegisterMcp: (bridge: EditorMcpTimelineBridge | null) => void;
@@ -332,15 +326,15 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
   const trackLabelResizeRef = useRef<TrackLabelResizeState | null>(null);
   const trackDragRef = useRef<string | null>(null);
   const subtitleDocumentsRef = useRef<Record<string, Record<string, unknown>>>({});
+  const subtitleOriginalsRef = useRef<Record<string, string | null>>({});
   const projectRef = useRef<EditorProject | null>(project);
   const sourceRef = useRef<DesktopAssetSource | null>(source);
   const directoryRef = useRef(directory);
-  const subtitleSaveQueueRef = useRef(Promise.resolve());
   const currentTimeRef = useRef(currentTime);
   const talkAutoplayTimerRef = useRef<number | null>(null);
   const onMutateRef = useRef(onMutate);
   const sequenceContextRef = useRef({ animations: [] as string[], directories: [] as string[] });
-  const saveSubtitleDocumentsRef = useRef<(getProject: () => EditorProject | null) => Promise<string[]>>(async () => []);
+  const saveSubtitleDocumentsRef = useRef<(getProject: () => EditorProject | null) => Promise<EditorSaveFile[]>>(async () => []);
   const onRegisterSaveRef = useRef(onRegisterSave);
   const timelineKeydownRef = useRef<(event: KeyboardEvent) => void>(() => undefined);
   const openedSubtitleRef = useRef("");
@@ -1217,6 +1211,7 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
 
   useEffect(() => {
     subtitleDocumentsRef.current = {};
+    subtitleOriginalsRef.current = {};
   }, [directory, source]);
 
   useEffect(() => {
@@ -1348,46 +1343,44 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
       .map(([, timeline]) => timeline)];
   }
 
-  async function saveSubtitleDocuments(getProject: () => EditorProject | null = () => projectRef.current): Promise<string[]> {
-    const save = async (): Promise<string[]> => {
+  async function saveSubtitleDocuments(getProject: () => EditorProject | null = () => projectRef.current): Promise<EditorSaveFile[]> {
       const current = getProject();
       const currentSource = sourceRef.current;
       if (!current || !currentSource) return [];
       const timelines = projectTimelines(current);
       const paths = new Set(timelines.map((item) => item.subtitlePath).filter((path): path is string => Boolean(path)));
-      const saved: string[] = [];
+      const writes: EditorSaveFile[] = [];
       for (const path of paths) {
         let document = subtitleDocumentsRef.current[path];
         if (!document) {
           const file = await currentSource.getFile(path);
           if (!file) throw new Error(`Linked subtitle file not found: ${path}`);
-          const parsed = JSON.parse(await file.text()) as unknown;
+          const original = await file.text();
+          subtitleOriginalsRef.current[path] = original;
+          const parsed = JSON.parse(original) as unknown;
           if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Linked subtitle file is not a JSON object: ${path}`);
           document = parsed as Record<string, unknown>;
           subtitleDocumentsRef.current[path] = structuredClone(document);
         }
         const serialized = serializeSubtitleDocument(document, current.assetDirectory, timelines);
-        await currentSource.saveText(path, serialized);
+        writes.push({ path, content: serialized, baselineContent: subtitleOriginalsRef.current[path] ?? null });
         const record = await currentSource.getManifest?.(directoryRef.current);
         const legacyPath = record?.manifest.legacySubtitles
           ? manifestReferenceCandidates(record, record.manifest.legacySubtitles)[0]
           : undefined;
-        if (legacyPath && legacyPath !== path) await currentSource.saveText(legacyPath, serialized);
-        saved.push(path);
+        if (legacyPath && legacyPath !== path) {
+          if (!(legacyPath in subtitleOriginalsRef.current)) subtitleOriginalsRef.current[legacyPath] = await currentSource.readText(legacyPath);
+          writes.push({ path: legacyPath, content: serialized, baselineContent: subtitleOriginalsRef.current[legacyPath] });
+        }
       }
-      return saved;
-    };
-    const queued = subtitleSaveQueueRef.current.then(save, save);
-    subtitleSaveQueueRef.current = queued.then(() => undefined, () => undefined);
-    return queued;
+      return writes;
   }
 
   saveSubtitleDocumentsRef.current = saveSubtitleDocuments;
 
   useEffect(() => {
     onRegisterSaveRef.current((getProject) => saveSubtitleDocumentsRef.current(getProject));
-    return () => onRegisterSaveRef.current(null);
-  }, []);
+  }, [directory, source]);
 
   useEffect(() => {
     const closeOutside = (event: PointerEvent) => {
@@ -1398,16 +1391,6 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     document.addEventListener("pointerdown", closeOutside);
     return () => document.removeEventListener("pointerdown", closeOutside);
   }, []);
-
-  useEffect(() => {
-    if (!project || !source || Object.keys(subtitleDocumentsRef.current).length === 0) return;
-    const timer = window.setTimeout(() => {
-      void saveSubtitleDocuments().then((paths) => {
-        if (paths.length > 0) onStatus("Subtitle changes saved directly to the source JSON.");
-      }).catch((value) => onError(value instanceof Error ? value.message : String(value)));
-    }, 450);
-    return () => window.clearTimeout(timer);
-  }, [onError, onStatus, project, source]);
 
   function updateTimeline(mutator: (timeline: EditorProject["timeline"]) => EditorProject["timeline"], history = true) {
     const callback = history ? onMutate : onLive;
@@ -1672,6 +1655,7 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
       const raw = JSON.parse(selected.content) as Record<string, unknown>;
       const subtitlePath = selected.path;
       subtitleDocumentsRef.current[subtitlePath] = structuredClone(raw);
+      subtitleOriginalsRef.current[subtitlePath] = selected.content;
       const sourceFile = Array.isArray(raw.characters) ? raw.characters.find((item) => (item as Record<string, unknown>).directory === directory) as Record<string, unknown> : raw;
       if (!sourceFile || !Array.isArray(sourceFile.lines)) throw new Error("No matching character subtitle lines found.");
       let count = 0;
@@ -1691,7 +1675,7 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
         return switchSequence(next, original, animations, directories);
       });
       if (source) onRecentFile({ kind: "subtitle", path: subtitlePath, rootPath: source.rootPath, label: subtitlePath.split(/[\\/]/).pop() ?? subtitlePath, directory });
-      onStatus(`Replaced the previous subtitle/audio import with ${count} cue${count === 1 ? "" : "s"}.${subtitlePath ? " Source JSON is now linked for direct saves." : " Original files unchanged."}`);
+      onStatus(`Replaced the previous subtitle/audio import with ${count} cue${count === 1 ? "" : "s"}.${subtitlePath ? " Source JSON is linked; changes will be written with Save project." : " Original files unchanged."}`);
     } catch (value) {
       onError(value instanceof Error ? value.message : String(value));
     }

@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { createProject, EDITOR_SCHEMA_VERSION } from "./editorModel";
-import { pendingProjectForDirectory, readSavedEditorProject, saveManifestEditorProject, type SavedEditorProjectSource, type WritableEditorProjectSource } from "./editorProject";
+import { captureEditorProjectBaseline, editorProjectDraftValue, pendingProjectForDirectory, prepareEditorProjectSave, readSavedEditorProject, saveManifestEditorProject, type SavedEditorProjectSource, type WritableEditorProjectSource } from "./editorProject";
 import { manifestPath, type SpineManifestRecord } from "@ba-spine/spine-runtime/spine/spineManifest";
+import { normalizeSpineInteractionProject } from "@ba-spine/spine-runtime/spine/spineInteraction";
 
 function sourceFromFiles(files: Record<string, string>) {
   return {
@@ -32,6 +33,29 @@ test("asset-set switching restores the saved .editor project", async () => {
   expect(pending?.timeline.colorLayers[0]?.blendMode).toBe("additive");
   expect(pendingProjectForDirectory(pending, "Airi_home")?.name).toBe("Saved Airi project");
   expect(pendingProjectForDirectory(pending, "Hina_home")).toBeNull();
+});
+
+test("draft preview converts the live project to a Viewer snapshot without invoking persistence", () => {
+  const project = createProject("Airi_home", [], []);
+  project.name = "Live unsaved draft";
+  project.timeline.sequenceId = "opening";
+  project.timeline.duration = 12;
+  const snapshot = editorProjectDraftValue(project);
+  expect(snapshot).toMatchObject({
+    schemaVersion: project.schemaVersion,
+    assetDirectory: "Airi_home",
+    entrySequence: null,
+    name: "Live unsaved draft",
+    interactions: [{ id: project.interactions[0]!.id }],
+    timeline: { sequenceId: "opening", duration: 12 },
+    sequences: { opening: { sequenceId: "opening", duration: 12 } },
+  });
+  expect(JSON.parse(JSON.stringify(snapshot))).toEqual(snapshot);
+  expect(normalizeSpineInteractionProject(snapshot, "Airi_home")).toMatchObject({
+    assetDirectory: "Airi_home",
+    interactions: [{ id: project.interactions[0]!.id }],
+    sequences: { opening: { sequenceId: "opening", duration: 12 } },
+  });
 });
 
 test("saved project loading falls back to the legacy editor directory", async () => {
@@ -115,4 +139,45 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
   expect(reopened?.timeline.colorLayers[0]).toMatchObject({ id: "wash", opacity: 0.65, order: 2, blendMode: "screen" });
   expect(reopened?.timeline.colorLayers[0]?.clips[0]).toMatchObject({ id: "fade", color: "#244466", start: 1, end: 7, fadeIn: 2, fadeOut: 1 });
   expect(reopened?.timeline).toMatchObject({ selectedColorLayerId: "wash", selectedColorClipId: "fade" });
+});
+
+test("prepares manifest project output without writing and captures fixture baselines", async () => {
+  const record: SpineManifestRecord = {
+    path: "lobbies/Airi_home/manifest.json",
+    manifest: {
+      schemaVersion: 1,
+      id: "Airi_home",
+      entrySequence: "opening",
+      entryMode: "authored-sequence",
+      assets: { Airi_home: { atlas: manifestPath("lobby", "spine/a.atlas"), skeletons: [], pages: [], files: [] } },
+      sequences: { opening: manifestPath("lobby", "sequences/opening.json") },
+      interactions: manifestPath("lobby", "interactions.json"),
+      subtitles: manifestPath("root", "audios/voicelines/Airi/subtitles.json"),
+      legacySubtitles: manifestPath("root", "audios/voicelines/Airi/legacy-subtitles.json"),
+      workspace: manifestPath("root", ".editor/Airi_home.workspace.json"),
+    },
+  };
+  const fixtureFiles: Record<string, string> = {
+    "lobbies/Airi_home/manifest.json": JSON.stringify(record.manifest),
+    "lobbies/Airi_home/interactions.json": "{\"interactions\":[]}\n",
+    "lobbies/Airi_home/sequences/opening.json": "{\"sequenceId\":\"opening\"}\n",
+    ".editor/Airi_home.workspace.json": "{\"selectedSequenceId\":\"opening\"}\n",
+    "audios/voicelines/Airi/subtitles.json": "{\"lines\":[]}\n",
+    "audios/voicelines/Airi/legacy-subtitles.json": "{\"legacy\":true}\n",
+  };
+  const source: SavedEditorProjectSource = {
+    readText: async (path) => fixtureFiles[path] ?? null,
+    getManifest: async () => record,
+  };
+  const project = createProject("Airi_home", [], []);
+  project.timeline.sequenceId = "opening";
+  project.timeline.subtitlePath = "audios/voicelines/Airi/subtitles.json";
+
+  const prepared = await prepareEditorProjectSave(source, project);
+  const baseline = await captureEditorProjectBaseline(source, project);
+  expect(prepared.manifestSave?.manifestPath).toBe("lobbies/Airi_home/manifest.json");
+  expect(prepared.files.map((file) => file.path)).toContain("lobbies/Airi_home/sequences/opening.json");
+  expect(prepared.files.every((file) => JSON.parse(file.content))).toBe(true);
+  expect(baseline["lobbies/Airi_home/manifest.json"]).toBeDefined();
+  expect(baseline["audios/voicelines/Airi/legacy-subtitles.json"]).toBeDefined();
 });

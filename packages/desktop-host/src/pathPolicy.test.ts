@@ -22,6 +22,7 @@ describe("native library path policy", () => {
   test("limits editor writes to authored project metadata", () => {
     for (const path of [
       ".editor/Airi_home.workspace.json",
+      ".editor/backups/save-1730000000000-123e4567-e89b-12d3-a456-426614174000.json",
       "lobbies/Airi_home/manifest.json",
       "lobbies/Airi_home/interactions.json",
       "lobbies/Airi_home/sequences/opening.json",
@@ -31,6 +32,7 @@ describe("native library path policy", () => {
 
     for (const path of [
       "catalog.json",
+      ".editor/backups/../manifest.json",
       "characters.json",
       "lobbies/Airi_home/spine/Airi_home.skel",
       "lobbies/Airi_home/spine/Airi_home.atlas",

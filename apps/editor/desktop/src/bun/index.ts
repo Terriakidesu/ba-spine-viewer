@@ -1,12 +1,14 @@
-import { mkdir, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { ApplicationMenu, BrowserWindow, Utils } from "electrobun/main";
-import { assertLibraryWritePath, isPathWithinLibrary, isSupportedEditorWritePath, resolveExistingLibraryPath, resolveLibraryPath } from "@ba-spine/desktop-host/pathPolicy";
+import { isPathWithinLibrary, resolveExistingLibraryPath } from "@ba-spine/desktop-host/pathPolicy";
 import { createNodeLibraryReader } from "@ba-spine/desktop-host/nodeLibraryReader";
-import { COMPANION_ACTIVATE_PATH, COMPANION_HANDOFF_PATH, COMPANION_HEALTH_PATH, CompanionAlreadyRunningError, CompanionInbox, CompanionUnavailableError, registerCompanionEndpoint, sendCompanionHandoff, type CompanionRegistration } from "@ba-spine/desktop-host/companion";
+import { COMPANION_ACTIVATE_PATH, COMPANION_DRAFT_PATH, COMPANION_HANDOFF_PATH, COMPANION_HEALTH_PATH, CompanionAlreadyRunningError, CompanionInbox, CompanionUnavailableError, readBoundedBody, registerCompanionEndpoint, sendCompanionHandoff, type CompanionRegistration } from "@ba-spine/desktop-host/companion";
+import { defaultCompanionLaunchPlan } from "@ba-spine/desktop-host/companionLaunch";
 import { discoverSpineSets } from "@ba-spine/asset-library/catalog";
-import { parseHandoffMessage } from "@ba-spine/platform-contracts/handoff";
+import { libraryIdentityForPath, MAX_SPINE_DRAFT_SNAPSHOT_BYTES, parseHandoffMessage, parseSpineDraftSnapshot } from "@ba-spine/platform-contracts/handoff";
 import { isEditorIgnored, parseEditorIgnore, type EditorIgnoreRule } from "@ba-spine/spine-runtime/spine/editorIgnore";
+import { EditorFileConflictError, saveEditorBatch, type EditorBatchFile } from "@ba-spine/desktop-host/transactionalSave";
 import { SpineEditorMcpBridge } from "./mcpBridge";
 
 let assetRoot: string | null = process.env.BA_SPINE_DATA ? resolve(process.env.BA_SPINE_DATA) : null;
@@ -15,6 +17,16 @@ if (assetRoot) {
   catch { assetRoot = null; }
 }
 const mcpBridge = new SpineEditorMcpBridge(process.env.BA_SPINE_EDITOR_MCP === "1" || Bun.argv.includes("--mcp"));
+const companionChannel = process.env.BA_SPINE_APP_CHANNEL === "canary" ? "canary" : "stable";
+
+function launchPlanFor(app: "viewer" | "editor") {
+  return defaultCompanionLaunchPlan(app, {
+    appDataRoot: Utils.paths.appData,
+    channel: companionChannel,
+    ...(process.env.BA_SPINE_WORKSPACE_ROOT ? { workspaceRoot: process.env.BA_SPINE_WORKSPACE_ROOT } : {}),
+  });
+}
+
 let window: BrowserWindow | null = null;
 const companionInbox = new CompanionInbox("editor", undefined, () => {
   const current = window;
@@ -35,11 +47,6 @@ function json(value: unknown, status = 200): Response {
 
 function errorResponse(value: unknown, status = 400): Response {
   return json({ error: value instanceof Error ? value.message : String(value) }, status);
-}
-
-function rootRelativePath(value: string): string {
-  if (!assetRoot) throw new Error("Choose an asset root first.");
-  return resolveLibraryPath(assetRoot, value);
 }
 
 function relativePath(full: string): string {
@@ -130,8 +137,34 @@ async function api(request: Request, url: URL): Promise<Response> {
     if (url.pathname === "/__spine/companion/send" && request.method === "POST") {
       const message = parseHandoffMessage(await request.json() as unknown);
       if (message.targetApp !== "viewer") return errorResponse("The editor can only hand off to the viewer.");
-      await sendCompanionHandoff(message);
+      await sendCompanionHandoff(message, {
+        autoLaunch: { resolvePlan: (targetApp) => launchPlanFor(targetApp) },
+      });
       return json({ ok: true, requestId: message.requestId });
+    }
+    if (url.pathname === "/__spine/companion/draft-publish" && request.method === "POST") {
+      let body: Awaited<ReturnType<typeof readBoundedBody>>;
+      try { body = await readBoundedBody(request, MAX_SPINE_DRAFT_SNAPSHOT_BYTES); }
+      catch { return errorResponse("Draft preview must be valid UTF-8 JSON.", 400); }
+      if (body.tooLarge) return errorResponse("Draft preview exceeds the 8 MB safety limit.", 413);
+      let raw: unknown;
+      try { raw = JSON.parse(body.text) as unknown; }
+      catch { return errorResponse("Draft preview must be valid JSON.", 400); }
+      const snapshot = parseSpineDraftSnapshot(raw);
+      if (!assetRoot) throw new Error("Choose an asset root before publishing a draft preview.");
+      if (snapshot.project.assetDirectory !== snapshot.lobbyId || !Array.isArray(snapshot.project.interactions)) {
+        return errorResponse("Draft project does not match its selected lobby.", 400);
+      }
+      const root = await realpath(assetRoot);
+      if (snapshot.library.path !== root || snapshot.library.identity !== await libraryIdentityForPath(root)) {
+        return errorResponse("Draft preview must match the Editor's currently selected library.", 409);
+      }
+      return json({ snapshot: companionInbox.publishDraft(snapshot) });
+    }
+    if (url.pathname === "/__spine/companion/draft-revoke" && request.method === "POST") {
+      const body = await request.json() as { sessionId?: unknown };
+      if (typeof body.sessionId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(body.sessionId)) return errorResponse("A valid draft session ID is required.");
+      return json({ revoked: companionInbox.revokeDraft(body.sessionId) });
     }
     if (url.pathname === "/__spine/use-root" && request.method === "POST") {
       const body = await request.json() as { rootPath?: unknown };
@@ -209,25 +242,43 @@ async function api(request: Request, url: URL): Promise<Response> {
       if (!(await Bun.file(full).exists())) return errorResponse("File not found.", 404);
       return new Response(Bun.file(full), { headers: { "content-type": contentType(full) } });
     }
-    if (url.pathname === "/__spine/save" && request.method === "POST") {
-      const length = Number(request.headers.get("content-length") ?? 0);
-      if (length > 16 * 1024 * 1024) return errorResponse("Project file exceeds the 16 MB safety limit.", 413);
-      const body = await request.json() as { path?: unknown; content?: unknown };
-      if (typeof body.path !== "string" || typeof body.content !== "string") return errorResponse("A relative path and text content are required.");
-      if (!isSupportedEditorWritePath(body.path)) return errorResponse("The editor may only save supported project, sequence, workspace, and subtitle JSON files.", 403);
-      try {
-        JSON.parse(body.content);
-      } catch {
-        return errorResponse("Editor saves must contain valid JSON.");
+    if (url.pathname === "/__spine/save-batch" && request.method === "POST") {
+      let body: Awaited<ReturnType<typeof readBoundedBody>>;
+      try { body = await readBoundedBody(request, 48 * 1024 * 1024); }
+      catch { return errorResponse("Editor save set must be valid UTF-8 JSON.", 400); }
+      if (body.tooLarge) return errorResponse("Editor save set exceeds the 48 MB safety limit.", 413);
+      let raw: unknown;
+      try { raw = JSON.parse(body.text) as unknown; }
+      catch { return errorResponse("Editor save set must be valid JSON.", 400); }
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return errorResponse("Editor save set must be an object.");
+      const input = raw as { files?: unknown; overwriteVersions?: unknown };
+      if (!Array.isArray(input.files) || input.files.some((file) => !file || typeof file !== "object" || Array.isArray(file))) {
+        return errorResponse("Editor save set must contain a list of files.");
       }
-      const full = rootRelativePath(body.path);
-      const temporary = `${full}.ba-spine-tmp-${process.pid}-${crypto.randomUUID()}`;
-      await assertLibraryWritePath(assetRoot!, full);
-      await mkdir(resolve(full, ".."), { recursive: true });
-      await assertLibraryWritePath(assetRoot!, full);
-      await writeFile(temporary, body.content, "utf8");
-      await rename(temporary, full);
-      return json({ ok: true });
+      const files = input.files as Array<Record<string, unknown>>;
+      if (files.some((file) => typeof file.path !== "string" || typeof file.content !== "string" || typeof file.expectedVersion !== "string")) {
+        return errorResponse("Each Editor save entry requires a path, content, and baseline version.");
+      }
+      const overwriteVersions = input.overwriteVersions === undefined ? {} : input.overwriteVersions;
+      if (!overwriteVersions || typeof overwriteVersions !== "object" || Array.isArray(overwriteVersions)
+        || Object.entries(overwriteVersions).some(([path, version]) => typeof path !== "string" || typeof version !== "string")) {
+        return errorResponse("Overwrite decisions must map file paths to the versions the user reviewed.");
+      }
+      try {
+        if (!assetRoot) throw new Error("Choose an asset root before saving.");
+        const result = await saveEditorBatch(assetRoot, files as unknown as EditorBatchFile[], overwriteVersions as Record<string, string>);
+        return json({ ok: true, ...result });
+      } catch (value) {
+        if (value instanceof EditorFileConflictError) return json({ error: value.message, currentVersions: value.currentVersions }, 409);
+        if (value && typeof value === "object" && "committedPaths" in value && "rollbackFailures" in value) {
+          return json({
+            error: value instanceof Error ? value.message : String(value),
+            committedPaths: value.committedPaths,
+            rollbackFailures: value.rollbackFailures,
+          }, 500);
+        }
+        throw value;
+      }
     }
     return errorResponse("Unknown desktop editor endpoint.", 404);
   } catch (value) {
@@ -244,7 +295,7 @@ try {
     port: 0,
     async fetch(request) {
       const url = new URL(request.url);
-      if (url.pathname === COMPANION_HANDOFF_PATH || url.pathname === COMPANION_HEALTH_PATH || url.pathname === COMPANION_ACTIVATE_PATH) return companionInbox.handle(request);
+      if (url.pathname === COMPANION_HANDOFF_PATH || url.pathname === COMPANION_HEALTH_PATH || url.pathname === COMPANION_ACTIVATE_PATH || url.pathname === COMPANION_DRAFT_PATH) return companionInbox.handle(request);
       if (url.pathname.startsWith("/__spine/mcp/")) return mcpBridge.handle(request, url);
       if (url.pathname.startsWith("/__spine/")) {
         if (request.headers.get("x-ba-spine-token") !== apiToken) return errorResponse("Unauthorized editor request.", 403);
@@ -271,7 +322,10 @@ try {
 if (server.port === undefined) throw new Error("The editor host did not bind to a local port.");
 let companionRegistration: CompanionRegistration;
 try {
-  companionRegistration = await registerCompanionEndpoint("editor", server.port, { token: companionInbox.token });
+  companionRegistration = await registerCompanionEndpoint("editor", server.port, {
+    token: companionInbox.token,
+    launchPlan: launchPlanFor("editor"),
+  });
 } catch (error) {
   server.stop(true);
   if (error instanceof CompanionAlreadyRunningError) process.exit(0);

@@ -22,6 +22,6 @@ export function SaveStatus({ state, savedAt, hasProject }: SaveStatusProps) {
 
   return <div className="editor-save-status" aria-live="polite">
     <span className={`editor-save-state is-${state}`}>{state === "saved" ? <IconCheck /> : <IconDot />}{label}</span>
-    {hasProject && <span className="editor-recovery-state" title="A local browser recovery copy is maintained after edits when storage is available. Save to root writes the project and linked subtitles to the selected asset root.">Local recovery</span>}
+    {hasProject && <span className="editor-recovery-state" title="Separate local recovery snapshots are bounded and offered for explicit restoration; they never overwrite library files automatically.">Local recovery</span>}
   </div>;
 }

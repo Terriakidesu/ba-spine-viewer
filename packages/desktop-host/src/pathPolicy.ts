@@ -66,6 +66,7 @@ export function isSupportedEditorWritePath(value: string): boolean {
     return false;
   }
   return /^\.editor\/[^/]+\.json$/i.test(path)
+    || /^\.editor\/backups\/save-[a-z0-9-]+\.json$/i.test(path)
     || /^lobbies\/[^/]+\/(?:manifest\.json|interactions\.json|subtitles\.json)$/i.test(path)
     || /^lobbies\/[^/]+\/\.editor\/workspace\.json$/i.test(path)
     || /^lobbies\/[^/]+\/sequences\/[^/]+\.json$/i.test(path)
