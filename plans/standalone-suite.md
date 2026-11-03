@@ -150,7 +150,7 @@ The Viewer host watches the selected library recursively, coalesces filesystem e
 
 #### Timeline diagnostics slice (2026-11-04)
 
-The Editor timeline inspector validates the active sequence without writing files: layer availability and manifest-declared file references, loaded animation names, unsupported manifest versions, clip and sequence bounds, subtitle overlaps and preview-language gaps, missing audio, and stale explicit subtitle links. Each issue navigates to its affected timeline item. Manifest reference checks reuse the already-loaded file set rather than rereading asset bytes; fixes remain explicit authoring actions. Future project schema versions remain rejected with a clear load error.
+The Editor timeline inspector validates the active sequence without writing files: layer availability and manifest-declared file references, loaded animation names, unsupported manifest versions, clip and sequence bounds, subtitle overlaps, exact same-time duplicate translations, preview-language gaps, missing audio, and stale explicit subtitle links. Each issue navigates to its affected timeline item. Manifest reference checks reuse the already-loaded file set rather than rereading asset bytes; fixes remain explicit authoring actions. Future project schema versions remain rejected with a clear load error.
 
 #### Timeline selection QoL slice (2026-11-04)
 

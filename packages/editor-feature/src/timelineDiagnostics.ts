@@ -10,6 +10,7 @@ export type TimelineDiagnosticKind =
   | "timeline-bounds"
   | "subtitle-bounds"
   | "subtitle-overlap"
+  | "subtitle-duplicate"
   | "missing-translation"
   | "missing-audio"
   | "missing-subtitle-link";
@@ -59,6 +60,10 @@ function animationKey(value: string): string {
   return value.trim().toLocaleLowerCase();
 }
 
+function subtitleTextKey(text: Record<TimelineLanguage, string>): string {
+  return LANGUAGES.map((language) => text[language].normalize("NFKC").trim().toLowerCase()).join("\u0000");
+}
+
 /** Inspect the active sequence without reading or mutating project files. */
 export function validateTimeline(
   timeline: EditorTimeline,
@@ -69,6 +74,9 @@ export function validateTimeline(
   const missingAudioPaths = new Set(context.missingAudioPaths ?? []);
   const animationsByLayer = new Map(Object.entries(context.animationsByLayer ?? {})
     .map(([id, names]) => [id, new Set(names.map(animationKey))] as const));
+  const subtitleTextKeys = timeline.subtitles.map((cue) => subtitleTextKey(cue.text));
+  const subtitleHasText = timeline.subtitles.map((cue) => LANGUAGES.some((language) => cue.text[language].trim().length > 0));
+  const diagnosedDuplicateIndexes = new Set<number>();
   const duration = context.duration ?? timeline.duration;
 
   if (!Number.isFinite(duration) || duration <= 0) {
@@ -145,6 +153,8 @@ export function validateTimeline(
     checkRange(`subtitle:${cue.id}:range`, label, cue.start, cue.end, target, "subtitle-bounds");
     if (!cue.enabled) continue;
 
+    const cueTextKey = subtitleTextKeys[index]!;
+    const hasAnyText = subtitleHasText[index]!;
     const currentText = cue.text[timeline.language].trim();
     const hasAlternate = LANGUAGES.some((language) => language !== timeline.language && cue.text[language].trim().length > 0);
     if (!currentText && hasAlternate) {
@@ -154,6 +164,19 @@ export function validateTimeline(
     for (let otherIndex = index + 1; otherIndex < timeline.subtitles.length; otherIndex += 1) {
       const other = timeline.subtitles[otherIndex]!;
       if (!other.enabled || !validRange(cue.start, cue.end) || !validRange(other.start, other.end) || cue.start >= other.end || cue.end <= other.start) continue;
+      if (hasAnyText && subtitleHasText[otherIndex] && Math.abs(cue.start - other.start) <= TIME_EPSILON
+        && cueTextKey === subtitleTextKeys[otherIndex]) {
+        if (!diagnosedDuplicateIndexes.has(otherIndex)) {
+          diagnostics.push({
+            id: `subtitle:${other.id}:duplicate:${cue.id}`,
+            kind: "subtitle-duplicate",
+            message: `Subtitle #${otherIndex + 1} has the same translations and start time as ${label}.`,
+            target: { kind: "cue", id: other.id },
+          });
+          diagnosedDuplicateIndexes.add(otherIndex);
+        }
+        continue;
+      }
       diagnostics.push({
         id: `subtitle:${cue.id}:overlap:${other.id}`,
         kind: "subtitle-overlap",

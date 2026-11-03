@@ -61,6 +61,26 @@ describe("timeline diagnostics", () => {
     expect(diagnostics.some((item) => item.id === "subtitle:disabled:translation:ja")).toBe(false);
   });
 
+  test("reports same-time duplicate translations without flagging repeated dialogue later", () => {
+    const timeline = timelineFixture();
+    timeline.subtitles = [
+      { id: "first", start: 1, end: 2, enabled: true, text: { en: "Hello", ja: "こんにちは", ko: "안녕" } },
+      { id: "duplicate", start: 1.0005, end: 2.5, enabled: true, text: { en: "  ＨＥＬＬＯ  ", ja: "こんにちは", ko: "안녕" } },
+      { id: "later-repeat", start: 4, end: 5, enabled: true, text: { en: "Hello", ja: "こんにちは", ko: "안녕" } },
+      { id: "disabled-copy", start: 1, end: 2, enabled: false, text: { en: "Hello", ja: "こんにちは", ko: "안녕" } },
+    ];
+
+    const diagnostics = validateTimeline(timeline, { availableDirectories: [] });
+    const duplicates = diagnostics.filter((item) => item.kind === "subtitle-duplicate");
+    expect(duplicates).toHaveLength(1);
+    expect(duplicates[0]).toMatchObject({
+      id: "subtitle:duplicate:duplicate:first",
+      target: { kind: "cue", id: "duplicate" },
+    });
+    expect(duplicates[0]?.message).toContain("Subtitle #1");
+    expect(diagnostics.some((item) => item.kind === "subtitle-overlap" && item.target?.id === "first")).toBe(false);
+  });
+
   test("reports missing audio and stale explicit subtitle links with navigable targets", () => {
     const timeline = timelineFixture();
     timeline.audio = [{
