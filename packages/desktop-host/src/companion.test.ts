@@ -198,6 +198,19 @@ describe("authenticated local companion transport", () => {
     });
   });
 
+  test("round-trips installed companion paths with spaces and non-ASCII characters", async () => {
+    await withRegistry(async (directory) => {
+      const appData = join(directory, "User App Data 日本語");
+      const plan = {
+        command: "C:\\Users\\彩花\\App Data\\BA Spine Viewer\\launcher.exe",
+        args: [],
+        cwd: "C:\\Users\\彩花\\App Data\\BA Spine Viewer",
+      };
+      await writeCompanionLaunchPlan("viewer", plan, appData);
+      expect(await readCompanionLaunchPlan("viewer", appData)).toEqual(plan);
+    });
+  });
+
   test("launches a missing target, waits for its registration, then delivers and focuses", async () => {
     await withRegistry(async (directory) => {
       let focused = 0;

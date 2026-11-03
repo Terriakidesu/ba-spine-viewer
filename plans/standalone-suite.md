@@ -321,7 +321,7 @@ Viewer and Editor now reopen their own last-selected library from a small versio
 
 #### Clean source-archive install check (2026-11-04)
 
-A fresh temporary checkout made from the committed Git archive (excluding ignored library/build outputs) installed with `bun install --frozen-lockfile`; typecheck, all 364 tests, and the full Viewer→Editor build plus artifact audit passed without relying on another workspace. The same full check passed with a checkout path containing spaces. Library read and authored-JSON write tests cover paths with spaces and non-ASCII names.
+A fresh temporary checkout made from the committed Git archive (excluding ignored library/build outputs) installed with `bun install --frozen-lockfile`; typecheck, all 364 tests, and the full Viewer→Editor build plus artifact audit passed without relying on another workspace. The same full check passed with a checkout path containing spaces. Library read/write and companion launch-plan round-trip tests cover paths with spaces and non-ASCII names.
 
 #### Remaining release gates (2026-11-04)
 
