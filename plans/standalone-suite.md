@@ -347,6 +347,8 @@ A fresh temporary checkout made from the committed Git archive (excluding ignore
 
 After adding compressed-archive inspection, the clean source-archive check was repeated from a temporary path containing spaces: frozen install, typecheck, all 368 tests, both native builds, and the archive-aware release audit passed. The clean Git archive contains no ignored local `data/` or build output.
 
+After adding the development-only waveform profiler, another clean Git archive was installed with `bun install --frozen-lockfile` from a temporary path containing spaces. Typecheck, all 369 tests, both native builds, and the archive-aware audit passed; the `data/` library remained excluded and untouched. The profile route is absent from the packaged Editor renderer.
+
 #### Remaining release gates (2026-11-04)
 
 - A direct Windows package build from a workspace path containing Japanese characters remains unverified: Electrobun 2.0.5's packaging step passed the path to `System32/tar.exe` with the non-ASCII characters replaced by `?`. No application workaround was added; the supported library-path behavior is covered separately by synthetic tests.
