@@ -1,14 +1,16 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { IconChevronDown, IconChevronUp, IconClose, IconCompress, IconDot, IconExpand, IconEye, IconEyeOff, IconFolder, IconHand, IconMessage, IconPause, IconPlay, IconRotate, IconSearch, IconSliders, IconTarget, IconUsers } from "@ba-spine/app-ui/icons";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { IconChevronDown, IconChevronUp, IconClose, IconCompress, IconDot, IconExpand, IconEye, IconEyeOff, IconFolder, IconHand, IconMessage, IconPause, IconPlay, IconRotate, IconSearch, IconSliders, IconStar, IconSync, IconTarget, IconUsers } from "@ba-spine/app-ui/icons";
 import { LanguageSwitch } from "./components/LanguageSwitch";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { setLanguage, t, useLanguage, type LangKey } from "./i18n";
-import { acknowledgeDesktopHandoff, chooseDesktopSource, chooseDesktopSourceAt, isDesktopHost, loadDesktopSource, receiveDesktopHandoffs, sendDesktopHandoff } from "./desktopSource";
-import { libraryIdentityForPath, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
+import { normalizeVoiceVolume, readViewerVoiceVolume, restoreViewerHandoffState, writeViewerVoiceVolume, type ViewerHandoffRestoreState, type ViewerReloadSnapshot } from "./handoffState";
+import { acknowledgeDesktopHandoff, chooseDesktopSource, chooseDesktopSourceAt, isDesktopHost, loadDesktopSource, readDesktopDraftSnapshot, receiveDesktopHandoffs, sendDesktopHandoff, type DesktopAssetSource } from "./desktopSource";
+import { libraryIdentityForPath, type SpineDraftSnapshot, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
 import {
   INTRO_ANIMATION,
   SpineRenderer,
   type SpineCameraMode,
+  type SpineCameraPose,
   type SpineFiles,
   type SpineInteractionMode,
   type SpineInteractionOverlay,
@@ -16,7 +18,7 @@ import {
   type SpineMeta,
   type SpineProgress,
 } from "@ba-spine/spine-runtime/spine/spineRuntime";
-import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration, type SpineInteractionProject } from "@ba-spine/spine-runtime/spine/spineInteraction";
+import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration, normalizeSpineInteractionProject, type SpineInteractionProject } from "@ba-spine/spine-runtime/spine/spineInteraction";
 import { readLocalInteractionProject } from "@ba-spine/spine-runtime/spine/spineProject";
 import characterIndexJson from "./characters.json";
 import {
@@ -29,6 +31,8 @@ import {
   type IndexedAsset,
 } from "@ba-spine/spine-runtime/spine/spineAssets";
 import { DEFAULT_EFFECTS_STRENGTH } from "@ba-spine/spine-runtime/spine/spineEffects";
+import { EMPTY_VIEWER_NAVIGATION, matchesLibrarySearch, nextViewerListIndex, normalizeViewerNavigation, readViewerNavigation, recordRecentLobby, toggleViewerFavorite, writeViewerNavigation, type ViewerNavigationState } from "./viewerNavigation";
+import { LobbyThumbnail } from "./lobbyThumbnail";
 import { preloadSpineAudio, releasePreloadedSpineAudio, spineAudioPathCandidates, type PreloadedSpineAudio } from "@ba-spine/spine-runtime/spine/spineAudio";
 import {
   dialogueForVoiceLine,
@@ -48,6 +52,8 @@ import {
 } from "@ba-spine/spine-runtime/spine/spineVoicelines";
 import { SpineCompositionViewport, type SpineCompositionViewportHandle } from "@ba-spine/spine-runtime/ui/SpineCompositionViewport";
 import { timelineForSequence, timelinePlaybackDuration, timelineSequenceIds, timelineTalkInProgress, timelineTalkSequenceIds, type SpineTimeline } from "@ba-spine/spine-runtime/spine/spineTimeline";
+
+type ViewerDraftPreview = Omit<SpineDraftSnapshot, "project"> & { project: SpineInteractionProject };
 
 const bundledCharacterIndex = characterIndexJson as CharacterIndex;
 
@@ -86,6 +92,8 @@ export interface SpineViewportHandle {
   setSpeed: (speed: number) => void;
   setLoop: (loop: boolean) => void;
   setCameraMode: (mode: SpineCameraMode) => void;
+  getCameraPose: () => SpineCameraPose | null;
+  setCameraPose: (pose: SpineCameraPose | null) => void;
   setInteractionMode: (mode: SpineInteractionMode) => void;
   setTalkAudioPending: (pending: boolean) => void;
   isTalkActive: () => boolean;
@@ -211,6 +219,8 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
     setSpeed: (value) => rendererRef.current?.setSpeed(value),
     setLoop: (value) => rendererRef.current?.setLoop(value),
     setCameraMode: (value) => rendererRef.current?.setCameraMode(value),
+    getCameraPose: () => rendererRef.current?.getCameraPose() ?? null,
+    setCameraPose: (value) => rendererRef.current?.setCameraPose(value),
     setInteractionMode: (value) => rendererRef.current?.setInteractionMode(value),
     setTalkAudioPending: (value) => rendererRef.current?.setTalkAudioPending(value),
     isTalkActive: () => rendererRef.current?.isTalkActive() ?? false,
@@ -308,10 +318,18 @@ export function Spine() {
   const [selectedDirectory, setSelectedDirectory] = useState(characterIndex.characters[firstCharacter]?.variants[0]?.directory ?? "");
   const [selectedSequenceId, setSelectedSequenceId] = useState("");
   const [characterSearch, setCharacterSearch] = useState("");
+  const [navigationLibraryIdentity, setNavigationLibraryIdentity] = useState("");
+  const [navigation, setNavigation] = useState<ViewerNavigationState>(EMPTY_VIEWER_NAVIGATION);
   const [source, setSource] = useState<AssetSource | null>(null);
   const [availableDirectories, setAvailableDirectories] = useState<Set<string> | null>(null);
+  const [libraryChangesAvailable, setLibraryChangesAvailable] = useState(false);
+  const [libraryWatcherAvailable, setLibraryWatcherAvailable] = useState<boolean | null>(null);
+  const [libraryRefreshing, setLibraryRefreshing] = useState(false);
   const [setFiles, setSetFiles] = useState<SpineFiles | null>(null);
   const [localInteractionProject, setLocalInteractionProject] = useState<SpineInteractionProject | null>(null);
+  const [draftPreview, setDraftPreview] = useState<ViewerDraftPreview | null>(null);
+  const [draftPreviewNotice, setDraftPreviewNotice] = useState<string | null>(null);
+  const [interactionProjectLoading, setInteractionProjectLoading] = useState(false);
   const [setLoading, setSetLoading] = useState(false);
   const [rendererLoading, setRendererLoading] = useState(false);
   const [rendererLoadProgress, setRendererLoadProgress] = useState<SpineLoadProgress | null>(null);
@@ -343,6 +361,7 @@ export function Spine() {
   const [voiceClipIndex, setVoiceClipIndex] = useState(0);
   const [selectedVoiceLineIndex, setSelectedVoiceLineIndex] = useState<number | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [voiceVolume, setVoiceVolume] = useState(readViewerVoiceVolume);
   const [showDialogue, setShowDialogue] = useState(true);
   const [voicePlaying, setVoicePlaying] = useState(false);
   const [talkAutoplay, setTalkAutoplay] = useState(false);
@@ -357,6 +376,9 @@ export function Spine() {
   const voiceRunRef = useRef(0);
   const voiceSessionRef = useRef<VoiceSession | null>(null);
   const pendingHandoffRef = useRef<SpineHandoffMessage | null>(null);
+  const pendingHandoffRestoreRef = useRef<{ lobbyId: string; state: ViewerHandoffRestoreState } | null>(null);
+  const draftPreviewRef = useRef(draftPreview);
+  const viewerReloadStateRef = useRef<{ rootPath: string | null; lobbyId: string; snapshot: ViewerReloadSnapshot } | null>(null);
   const handledHandoffIdsRef = useRef(new Set<string>());
   const autoPlayTimerRef = useRef<number | null>(null);
   const fullscreenHideTimerRef = useRef<number | null>(null);
@@ -370,9 +392,15 @@ export function Spine() {
   const freeLoop = useRef(true);
   const freeSpeed = useRef(1);
   const progressRef = useRef(progress);
+  const navigationRootRef = useRef<string | null>(null);
+  draftPreviewRef.current = draftPreview;
   progressRef.current = progress;
 
   talkAutoplayRef.current = talkAutoplay;
+
+  const sourceRootPath = source && "rootPath" in source && typeof source.rootPath === "string" ? source.rootPath : null;
+  const navigationRootKey = sourceRootPath ?? (source ? "ephemeral-local-preview" : null);
+  const desktopSource = source && "desktop" in source && source.desktop ? source as DesktopAssetSource : null;
 
   useEffect(() => {
     let live = true;
@@ -385,6 +413,43 @@ export function Spine() {
     });
     return () => { live = false; };
   }, []);
+
+  useEffect(() => {
+    let live = true;
+    navigationRootRef.current = null;
+    setNavigationLibraryIdentity("");
+    setNavigation(EMPTY_VIEWER_NAVIGATION);
+    if (!source || !navigationRootKey) return () => { live = false; };
+    if (!sourceRootPath) {
+      // Browser folder handles and file inputs have no trustworthy stable path identity.
+      // Keep their navigation state in memory rather than sharing it across libraries.
+      navigationRootRef.current = navigationRootKey;
+      return () => { live = false; };
+    }
+    const identity = libraryIdentityForPath(sourceRootPath);
+    void identity.then((key) => {
+      if (!live) return;
+      try { setNavigation(readViewerNavigation(localStorage, key)); }
+      catch { setNavigation(EMPTY_VIEWER_NAVIGATION); }
+      navigationRootRef.current = navigationRootKey;
+      setNavigationLibraryIdentity(key);
+    }).catch(() => {
+      if (!live) return;
+      navigationRootRef.current = navigationRootKey;
+    });
+    return () => { live = false; };
+  }, [navigationRootKey, source, sourceRootPath]);
+
+  useEffect(() => {
+    if (navigationRootRef.current !== navigationRootKey || !availableDirectories) return;
+    setNavigation((current) => normalizeViewerNavigation(current, availableDirectories));
+  }, [availableDirectories, navigationLibraryIdentity, navigationRootKey]);
+
+  useEffect(() => {
+    if (!navigationLibraryIdentity || navigationRootRef.current !== navigationRootKey) return;
+    try { writeViewerNavigation(localStorage, navigationLibraryIdentity, navigation); }
+    catch { /* Preferences are a convenience; keep them for this session if storage is unavailable. */ }
+  }, [navigation, navigationLibraryIdentity, navigationRootKey]);
 
   useEffect(() => {
     if (!isDesktopHost()) return;
@@ -405,6 +470,20 @@ export function Spine() {
             if (await libraryIdentityForPath(nextSource.rootPath) !== message.library.identity) {
               throw new Error("The library identity does not match the handoff path.");
             }
+            let incomingDraft: ViewerDraftPreview | null = null;
+            if (message.draft) {
+              const snapshot = await readDesktopDraftSnapshot(message.draft.sessionId);
+              if (!snapshot
+                || snapshot.sessionId !== message.draft.sessionId
+                || snapshot.library.identity !== message.library.identity
+                || snapshot.lobbyId !== message.lobbyId) {
+                throw new Error("The unsaved draft preview session is stale or no longer available.");
+              }
+              if (snapshot.project.assetDirectory !== message.lobbyId) throw new Error("The unsaved draft targets a different lobby.");
+              const project = normalizeSpineInteractionProject(snapshot.project, message.lobbyId);
+              if (!project) throw new Error("The unsaved draft project is not valid for Viewer preview.");
+              incomingDraft = { ...snapshot, project };
+            }
             const [directories, nextIndex] = await Promise.all([
               nextSource.getDirectories(),
               readCharacterIndex(nextSource, bundledCharacterIndex),
@@ -414,17 +493,47 @@ export function Spine() {
               .find(([, info]) => indexedAssets(info).some((asset) => asset.directory === message.lobbyId));
             if (!character) throw new Error(`No character entry contains lobby “${message.lobbyId}”.`);
 
-            pendingHandoffRef.current = message;
+            const previous = viewerReloadStateRef.current;
+            const currentIdentity = previous?.rootPath ? await libraryIdentityForPath(previous.rootPath) : null;
+            const sameSelection = previous?.lobbyId === message.lobbyId && currentIdentity === message.library.identity;
+            const previousSnapshot = previous ? {
+              ...previous.snapshot,
+              cameraPose: compositionRef.current?.getCameraPose() ?? viewportRef.current?.getCameraPose() ?? previous.snapshot.cameraPose,
+            } : {
+              language,
+              cameraMode,
+              cameraPose: null,
+              voiceVolume,
+              playing,
+              loop,
+              speed,
+              playheadSeconds: progressRef.current.time,
+              sequenceId: selectedSequenceId,
+              animation,
+            };
+            const restored = restoreViewerHandoffState(previousSnapshot, message, sameSelection);
+            pendingHandoffRef.current = {
+              ...message,
+              ...(restored.sequenceId ? { sequenceId: restored.sequenceId } : {}),
+              ...(restored.playheadSeconds !== undefined ? { playheadSeconds: restored.playheadSeconds } : {}),
+            };
+            pendingHandoffRestoreRef.current = { lobbyId: message.lobbyId, state: restored };
+            setInteractionProjectLoading(true);
             setCharacterIndex(nextIndex);
             setSelectedCharacter(character[0]);
             setSelectedDirectory(message.lobbyId);
+            setAvailableDirectories(new Set(directories));
             setLocalInteractionProject(null);
+            setDraftPreview(incomingDraft);
+            setDraftPreviewNotice(null);
             setSetFiles(null);
             setSource(nextSource);
-            if (message.language) {
-              const locale = message.language.toLocaleLowerCase();
-              setLanguage(locale.startsWith("ja") ? "ja" : locale.startsWith("ko") ? "ko" : "en");
-            }
+            setLanguage(restored.language);
+            setCameraMode(restored.cameraMode);
+            setVoiceVolume(restored.voiceVolume);
+            setPlaying(restored.playing);
+            setLoop(restored.loop);
+            setSpeed(restored.speed);
             setError(null);
           } catch (reason) {
             if (live) setError(`Could not open the received lobby: ${errorMessage(reason)}`);
@@ -512,13 +621,35 @@ export function Spine() {
     return characterNames.filter((name) => indexedAssets(characterIndex.characters[name]).some((variant) => availableDirectories.has(variant.directory)));
   }, [availableDirectories, source]);
   const filteredCharacters = useMemo(() => {
-    const query = characterSearch.trim().toLocaleLowerCase();
-    return query ? loadedCharacters.filter((name) => name.toLocaleLowerCase().includes(query)) : loadedCharacters;
-  }, [characterSearch, loadedCharacters]);
+    const query = characterSearch.trim();
+    if (!query) return loadedCharacters;
+    return loadedCharacters.filter((name) => {
+      const fields = [name, ...indexedAssets(characterIndex.characters[name])
+        .filter((asset) => !availableDirectories || availableDirectories.has(asset.directory))
+        .flatMap((asset) => [asset.variant, asset.directory, asset.assetId, asset.devName, asset.extraType])];
+      return matchesLibrarySearch(query, fields);
+    });
+  }, [availableDirectories, characterIndex, characterSearch, loadedCharacters]);
+  const lobbyLabels = useMemo(() => {
+    const labels: Record<string, string> = {};
+    for (const [name, entry] of Object.entries(characterIndex.characters)) {
+      for (const asset of indexedAssets(entry)) labels[asset.directory] = `${name} · ${asset.extraType ? extraLabel(asset.extraType) : asset.variant}`;
+    }
+    return labels;
+  }, [characterIndex, language]);
+  const favoriteLobbies = navigation.favorites.filter((directory) => availableDirectories?.has(directory));
+  const recentLobbies = navigation.recent.filter((directory) => availableDirectories?.has(directory));
   const selectedVariant = variants.find((variant) => variant.directory === selectedDirectory) ?? variants[0];
   const selectedDirectoryName = selectedVariant?.directory ?? "";
-  const selectedInteractionProject = localInteractionProject;
+  const thumbnailSource = desktopSource;
+  useEffect(() => {
+    if (!navigationRootKey || navigationRootRef.current !== navigationRootKey
+      || !selectedDirectoryName || !availableDirectories?.has(selectedDirectoryName)) return;
+    setNavigation((current) => recordRecentLobby(current, selectedDirectoryName));
+  }, [availableDirectories, navigationRootKey, selectedDirectoryName]);
+  const selectedInteractionProject = draftPreview?.lobbyId === selectedDirectoryName ? draftPreview.project : localInteractionProject;
   const compositionSequenceIds = selectedInteractionProject ? timelineSequenceIds(selectedInteractionProject) : [];
+  const compositionSequenceSignature = compositionSequenceIds.join("\u001f");
   const compositionSequenceId = selectedSequenceId && compositionSequenceIds.includes(selectedSequenceId)
     ? selectedSequenceId
     : "";
@@ -531,13 +662,89 @@ export function Spine() {
       && timelineForSequence(selectedInteractionProject, "opening"),
   );
   const activeViewport = () => compositionActive ? compositionRef.current : viewportRef.current;
+  const draftSessionId = draftPreview?.sessionId ?? null;
+  useEffect(() => {
+    if (!draftSessionId || !isDesktopHost()) return;
+    let live = true;
+    let timer: number | null = null;
+    const pollDraft = async () => {
+      if (!live) return;
+      const current = draftPreviewRef.current;
+      if (!current || current.sessionId !== draftSessionId) return;
+      try {
+        const snapshot = await readDesktopDraftSnapshot(draftSessionId);
+        if (!live) return;
+        if (!snapshot
+          || snapshot.sessionId !== current.sessionId
+          || snapshot.library.identity !== current.library.identity
+          || snapshot.lobbyId !== current.lobbyId) {
+          setDraftPreview(null);
+          setDraftPreviewNotice(t("spine.draft.ended"));
+          return;
+        }
+        if (snapshot.project.assetDirectory !== snapshot.lobbyId) throw new Error("Draft lobby mismatch.");
+        if (snapshot.revision > current.revision) {
+          const project = normalizeSpineInteractionProject(snapshot.project, snapshot.lobbyId);
+          if (!project) throw new Error("Draft project is no longer valid.");
+          setDraftPreview((active) => active?.sessionId === draftSessionId ? { ...snapshot, project } : active);
+        }
+      } catch {
+        if (live) {
+          setDraftPreview(null);
+          setDraftPreviewNotice(t("spine.draft.disconnected"));
+        }
+        return;
+      }
+      if (live) timer = window.setTimeout(() => { void pollDraft(); }, 600);
+    };
+    void pollDraft();
+    return () => {
+      live = false;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [draftSessionId]);
+
+  useEffect(() => {
+    if (draftPreview && draftPreview.lobbyId !== selectedDirectoryName) {
+      setDraftPreview(null);
+      setDraftPreviewNotice(t("spine.draft.ended"));
+    }
+  }, [draftPreview?.sessionId, selectedDirectoryName]);
+
+  viewerReloadStateRef.current = {
+    rootPath: source && "rootPath" in source && typeof source.rootPath === "string" ? source.rootPath : null,
+    lobbyId: selectedDirectoryName,
+    snapshot: {
+      language,
+      cameraMode,
+      cameraPose: null,
+      voiceVolume,
+      playing,
+      loop,
+      speed,
+      playheadSeconds: progress.time,
+      sequenceId: selectedSequenceId,
+      animation,
+    },
+  };
 
   useEffect(() => {
     let live = true;
     setLocalInteractionProject(null);
-    if (!source || !selectedDirectoryName) return () => { live = false; };
+    if (!source || !selectedDirectoryName) {
+      setInteractionProjectLoading(false);
+      return () => { live = false; };
+    }
+    setInteractionProjectLoading(true);
     void readLocalInteractionProject(source, selectedDirectoryName).then((project) => {
-      if (live) setLocalInteractionProject(project);
+      if (!live) return;
+      setLocalInteractionProject(project);
+      setInteractionProjectLoading(false);
+    }).catch((reason: unknown) => {
+      if (!live) return;
+      setLocalInteractionProject(null);
+      setInteractionProjectLoading(false);
+      setError(t("spine.error.loadSet", { error: errorMessage(reason) }));
     });
     return () => { live = false; };
   }, [selectedDirectoryName, source]);
@@ -547,9 +754,12 @@ export function Spine() {
     const sequenceIds = selectedInteractionProject ? timelineSequenceIds(selectedInteractionProject) : [];
     const pendingHandoff = pendingHandoffRef.current;
     const handoffSequence = pendingHandoff?.lobbyId === selectedDirectoryName ? pendingHandoff.sequenceId : undefined;
+    const currentSequence = sequenceIds.includes(selectedSequenceId) ? selectedSequenceId : "";
     const initialSequence = handoffSequence && sequenceIds.includes(handoffSequence)
       ? handoffSequence
-      : entrySequence && sequenceIds.includes(entrySequence) ? entrySequence : "";
+      : !pendingHandoff && currentSequence
+        ? currentSequence
+        : entrySequence && sequenceIds.includes(entrySequence) ? entrySequence : "";
     setIdleMode("none");
     setSelectedSequenceId(initialSequence);
     const initialTimeline = selectedInteractionProject && initialSequence ? timelineForSequence(selectedInteractionProject, initialSequence) : null;
@@ -558,11 +768,20 @@ export function Spine() {
       duration: initialTimeline ? projectTimelineDuration(initialTimeline, selectedInteractionProject) : 0,
       animation: null,
     });
-  }, [selectedInteractionProject, selectedDirectoryName]);
+  }, [compositionSequenceSignature, selectedDirectoryName, selectedInteractionProject?.entrySequence, selectedSequenceId]);
 
   useEffect(() => {
     const handoff = pendingHandoffRef.current;
-    if (!handoff || handoff.lobbyId !== selectedDirectoryName || !setFiles) return;
+    if (!handoff || handoff.lobbyId !== selectedDirectoryName || !setFiles || interactionProjectLoading) return;
+    if (selectedInteractionProject) {
+      const sequenceIds = timelineSequenceIds(selectedInteractionProject);
+      const expectedSequence = handoff.sequenceId && sequenceIds.includes(handoff.sequenceId)
+        ? handoff.sequenceId
+        : selectedInteractionProject.entrySequence && sequenceIds.includes(selectedInteractionProject.entrySequence)
+          ? selectedInteractionProject.entrySequence
+          : "";
+      if (expectedSequence && selectedSequenceId !== expectedSequence) return;
+    }
     if (handoff.playheadSeconds !== undefined) {
       if (compositionActive) {
         const duration = compositionTimeline ? projectTimelineDuration(compositionTimeline, selectedInteractionProject) : handoff.playheadSeconds;
@@ -573,7 +792,7 @@ export function Spine() {
       }
     }
     pendingHandoffRef.current = null;
-  }, [compositionActive, compositionTimeline, progress.duration, selectedDirectoryName, selectedInteractionProject, selectedSequenceId, setFiles]);
+  }, [compositionActive, compositionTimeline, interactionProjectLoading, progress.duration, selectedDirectoryName, selectedInteractionProject, selectedSequenceId, setFiles]);
 
   const legacyVoiceCharacter = voiceCharacterForDirectory(voiceManifest, selectedDirectoryName);
   const selectedVoiceCharacter = voiceCharacter ?? legacyVoiceCharacter;
@@ -738,6 +957,9 @@ export function Spine() {
   };
 
   const resetAssetPlayback = () => {
+    pendingHandoffRestoreRef.current = null;
+    setDraftPreview(null);
+    setDraftPreviewNotice(null);
     stopVoice();
     setPlaying(true);
     setSelectedSequenceId("");
@@ -747,6 +969,11 @@ export function Spine() {
     setProgress({ time: 0, duration: 0, animation: null });
     setMeta(null);
     setError(null);
+  };
+
+  const returnToSavedFiles = () => {
+    setDraftPreview(null);
+    setDraftPreviewNotice(t("spine.draft.returned"));
   };
 
   const playVoiceClip = async (session: VoiceSession, clipIndex: number): Promise<void> => {
@@ -775,6 +1002,7 @@ export function Spine() {
 
     clearVoiceAudio();
     const audio = prepared.audio;
+    audio.volume = normalizeVoiceVolume(voiceVolume);
     audio.currentTime = 0;
     voiceAudioRef.current = audio;
     audio.onplay = () => {
@@ -890,6 +1118,12 @@ export function Spine() {
     if (!voiceEnabled) stopVoice();
   }, [voiceEnabled]);
 
+  useEffect(() => {
+    const audio = voiceAudioRef.current;
+    if (audio) audio.volume = normalizeVoiceVolume(voiceVolume);
+    writeViewerVoiceVolume(voiceVolume);
+  }, [voiceVolume]);
+
   useEffect(() => () => stopVoice(false), []);
 
   useEffect(() => {
@@ -920,16 +1154,49 @@ export function Spine() {
   }, [source]);
 
   useEffect(() => {
+    setLibraryChangesAvailable(false);
+    setLibraryWatcherAvailable(null);
+    if (!desktopSource) return;
+    let live = true;
+    let polling = false;
+    let baseline: number | null = null;
+    const controller = new AbortController();
+    const pollChanges = async () => {
+      if (!live || polling) return;
+      polling = true;
+      try {
+        const state = await desktopSource.getLibraryChangeState(controller.signal);
+        if (!live) return;
+        setLibraryWatcherAvailable(state.watching);
+        if (baseline === null) baseline = state.revision;
+        else if (state.revision !== baseline) setLibraryChangesAvailable(true);
+      } catch {
+        if (live) setLibraryWatcherAvailable(false);
+      } finally {
+        polling = false;
+      }
+    };
+    void pollChanges();
+    const timer = window.setInterval(() => { void pollChanges(); }, 2000);
+    return () => {
+      live = false;
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [desktopSource]);
+
+  useEffect(() => {
     if (!source || !selectedDirectoryName || !availableDirectories?.has(selectedDirectoryName)) {
       setSetFiles(null);
       setSetLoading(false);
       return;
     }
     let live = true;
+    const controller = new AbortController();
     setSetFiles(null);
     setSetLoading(true);
     setError(null);
-    source.getSetFiles(selectedDirectoryName).then(
+    source.getSetFiles(selectedDirectoryName, controller.signal).then(
       (files) => {
         if (!live) return;
         setSetFiles(files);
@@ -941,7 +1208,10 @@ export function Spine() {
         setError(t("spine.error.loadSet", { error: errorMessage(reason) }));
       },
     );
-    return () => { live = false; };
+    return () => {
+      live = false;
+      controller.abort();
+    };
   }, [availableDirectories, source, selectedDirectoryName]);
 
   useEffect(() => {
@@ -949,6 +1219,7 @@ export function Spine() {
     const nextCharacter = characterNames.find((name) => indexedAssets(characterIndex.characters[name]).some((variant) => availableDirectories.has(variant.directory)));
     const selectedIsLoaded = indexedAssets(characterIndex.characters[selectedCharacter]).some((variant) => availableDirectories.has(variant.directory));
     if (selectedIsLoaded) return;
+    if (pendingHandoffRestoreRef.current?.lobbyId === selectedDirectoryName) pendingHandoffRestoreRef.current = null;
     const nextVariant = nextCharacter ? indexedAssets(characterIndex.characters[nextCharacter]).find((variant) => availableDirectories.has(variant.directory)) : undefined;
     resetAssetPlayback();
     setSelectedCharacter(nextCharacter ?? "");
@@ -1104,6 +1375,42 @@ export function Spine() {
     }
   };
 
+  const refreshDesktopLibrary = async () => {
+    if (!desktopSource || libraryRefreshing) return;
+    setLibraryRefreshing(true);
+    try {
+      const nextSource = await desktopSource.refreshLibrary();
+      const current = viewerReloadStateRef.current;
+      if (current?.rootPath === desktopSource.rootPath && current.lobbyId === selectedDirectoryName) {
+        const cameraPose = activeViewport()?.getCameraPose() ?? null;
+        pendingHandoffRestoreRef.current = {
+          lobbyId: selectedDirectoryName,
+          state: {
+            language: current.snapshot.language,
+            cameraMode: current.snapshot.cameraMode,
+            ...(cameraPose ? { cameraPose } : {}),
+            voiceVolume: current.snapshot.voiceVolume,
+            playing: current.snapshot.playing,
+            loop: current.snapshot.loop,
+            speed: current.snapshot.speed,
+            ...(current.snapshot.sequenceId ? { sequenceId: current.snapshot.sequenceId } : {}),
+            playheadSeconds: progressRef.current.time,
+            ...(current.snapshot.animation ? { animation: current.snapshot.animation } : {}),
+          },
+        };
+      }
+      setLibraryChangesAvailable(false);
+      setAvailableDirectories(null);
+      setSetFiles(null);
+      setSource(nextSource);
+      setError(null);
+    } catch (reason) {
+      setError(t("spine.library.refreshError", { error: errorMessage(reason) }));
+    } finally {
+      setLibraryRefreshing(false);
+    }
+  };
+
   const openInEditor = async () => {
     if (!source || !("rootPath" in source) || typeof source.rootPath !== "string" || !selectedDirectoryName) return;
     try {
@@ -1137,6 +1444,32 @@ export function Spine() {
     resetAssetPlayback();
     setSelectedCharacter(name);
     setSelectedDirectory(first?.directory ?? "");
+  };
+
+  const selectLobby = (lobbyId: string) => {
+    const character = Object.entries(characterIndex.characters)
+      .find(([, entry]) => indexedAssets(entry).some((asset) => asset.directory === lobbyId));
+    if (!character || !availableDirectories?.has(lobbyId)) return;
+    resetAssetPlayback();
+    setSelectedCharacter(character[0]);
+    setSelectedDirectory(lobbyId);
+  };
+
+  const toggleFavorite = (lobbyId: string) => {
+    setNavigation((current) => toggleViewerFavorite(current, lobbyId));
+  };
+
+  const onCharacterListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!filteredCharacters.length || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='option']")];
+    const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button[role='option']") : null;
+    const focused = target ? options.indexOf(target) : -1;
+    const current = focused >= 0 ? focused : Math.max(0, filteredCharacters.indexOf(selectedCharacter));
+    const next = nextViewerListIndex(filteredCharacters.length, current, event.key);
+    if (next < 0) return;
+    event.preventDefault();
+    options[next]?.focus();
+    selectCharacter(filteredCharacters[next]!);
   };
 
   const selectAnimation = (value: string) => {
@@ -1321,10 +1654,43 @@ export function Spine() {
   };
 
   const handleViewportMeta = (next: SpineMeta | null) => {
+    const pendingRestore = pendingHandoffRestoreRef.current;
+    const restoring = pendingRestore?.lobbyId === selectedDirectoryName ? pendingRestore.state : null;
     setMeta(next);
-    setAnimation(skipIntro && next?.idleAnimation ? next.idleAnimation : next?.defaultAnimation ?? "");
-    setCameraMode(interactionMode === "interaction" ? "game" : next?.hasGameCamera ? "game" : "fill");
+    if (!next && restoring) return;
+    const restoredAnimation = restoring?.animation && next && (
+      next.animations.includes(restoring.animation)
+      || (restoring.animation === INTRO_ANIMATION && Boolean(next.introAnimation && next.idleAnimation))
+    )
+      ? restoring.animation
+      : undefined;
+    const nextAnimation = restoredAnimation ?? (skipIntro && next?.idleAnimation ? next.idleAnimation : next?.defaultAnimation ?? "");
+    setAnimation(nextAnimation);
+    if (restoring) setCameraMode(restoring.cameraMode);
+    else setCameraMode(interactionMode === "interaction" ? "game" : next?.hasGameCamera ? "game" : "fill");
+    if (next && restoring) {
+      if (restoredAnimation && interactionMode === "free" && !compositionActive) viewportRef.current?.setAnimation(restoredAnimation);
+      if (restoring.cameraPose) {
+        if (compositionActive) compositionRef.current?.setCameraPose(restoring.cameraPose);
+        else viewportRef.current?.setCameraPose(restoring.cameraPose);
+      }
+      if (restoring.playheadSeconds !== undefined) {
+        const duration = compositionActive && compositionTimeline
+          ? projectTimelineDuration(compositionTimeline, selectedInteractionProject)
+          : next.duration;
+        const time = Math.max(0, Math.min(restoring.playheadSeconds, duration));
+        setProgress({ time, duration, animation: nextAnimation || null });
+        if (compositionActive) compositionRef.current?.seek(time);
+        else viewportRef.current?.seek(time);
+      }
+      pendingHandoffRestoreRef.current = null;
+    }
     if (!next && !compositionActive) setProgress({ time: 0, duration: 0, animation: null });
+  };
+
+  const handleViewportError = (next: Error | null) => {
+    if (next) pendingHandoffRestoreRef.current = null;
+    setError(next ? t("spine.error.render", { error: next.message }) : null);
   };
 
   const seekPlayback = (time: number) => {
@@ -1444,6 +1810,15 @@ export function Spine() {
 
     {error && <div className="alert spine-alert" role="alert">{error}</div>}
     {handoffStatus && <div className="spine-handoff-status" role="status">{handoffStatus}</div>}
+    {draftPreview?.lobbyId === selectedDirectoryName && <div className="spine-draft-banner" role="status">
+      <strong>{t("spine.draft.badge")}</strong>
+      <span>{t("spine.draft.readOnly")}</span>
+      <button className="btn ghost" type="button" onClick={returnToSavedFiles}>{t("spine.draft.return")}</button>
+    </div>}
+    {draftPreviewNotice && !draftPreview && <div className="spine-draft-notice" role="status">
+      <span>{draftPreviewNotice}</span>
+      <button type="button" aria-label={t("spine.draft.dismiss")} onClick={() => setDraftPreviewNotice(null)}><IconClose /></button>
+    </div>}
 
     <div ref={fullscreenLayoutRef} className={`spine-layout${showSidebar ? "" : " spine-sidebar-hidden"}${fullscreenClean ? " spine-clean-mode" : ""}`}>
       <aside id="spine-sidebar" className="spine-sidebar">
@@ -1462,23 +1837,44 @@ export function Spine() {
               aria-label={t("spine.characterSearchAria")}
             />
           </label>
-          <div className="spine-character-list" role="listbox" aria-label={t("spine.charactersAria")}>
+          <nav className="spine-navigation-links" aria-label={t("spine.quickAccess")}>
+            {favoriteLobbies.length > 0 && <section>
+              <h3>{t("spine.favorites")}</h3>
+              {favoriteLobbies.map((lobbyId) => <button key={`favorite:${lobbyId}`} type="button" className={lobbyId === selectedDirectoryName ? "is-selected" : undefined} onClick={() => selectLobby(lobbyId)} title={lobbyId}>
+                <IconStar /><span>{lobbyLabels[lobbyId] ?? lobbyId}</span>
+              </button>)}
+            </section>}
+            {recentLobbies.length > 0 && <section>
+              <h3>{t("spine.recents")}</h3>
+              {recentLobbies.map((lobbyId) => <button key={`recent:${lobbyId}`} type="button" className={lobbyId === selectedDirectoryName ? "is-selected" : undefined} onClick={() => selectLobby(lobbyId)} title={lobbyId}>
+                <span className="spine-recent-dot" aria-hidden="true" /><span>{lobbyLabels[lobbyId] ?? lobbyId}</span>
+              </button>)}
+            </section>}
+          </nav>
+          <span id="spine-character-keyboard-hint" className="spine-visually-hidden">{t("spine.keyboardHint")}</span>
+          <div className="spine-character-list" role="listbox" aria-label={t("spine.charactersAria")} aria-keyshortcuts="ArrowUp ArrowDown Home End" aria-describedby="spine-character-keyboard-hint" onKeyDown={onCharacterListKeyDown}>
             {filteredCharacters.map((name) => {
-              const count = indexedAssets(characterIndex.characters[name]).filter((variant) => availableDirectories?.has(variant.directory)).length;
+              const availableAssets = indexedAssets(characterIndex.characters[name]).filter((variant) => availableDirectories?.has(variant.directory));
+              const count = availableAssets.length;
               return <button
                 key={name}
                 type="button"
                 role="option"
                 aria-selected={name === selectedCharacter}
+                tabIndex={name === (filteredCharacters.includes(selectedCharacter) ? selectedCharacter : filteredCharacters[0]) ? 0 : -1}
                 className={name === selectedCharacter ? "is-selected" : undefined}
                 onClick={() => selectCharacter(name)}
               >
-                <span>{name}</span><small>{count}</small>
+                <LobbyThumbnail source={thumbnailSource} directory={availableAssets[0]?.directory ?? ""} />
+                <span className="spine-character-option-label">{name}</span><small>{count}</small>
               </button>;
             })}
             {filteredCharacters.length === 0 && <p className="hint">{source && !availableDirectories ? t("spine.loading") : t("spine.noCharacters")}</p>}
           </div>
           <div className="spine-variant-picker">
+            {selectedDirectoryName && <button className={`spine-favorite-toggle${navigation.favorites.includes(selectedDirectoryName) ? " is-favorite" : ""}`} type="button" aria-pressed={navigation.favorites.includes(selectedDirectoryName)} onClick={() => toggleFavorite(selectedDirectoryName)}>
+              <IconStar /><span>{t(navigation.favorites.includes(selectedDirectoryName) ? "spine.favorite.remove" : "spine.favorite.add")}</span>
+            </button>}
             <label className="spine-field">
               <span>{t("spine.variant")}</span>
                <select value={selectedDirectoryName} onChange={(event) => { resetAssetPlayback(); setSelectedDirectory(event.target.value); }} aria-label={t("spine.variantAria")}>
@@ -1503,6 +1899,16 @@ export function Spine() {
            <div className="spine-workspace-identity"><strong>{selectedCharacter}</strong><span>{selectedVariant?.extraType ? extraLabel(selectedVariant.extraType) : selectedVariant?.variant}</span></div>
           <div className="spine-workspace-status">
             <small>{t(meta ? "spine.preview.ready" : "spine.preview.waiting")}</small>
+            {desktopSource && <div className="spine-library-refresh">
+              {libraryChangesAvailable
+                ? <span className="spine-library-change-status" role="status">{t("spine.library.changesAvailable")}</span>
+                : libraryWatcherAvailable === false
+                  ? <span className="spine-library-change-status" role="status">{t("spine.library.watchUnavailable")}</span>
+                  : null}
+              <button className="spine-library-refresh-button" type="button" disabled={libraryRefreshing} onClick={() => void refreshDesktopLibrary()} aria-label={t(libraryRefreshing ? "spine.library.refreshing" : "spine.library.refresh")} title={t(libraryRefreshing ? "spine.library.refreshing" : "spine.library.refresh")}>
+                <IconSync /><span>{t(libraryRefreshing ? "spine.library.refreshing" : "spine.library.refresh")}</span>
+              </button>
+            </div>}
             <button className="spine-sidebar-toggle" type="button" aria-expanded={showSidebar} aria-controls="spine-sidebar" onClick={() => setShowSidebar((shown) => !shown)} title={t(showSidebar ? "spine.sidebar.hide" : "spine.sidebar.show")}>
               <IconUsers /><span>{t(showSidebar ? "spine.sidebar.hide" : "spine.sidebar.show")}</span>
             </button>
@@ -1537,7 +1943,7 @@ export function Spine() {
                onProgress={setProgress}
                onLoading={(loading) => { setRendererLoading(loading); if (!loading) setRendererLoadProgress(null); }}
                onLoadProgress={setCompositionLoadProgress}
-                onError={(next) => setError(next ? t("spine.error.render", { error: next.message }) : null)}
+                onError={handleViewportError}
                 onFinished={handleCompositionFinished}
                onTalk={(index, talkAnimation, eventCount) => beginVoiceSession(index, talkAnimation, eventCount)}
                onTalkClip={playVoiceEvent}
@@ -1563,7 +1969,7 @@ export function Spine() {
                onProgress={(next) => { if (!compositionActive) setProgress(next); }}
                onLoading={(loading) => { setRendererLoading(loading); if (!loading) setRendererLoadProgress(null); }}
                onLoadProgress={setRendererLoadProgress}
-               onError={(next) => setError(next ? t("spine.error.render", { error: next.message }) : null)}
+                onError={handleViewportError}
               onCameraMode={(mode) => setCameraMode(interactionMode === "interaction" ? "game" : mode)}
               onTalk={(index, animation, eventCount) => beginVoiceSession(index, animation, eventCount)}
               onTalkClip={playVoiceEvent}
@@ -1658,9 +2064,10 @@ export function Spine() {
                     {compositionSequenceIds.map((id) => <option key={id} value={id}>{id === "opening" ? t("spine.sequenceOpening") : id.match(/^talk-(\d+)$/)?.[1] ? t("spine.sequenceTalk", { n: id.match(/^talk-(\d+)$/)![1]! }) : id}</option>)}
                   </select></label>}
                  {!compositionActive && <label className="spine-check spine-toggle-setting"><input type="checkbox" checked={skipIntro} onChange={(event) => toggleSkipIntro(event.target.checked)} />{t("spine.skipIntro")}</label>}
-                {voiceLines.length > 0 && <>
-                   <label className="spine-check spine-toggle-setting"><input type="checkbox" checked={voiceEnabled} onChange={(event) => setVoiceEnabled(event.target.checked)} />{t("spine.voice")}{voicePlaying && <small><IconDot /></small>}</label>
-                  <label className="spine-check spine-toggle-setting"><input type="checkbox" checked={showDialogue} onChange={(event) => setShowDialogue(event.target.checked)} />{t("spine.dialogue")}</label>
+                 {voiceLines.length > 0 && <>
+                    <label className="spine-check spine-toggle-setting"><input type="checkbox" checked={voiceEnabled} onChange={(event) => setVoiceEnabled(event.target.checked)} />{t("spine.voice")}{voicePlaying && <small><IconDot /></small>}</label>
+                    <label className="spine-setting-field"><span>{t("spine.voiceVolume")}</span><input type="range" min="0" max="1" step="0.05" value={voiceVolume} onChange={(event) => setVoiceVolume(normalizeVoiceVolume(Number(event.target.value)))} aria-label={t("spine.voiceVolume")} /><output>{Math.round(voiceVolume * 100)}%</output></label>
+                   <label className="spine-check spine-toggle-setting"><input type="checkbox" checked={showDialogue} onChange={(event) => setShowDialogue(event.target.checked)} />{t("spine.dialogue")}</label>
                 </>}
                 <label className="spine-setting-field spine-effects-field"><span>{t("spine.effects")}</span><input type="range" min="0" max="1" step="0.05" value={effectsStrength} onChange={(event) => setEffectsStrength(Number(event.target.value))} aria-label={t("spine.effects")} title={t("spine.effects.hint")} /><output>{Math.round(effectsStrength * 100)}%</output></label>
                <button className="spine-settings-action" type="button" disabled={!meta} onClick={() => activeViewport()?.resetCamera()}><IconRotate /><span>{t("spine.resetView")}</span></button>

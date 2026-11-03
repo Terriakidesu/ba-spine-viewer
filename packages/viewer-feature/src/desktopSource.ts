@@ -1,7 +1,7 @@
 import type { SpineFiles } from "@ba-spine/spine-runtime/spine/spineRuntime";
 import type { AssetSource } from "@ba-spine/spine-runtime/spine/spineAssets";
 import { manifestReferenceCandidates, normalizeSpineManifest, type SpineManifestRecord } from "@ba-spine/spine-runtime/spine/spineManifest";
-import { parseHandoffMessage, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
+import { parseHandoffMessage, parseSpineDraftSnapshot, type SpineDraftSnapshot, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
 
 declare global {
   interface Window {
@@ -23,6 +23,13 @@ interface DesktopCatalog {
 export interface DesktopAssetSource extends AssetSource {
   readonly desktop: true;
   readonly rootPath: string;
+  getThumbnailFingerprint: (directory: string, signal?: AbortSignal) => Promise<string>;
+  getThumbnail: (directory: string, fingerprint: string, signal?: AbortSignal) => Promise<Blob | null>;
+  getThumbnailFiles: (directory: string, signal?: AbortSignal) => Promise<SpineFiles>;
+  putThumbnail: (directory: string, fingerprint: string, image: Blob, signal?: AbortSignal) => Promise<void>;
+  invalidateThumbnail: (directory: string, signal?: AbortSignal) => Promise<void>;
+  getLibraryChangeState: (signal?: AbortSignal) => Promise<{ revision: number; watching: boolean }>;
+  refreshLibrary: (signal?: AbortSignal) => Promise<DesktopAssetSource>;
 }
 
 export function isDesktopHost(): boolean {
@@ -84,29 +91,38 @@ export async function sendDesktopHandoff(message: SpineHandoffMessage): Promise<
   });
 }
 
+export async function readDesktopDraftSnapshot(sessionId: string): Promise<SpineDraftSnapshot | null> {
+  if (!isDesktopHost()) return null;
+  const result = await request(`/__spine/companion/draft-read?sessionId=${encodeURIComponent(sessionId)}`)
+    .then((response) => response.json()) as { snapshot?: unknown };
+  return result.snapshot ? parseSpineDraftSnapshot(result.snapshot) : null;
+}
+
 export function sourceFromDesktop(rootPath: string): DesktopAssetSource {
   let catalogPromise: Promise<DesktopCatalog> | null = null;
   const manifests = new Map<string, Promise<SpineManifestRecord | null>>();
-  const loadCatalog = () => catalogPromise ??= request("/__spine/catalog").then((response) => response.json() as Promise<DesktopCatalog>);
+  const rootQuery = `rootPath=${encodeURIComponent(rootPath)}`;
+  const loadCatalog = () => catalogPromise ??= request(`/__spine/catalog?${rootQuery}`).then((response) => response.json() as Promise<DesktopCatalog>);
 
-  const loadFile = async (path: string): Promise<File | null> => {
-    const response = await request(`/__spine/file?path=${encodeURIComponent(path)}`).catch((error: unknown) => {
+  const loadFile = async (path: string, signal?: AbortSignal): Promise<File | null> => {
+    const response = await request(`/__spine/file?path=${encodeURIComponent(path)}&${rootQuery}`, { signal }).catch((error: unknown) => {
       if (error instanceof Error && error.message.includes("(404)")) return null;
       throw error;
     });
     if (!response) return null;
     const blob = await response.blob();
-    return new File([blob], path.split("/").at(-1) ?? "asset");
+    const modifiedAt = Number(response.headers.get("x-ba-spine-file-mtime"));
+    return new File([blob], path.split("/").at(-1) ?? "asset", Number.isFinite(modifiedAt) && modifiedAt > 0 ? { lastModified: modifiedAt } : undefined);
   };
 
-  const filesForSet = async (set: SpineSet): Promise<SpineFiles> => {
+  const filesForSet = async (set: SpineSet, signal?: AbortSignal): Promise<SpineFiles> => {
     let paths = set.files;
     if (!paths) {
       const query = encodeURIComponent(set.path);
-      const result = await request(`/__spine/files?directory=${query}`).then((response) => response.json()) as { files: string[] };
+      const result = await request(`/__spine/files?directory=${query}&${rootQuery}`, { signal }).then((response) => response.json()) as { files: string[] };
       paths = result.files.map((name) => set.path === "." ? name : `${set.path}/${name}`);
     }
-    const entries = await Promise.all(paths.map(async (path) => [path, await loadFile(path)] as const));
+    const entries = await Promise.all(paths.map(async (path) => [path, await loadFile(path, signal)] as const));
     return new Map(entries.flatMap(([path, file]) => file ? [[file.name || path.split("/").at(-1)!, file] as const] : [])) as SpineFiles;
   };
 
@@ -134,18 +150,58 @@ export function sourceFromDesktop(rootPath: string): DesktopAssetSource {
     desktop: true,
     rootPath,
     getDirectories: async () => (await loadCatalog()).sets.map((set) => set.directory),
-    getSetFiles: async (directory) => {
+    getSetFiles: async (directory, signal) => {
       const set = (await loadCatalog()).sets.find((item) => item.directory === directory);
       if (!set) throw new Error(`Spine directory not found: ${directory}`);
-      return filesForSet(set);
+      return filesForSet(set, signal);
     },
-    getSetFilesAtPath: async (path) => {
+    getThumbnailFiles: async (directory, signal) => {
+      const set = (await loadCatalog()).sets.find((item) => item.directory === directory);
+      if (!set) throw new Error(`Spine directory not found: ${directory}`);
+      return filesForSet(set, signal);
+    },
+    getSetFilesAtPath: async (path, signal) => {
       const wanted = path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "").toLocaleLowerCase();
       const set = (await loadCatalog()).sets.find((item) => item.path.toLocaleLowerCase() === wanted || item.files?.some((file) => file.toLocaleLowerCase().startsWith(`${wanted}/`)));
       if (!set) throw new Error(`Manifest Spine path not found: ${path}`);
-      return filesForSet(set);
+      return filesForSet(set, signal);
     },
     getFile: loadFile,
     getManifest: loadManifest,
+    getThumbnailFingerprint: async (directory, signal) => {
+      const query = new URLSearchParams({ directory, rootPath });
+      const result = await request(`/__spine/thumbnail/fingerprint?${query}`, { signal }).then((response) => response.json()) as { fingerprint?: unknown };
+      if (typeof result.fingerprint !== "string") throw new Error(`Could not fingerprint thumbnail assets for ${directory}.`);
+      return result.fingerprint;
+    },
+    getThumbnail: async (directory, fingerprint, signal) => {
+      const query = new URLSearchParams({ directory, fingerprint, rootPath });
+      const response = await request(`/__spine/thumbnail?${query}`, { signal }).catch((error: unknown) => {
+        if (error instanceof Error && error.message.includes("(404)")) return null;
+        throw error;
+      });
+      return response ? response.blob() : null;
+    },
+    putThumbnail: async (directory, fingerprint, image, signal) => {
+      const query = new URLSearchParams({ directory, fingerprint, rootPath });
+      await request(`/__spine/thumbnail?${query}`, { method: "POST", headers: { "content-type": image.type }, body: image, signal });
+    },
+    invalidateThumbnail: async (directory, signal) => {
+      const query = new URLSearchParams({ directory, rootPath });
+      await request(`/__spine/thumbnail?${query}`, { method: "DELETE", signal });
+    },
+    getLibraryChangeState: async (signal) => {
+      const query = new URLSearchParams({ rootPath });
+      const state = await request(`/__spine/changes?${query}`, { signal }).then((response) => response.json()) as { revision?: unknown; watching?: unknown };
+      if (!Number.isSafeInteger(state.revision) || typeof state.watching !== "boolean") {
+        throw new Error("The Viewer host returned invalid library change status.");
+      }
+      return { revision: state.revision as number, watching: state.watching };
+    },
+    refreshLibrary: async (signal) => {
+      const query = new URLSearchParams({ rootPath });
+      await request(`/__spine/refresh?${query}`, { method: "POST", signal });
+      return sourceFromDesktop(rootPath);
+    },
   };
 }

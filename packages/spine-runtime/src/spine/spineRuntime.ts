@@ -546,6 +546,7 @@ export class SpineRenderer {
   private sampledEditorFace = "";
   private interactionMotionState: SpineInteractionMotionState = createInteractionMotionState();
   private fitCameraPose: CameraPose | null = null;
+  private pendingCameraPose: SpineCameraPose | null = null;
   private pendingFit = false;
   private raf = 0;
   private previousFrame = 0;
@@ -577,6 +578,7 @@ export class SpineRenderer {
     const serial = ++this.loadSerial;
     this.disposeBundle();
     this.fitCameraPose = null;
+    this.pendingCameraPose = null;
     this.callbacks.onMeta(null);
     this.callbacks.onError(null);
     this.callbacks.onLoading(true);
@@ -625,6 +627,7 @@ export class SpineRenderer {
     this.resetInteractionTargets();
     this.disposeBundle();
     this.fitCameraPose = null;
+    this.pendingCameraPose = null;
     this.callbacks.onMeta(null);
     this.callbacks.onProgress({ time: 0, duration: 0, animation: null });
     this.callbacks.onLoading(false);
@@ -1459,7 +1462,7 @@ export class SpineRenderer {
     this.pendingFit = true;
   }
 
-  /** Private authoring hook used to make separately rendered composition layers share a camera. */
+  /** Capture the current pose for a same-selection saved-file reload. */
   getCameraPose(): SpineCameraPose | null {
     if (!this.bundle || !Number.isFinite(this.renderer.camera.zoom)) return null;
     return {
@@ -1469,15 +1472,22 @@ export class SpineRenderer {
     };
   }
 
-  /** Private authoring hook; published viewer callers continue to use camera modes. */
+  /** Reapply a saved pose after the next initial-fit pass has completed. */
   setCameraPose(pose: SpineCameraPose | null) {
-    if (!pose || !this.bundle) return;
+    if (!pose || ![pose.x, pose.y, pose.zoom].every(Number.isFinite) || pose.zoom <= 0) return;
+    if (!this.bundle || this.pendingFit || !this.fitCameraPose) {
+      this.pendingCameraPose = { ...pose };
+      return;
+    }
+    this.applyCameraPose(pose);
+  }
+
+  private applyCameraPose(pose: SpineCameraPose) {
     const camera = this.renderer.camera;
     camera.position.x = pose.x;
     camera.position.y = pose.y;
-    camera.zoom = Math.max(0.0001, pose.zoom);
+    camera.zoom = pose.zoom;
     camera.update();
-    this.pendingFit = false;
   }
 
   async toggleFullscreen(element: HTMLElement) {
@@ -1528,6 +1538,11 @@ export class SpineRenderer {
         camera.update();
       }
       this.pendingFit = false;
+      if (this.pendingCameraPose) {
+        const pose = this.pendingCameraPose;
+        this.pendingCameraPose = null;
+        this.applyCameraPose(pose);
+      }
     }
   }
 

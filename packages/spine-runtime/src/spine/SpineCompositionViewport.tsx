@@ -8,6 +8,8 @@ import { SpineTimelineLayerCanvas } from "./SpineTimelineLayerCanvas";
 
 export interface SpineCompositionViewportHandle {
   resetCamera: () => void;
+  getCameraPose: () => SpineCameraPose | null;
+  setCameraPose: (pose: SpineCameraPose | null) => void;
   toggleFullscreen: () => Promise<void>;
   restartPlayback: () => void;
   seek: (time: number) => void;
@@ -64,6 +66,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   const [metas, setMetas] = useState<Record<string, SpineMeta | null>>({});
   const [animationDurations, setAnimationDurations] = useState<Record<string, number>>({});
   const [sharedCameraPose, setSharedCameraPose] = useState<SpineCameraPose | null>(null);
+  const pendingCameraPoseRef = useRef<SpineCameraPose | null>(null);
   const [interactionOverlay, setInteractionOverlay] = useState<SpineInteractionOverlay>({ canvasWidth: 0, canvasHeight: 0, points: [] });
   const [resetCameraSignal, setResetCameraSignal] = useState(0);
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({});
@@ -143,6 +146,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
 
   useEffect(() => {
     let live = true;
+    const controller = new AbortController();
     const directories = [...new Set(layers.map((layer) => layer.directory))];
     if (!directories.length) {
       setFilesLoading(false);
@@ -156,7 +160,9 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
       const key = assetPath ?? item;
       let pending = fileCacheRef.current.get(key);
       if (!pending) {
-        pending = assetPath && source.getSetFilesAtPath ? source.getSetFilesAtPath(assetPath) : source.getSetFiles(item);
+        pending = assetPath && source.getSetFilesAtPath
+          ? source.getSetFilesAtPath(assetPath, controller.signal)
+          : source.getSetFiles(item, controller.signal);
         fileCacheRef.current.set(key, pending);
       }
       const files = await pending;
@@ -171,7 +177,11 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
       setFilesLoading(false);
       onErrorRef.current(reason instanceof Error ? reason : new Error(String(reason)));
     });
-    return () => { live = false; };
+    return () => {
+      live = false;
+      controller.abort();
+      fileCacheRef.current.clear();
+    };
   // The layer directory key keeps this request scoped to the saved composition.
   // eslint is intentionally not part of this repository; keep the dependency explicit.
   }, [assetPathsKey, directoriesKey, source]);
@@ -354,6 +364,15 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
 
   useImperativeHandle(ref, () => ({
     resetCamera: () => setResetCameraSignal((value) => value + 1),
+    getCameraPose: () => talkRendererRef.current?.getCameraPose() ?? sharedCameraPose,
+    setCameraPose: (pose) => {
+      pendingCameraPoseRef.current = pose;
+      setSharedCameraPose(pose);
+      if (pose && talkRendererRef.current) {
+        talkRendererRef.current.setCameraPose(pose);
+        pendingCameraPoseRef.current = null;
+      }
+    },
     toggleFullscreen: async () => {
       if (document.fullscreenElement) await document.exitFullscreen();
       else if (stageRef.current?.requestFullscreen) await stageRef.current.requestFullscreen();
@@ -375,7 +394,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
     setTalkAudioPending: (pending) => talkRendererRef.current?.setTalkAudioPending(pending),
     isTalkActive: () => talkRendererRef.current?.isTalkActive() ?? false,
     startIntroAudio: () => talkRendererRef.current?.startIntroAudio(),
-  }), [idleMode, interactionMode, layers, openingIdleStart, playbackDuration, progressAnimation, referenceLayerId, timeline]);
+  }), [idleMode, interactionMode, layers, openingIdleStart, playbackDuration, progressAnimation, referenceLayerId, sharedCameraPose, timeline]);
 
   const activeSubtitleTexts = idleMode === "none" ? timelineActiveSubtitleTexts(timeline, effectiveCurrentTime) : [];
   const interactionLayer = layers.find((layer) => layer.id === referenceLayerId);
@@ -392,8 +411,16 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   const interactionColors = { pat: "#ff668f", pinch: "#28c7ed", touch: "#ffc857" } as const;
   return <div ref={stageRef} className={`spine-stage spine-stage-composition${interactionMode === "interaction" ? " spine-stage-interaction" : ""}`}>
      <div className="spine-visual-composition">
-       {visualLayers.map((entry) => entry.kind === "spine"
-         ? <SpineTimelineLayerCanvas key={`spine-${entry.layer.id}`} layer={entry.layer} files={files[entry.layer.directory] ?? null} interactionEnabled={interactionMode === "interaction" && entry.layer.id === referenceLayerId} interactionProject={entry.layer.id === referenceLayerId ? interactionProject : null} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} showInteractionPoints={showInteractionPoints} currentTime={effectiveCurrentTime} mainAnimation={mainAnimationState?.animation} mainAnimationTime={mainAnimationState?.time} mainAnimationLoop={mainAnimationState?.loop} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} idleMode={idleMode} characterHidden={characterHidden} sharedCameraPose={sharedCameraPose} referenceCamera={entry.layer.id === referenceLayerId} effectsStrength={effectsStrength} resetCameraSignal={resetCameraSignal} onMeta={(id, value) => { setMetas((current) => current[id] === value ? current : { ...current, [id]: value }); if (id === referenceLayerId) onMeta(value); }} onAnimationDuration={(id, animation, duration) => setAnimationDurations((current) => current[`${id}:${animation}`] === duration ? current : { ...current, [`${id}:${animation}`]: duration })} onInteractionPoints={(id, value) => { if (id === referenceLayerId) setInteractionOverlay(value); }} onRenderer={(id, value) => { if (id === referenceLayerId) talkRendererRef.current = value; }} onRendererLoading={(id, loading) => setLoadingLayers((current) => { const next = new Set(current); if (loading) next.add(id); else next.delete(id); return next; })} onLoadProgress={(_id, value) => onLoadProgressRef.current(value)} onCameraPose={setSharedCameraPose} onTalk={onTalk} onTalkClip={onTalkClip} onIntro={onIntro} onIntroClip={onIntroClip} onError={(value) => onError(value ? new Error(value) : null)} />
+        {visualLayers.map((entry) => entry.kind === "spine"
+          ? <SpineTimelineLayerCanvas key={`spine-${entry.layer.id}`} layer={entry.layer} files={files[entry.layer.directory] ?? null} interactionEnabled={interactionMode === "interaction" && entry.layer.id === referenceLayerId} interactionProject={entry.layer.id === referenceLayerId ? interactionProject : null} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} showInteractionPoints={showInteractionPoints} currentTime={effectiveCurrentTime} mainAnimation={mainAnimationState?.animation} mainAnimationTime={mainAnimationState?.time} mainAnimationLoop={mainAnimationState?.loop} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} idleMode={idleMode} characterHidden={characterHidden} sharedCameraPose={sharedCameraPose} referenceCamera={entry.layer.id === referenceLayerId} effectsStrength={effectsStrength} resetCameraSignal={resetCameraSignal} onMeta={(id, value) => { setMetas((current) => current[id] === value ? current : { ...current, [id]: value }); if (id === referenceLayerId) onMeta(value); }} onAnimationDuration={(id, animation, duration) => setAnimationDurations((current) => current[`${id}:${animation}`] === duration ? current : { ...current, [`${id}:${animation}`]: duration })} onInteractionPoints={(id, value) => { if (id === referenceLayerId) setInteractionOverlay(value); }} onRenderer={(id, value) => {
+            if (id !== referenceLayerId) return;
+            talkRendererRef.current = value;
+            const pendingPose = pendingCameraPoseRef.current;
+            if (value && pendingPose) {
+              value.setCameraPose(pendingPose);
+              pendingCameraPoseRef.current = null;
+            }
+          }} onRendererLoading={(id, loading) => setLoadingLayers((current) => { const next = new Set(current); if (loading) next.add(id); else next.delete(id); return next; })} onLoadProgress={(_id, value) => onLoadProgressRef.current(value)} onCameraPose={setSharedCameraPose} onTalk={onTalk} onTalkClip={onTalkClip} onIntro={onIntro} onIntroClip={onIntroClip} onError={(value) => onError(value ? new Error(value) : null)} />
          : <SpineColorLayer key={`color-${entry.layer.id}`} layer={entry.layer} time={effectiveCurrentTime} />)}
      </div>
     {showInteractionPoints && interactionOverlay.points.length > 0 && interactionOverlay.canvasWidth > 0 && interactionOverlay.canvasHeight > 0 && <svg className="spine-interaction-overlay" style={interactionOverlayStyle} viewBox={`0 0 ${interactionOverlay.canvasWidth} ${interactionOverlay.canvasHeight}`} preserveAspectRatio="none" aria-hidden="true">

@@ -101,9 +101,9 @@ export async function readCharacterIndex(source: AssetSource, fallback: Characte
 }
 
 export interface AssetSource {
-  getSetFiles: (directory: string) => Promise<SpineFiles>;
+  getSetFiles: (directory: string, signal?: AbortSignal) => Promise<SpineFiles>;
   /** Resolve a manifest-declared root-relative Spine set path without inferring from directory names. */
-  getSetFilesAtPath?: (path: string) => Promise<SpineFiles>;
+  getSetFilesAtPath?: (path: string, signal?: AbortSignal) => Promise<SpineFiles>;
   getDirectories: () => Promise<string[]>;
   getFile: (path: string) => Promise<File | null>;
   getManifest?: (directory: string) => Promise<SpineManifestRecord | null>;
