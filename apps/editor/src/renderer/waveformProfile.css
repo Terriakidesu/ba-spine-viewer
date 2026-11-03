@@ -1,0 +1,54 @@
+.waveform-profile {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 32px clamp(18px, 5vw, 64px);
+  background: #11171b;
+  color: #e9f5fc;
+  font: 14px/1.5 system-ui, sans-serif;
+}
+
+.waveform-profile * { box-sizing: border-box; }
+.waveform-profile header { max-width: 920px; }
+.waveform-profile h1 { margin: 4px 0 12px; font-size: 30px; }
+.waveform-profile h2 { margin: 0 0 8px; }
+.waveform-profile p { color: #b8c8ce; }
+.waveform-profile-eyebrow { color: #8ce3bd !important; font-size: 11px; font-weight: 700; letter-spacing: .12em; }
+.waveform-profile code { color: #a6ffdb; }
+
+.waveform-profile-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin: 24px 0;
+}
+
+.waveform-profile-controls label { display: grid; gap: 5px; color: #b8c8ce; font-size: 12px; }
+.waveform-profile select, .waveform-profile button {
+  min-height: 36px;
+  border: 1px solid #52646b;
+  border-radius: 5px;
+  padding: 6px 10px;
+  background: #202b30;
+  color: #e9f5fc;
+  font: inherit;
+}
+.waveform-profile button { cursor: pointer; background: #28634e; border-color: #61d095; font-weight: 650; }
+.waveform-profile button:disabled { cursor: wait; opacity: .6; }
+.waveform-profile .waveform-profile-cancel { background: #3b3030; border-color: #9a7070; }
+
+.waveform-profile-fixture { max-width: 860px; margin: 24px 0; }
+.waveform-profile-rows { display: grid; gap: 8px; }
+.waveform-profile-row {
+  position: relative;
+  height: 48px;
+  overflow: hidden;
+  border: 1px solid #47785f;
+  border-radius: 4px;
+  background: #203b31;
+}
+.waveform-profile-row .timeline-waveform { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .55; pointer-events: none; }
+.waveform-profile-row span { position: relative; z-index: 1; display: block; padding: 12px; text-shadow: 0 1px 3px #000; }
+
+.waveform-profile-report { max-width: 1000px; margin-top: 32px; }
+.waveform-profile-report pre { max-height: 65vh; overflow: auto; border: 1px solid #36464d; border-radius: 6px; padding: 16px; background: #0b1013; color: #b9ead3; font: 12px/1.45 ui-monospace, monospace; }

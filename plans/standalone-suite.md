@@ -117,7 +117,15 @@ Keep WASM deferred. The 32-clip aggregate is deliberately synchronous and not re
 
 The reproducible synthetic profile now includes a 15-second clip and a data-informed batch of four 8-second clips. On Bun 1.4.2 / Windows x64 / Intel i3-1115G4, that run measured 3.369 ms median / 7.435 ms p95 for one 15-second envelope; four 8-second envelopes measured 6.681 ms / 13.431 ms. The 32×5-second stress batch measured 46.188 ms / 72.293 ms, but exceeds observed timeline clip counts.
 
-A separate read-only profile decoded the four OGG files referenced by one maximum-size local sequence to 48 kHz PCM with FFmpeg, then timed the production JS helper: the synchronous four-clip batch measured 5.364 ms median / 8.773 ms p95. This excludes `AudioContext` decode, fetch, React work, and actual frame scheduling; it supports keeping WASM deferred, not claiming the complete UI path is proven under budget. A repeatable in-app decode/UI profile is the next evidence gate before adding a worker or WASM kernel.
+A separate read-only profile decoded the four OGG files referenced by one maximum-size local sequence to 48 kHz PCM with FFmpeg, then timed the production JS helper: the synchronous four-clip batch measured 5.364 ms median / 8.773 ms p95. This excludes browser decode, fetch, React work, and actual frame scheduling; it supports keeping WASM deferred, not claiming the complete UI path is proven under budget.
+
+#### Development waveform fixture (2026-11-04)
+
+`bun run profile:timeline-waveforms` starts the Editor renderer's Vite server; open `/?profile=waveforms` to load a development-only fixture. It mounts the same production `AudioWaveform` component used by `TimelineWorkspace`, using deterministic 8- or 14-second PCM WAVs generated in memory. Choose 1, 2, or 4 concurrent clips and repeat 3–10 trials. The JSON report separates AudioContext creation, Blob fetch/read, decode, JS envelope, context close, React Profiler commits, animation-frame gaps, and Long Task entries. The route bypasses `Editor`, reads no library files, uses no desktop API, and sends no telemetry. The fixture does not model OGG decoder cost or the complete timeline rendering tree.
+
+The route loaded and completed browser probes. A five-trial, four-clip run measured the synchronous envelope at 3.1 ms median / 6.8 ms p95 across 20 per-clip samples (15.1 ms maximum), but these are generated WAVs, not OGG. React/Long Task and frame results were unstable: despite the page reporting visible, the latest run yielded only 38–40 of 60 target frame samples per trial before its 1.5-second deadline; aggregate gaps were 42.3 ms median / 68.8 ms p95 with a 2.52-second maximum, and long-task entries reached 2.62 seconds. The fixture flags every trial as inadequate. Treat automation-browser end-to-end/frame results as invalid—not evidence for or against a production bottleneck. Re-run in a visible foreground browser on representative hardware before changing scheduling or introducing a worker; WASM remains gated on repeatable kernel and end-to-end wins.
+
+The fixture change passed typecheck, all 369 tests, and the full Viewer→Editor package build plus archive audit. The built Editor renderer contains no profile-route strings, confirming the fixture is development-only; `data/` remained ignored and untouched.
 
 ## Shared app and data contracts
 

@@ -22,6 +22,8 @@ bun run dev:editor
 
 `bun run build` builds both native applications (Viewer, then Editor) and audits the packaged outputs—including compressed `.tar.zst` resources—for bundled `data/` directories, catalog paths, source-workspace references, and Windows launcher files/signatures. Archives are streamed and inspected without extraction. `bun run audit:release` reruns that audit; optionally provide OS-delimited `BA_SPINE_FORBIDDEN_PATHS` and `BA_SPINE_BUILD_LOGS` lists to check additional source paths and captured build logs.
 
+To profile the Editor's timeline waveform path with generated, in-memory audio, run `bun run profile:timeline-waveforms` and open `http://127.0.0.1:5173/?profile=waveforms`. The development-only fixture exercises the production waveform component without loading `data/` or using the desktop API; its synthetic WAV results are not a substitute for OGG/full-timeline profiling. Run it in a visible foreground window and do not infer production frame performance from backgrounded or low-sample runs.
+
 ## Packaged builds
 
 The root build creates separate platform-specific Electrobun outputs under `apps/viewer/desktop/build/` and `apps/editor/desktop/build/`. On Windows, each stable output includes its app's Setup executable, compressed package, and per-user app bundle. The asset library is deliberately not bundled; launch the desired app and choose the library folder, or set `BA_SPINE_DATA` before launching. A release update feed is not configured in this workspace, so local builds do not exercise the in-app update cycle.

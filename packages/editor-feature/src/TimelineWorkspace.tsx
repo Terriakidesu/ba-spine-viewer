@@ -38,7 +38,7 @@ import { TimelinePanelResizer } from "./TimelinePanelResizer";
 import { TimelineSplitHandle } from "./TimelineSplitHandle";
 import { DEFAULT_TIMELINE_LAYOUT_PREFERENCES, normalizeTimelineLayoutPreferences, TIMELINE_LAYOUT_PREFERENCES_KEY, type TimelineLayoutPreferences } from "./timelineLayout";
 import { advanceTimelineRangeLoop, fitTimelineToRange, zoomTimelineAtCursor, type TimelineRange } from "./timelineView";
-import { audioEnvelopePeaks } from "./audioEnvelope";
+import { AudioWaveform } from "./AudioWaveform";
 import { missingManifestAssetFiles, validateTimeline, type TimelineDiagnostic } from "./timelineDiagnostics";
 import { copyTimelineSelection, pasteTimelineSelection, type TimelineClipboard, type TimelineClipboardSelection } from "./timelineClipboard";
 import { searchSubtitleCues, type SubtitleSearchLanguage } from "./subtitleCueSearch";
@@ -54,24 +54,6 @@ interface ImportedSubtitleEntry {
   end?: number;
   text: Record<TimelineLanguage, string>;
   audio: string[];
-}
-
-function AudioWaveform({ url, onDuration }: { url?: string; onDuration?: (duration: number) => void }) {
-  const [peaks, setPeaks] = useState<number[]>([]);
-  const onDurationRef = useRef(onDuration);
-  onDurationRef.current = onDuration;
-  useEffect(() => {
-    if (!url) return;
-    let live = true;
-    const context = new AudioContext();
-    void fetch(url).then((response) => response.arrayBuffer()).then((bytes) => context.decodeAudioData(bytes)).then((buffer) => {
-      if (!live) return;
-      onDurationRef.current?.(buffer.duration);
-      setPeaks(audioEnvelopePeaks(buffer.getChannelData(0)));
-    }).catch(() => undefined).finally(() => { void context.close(); });
-    return () => { live = false; };
-  }, [url]);
-  return <svg className="timeline-waveform" viewBox="0 0 160 30" preserveAspectRatio="none" aria-label="Audio waveform">{peaks.map((peak, index) => <line key={index} x1={index} x2={index} y1={15 - peak * 14} y2={15 + peak * 14} stroke="#a6ffdb" strokeWidth="0.7" />)}</svg>;
 }
 
 interface TimelineWorkspaceProps {
