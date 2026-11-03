@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HANDOFF_PROTOCOL_VERSION, HandoffValidationError, parseHandoffMessage } from "./handoff";
+import { HANDOFF_PROTOCOL_VERSION, HandoffValidationError, libraryIdentityForPath, parseHandoffMessage } from "./handoff";
 
 const validMessage = {
   protocolVersion: 1,
@@ -16,6 +16,13 @@ const validMessage = {
 describe("versioned companion handoff contract", () => {
   test("accepts and returns a normalized handoff message", () => {
     expect(parseHandoffMessage(validMessage)).toEqual({ ...validMessage, protocolVersion: HANDOFF_PROTOCOL_VERSION });
+  });
+
+  test("derives a stable fixed-length library identity from normalized path separators", async () => {
+    const windows = await libraryIdentityForPath("D:\\BA Spine\\library\\");
+    const normalized = await libraryIdentityForPath("D:/BA Spine/library");
+    expect(windows).toBe(normalized);
+    expect(windows).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
   test("supports the minimal saved-project message without optional context", () => {

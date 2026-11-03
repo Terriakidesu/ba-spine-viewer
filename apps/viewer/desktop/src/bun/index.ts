@@ -3,7 +3,9 @@ import { extname, join, relative, resolve, sep } from "node:path";
 import { ApplicationMenu, BrowserWindow, Utils } from "electrobun/main";
 import { normalizeLibraryRelativePath, resolveLibraryPath } from "@ba-spine/desktop-host/pathPolicy";
 import { createNodeLibraryReader } from "@ba-spine/desktop-host/nodeLibraryReader";
+import { COMPANION_HANDOFF_PATH, COMPANION_HEALTH_PATH, CompanionInbox, CompanionUnavailableError, registerCompanionEndpoint, sendCompanionHandoff } from "@ba-spine/desktop-host/companion";
 import { discoverSpineSets } from "@ba-spine/asset-library/catalog";
+import { parseHandoffMessage } from "@ba-spine/platform-contracts/handoff";
 import { isEditorIgnored, parseEditorIgnore, type EditorIgnoreRule } from "@ba-spine/spine-runtime/spine/editorIgnore";
 
 let assetRoot: string | null = process.env.BA_SPINE_DATA ? resolve(process.env.BA_SPINE_DATA) : null;
@@ -12,6 +14,7 @@ if (assetRoot) {
   catch { assetRoot = null; }
 }
 const EDITOR_DIRECTORIES = new Set([".editor", ".shittim-spine-editor"]);
+const companionInbox = new CompanionInbox("viewer");
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -83,6 +86,20 @@ function contentType(path: string): string {
 async function api(request: Request, url: URL): Promise<Response> {
   try {
     if (url.pathname === "/__spine/root") return json({ rootPath: assetRoot });
+    if (url.pathname === "/__spine/companion/pending" && request.method === "GET") return json({ messages: companionInbox.pending() });
+    if (url.pathname === "/__spine/companion/ack" && request.method === "POST") {
+      const body = await request.json() as { requestIds?: unknown };
+      if (!Array.isArray(body.requestIds) || body.requestIds.length > 32 || body.requestIds.some((id) => typeof id !== "string")) {
+        return errorResponse("A list of handoff request IDs is required.");
+      }
+      return json({ acknowledged: companionInbox.acknowledge(body.requestIds as string[]) });
+    }
+    if (url.pathname === "/__spine/companion/send" && request.method === "POST") {
+      const message = parseHandoffMessage(await request.json() as unknown);
+      if (message.targetApp !== "editor") return errorResponse("The viewer can only hand off to the editor.");
+      await sendCompanionHandoff(message);
+      return json({ ok: true, requestId: message.requestId });
+    }
     if (url.pathname === "/__spine/open-root" && request.method === "POST") {
       const selected = await Utils.openFileDialog({
         startingFolder: assetRoot ?? Utils.paths.home,
@@ -128,7 +145,7 @@ async function api(request: Request, url: URL): Promise<Response> {
     }
     return errorResponse("Unknown viewer endpoint.", 404);
   } catch (error) {
-    return errorResponse(error, 400);
+    return errorResponse(error, error instanceof CompanionUnavailableError ? 503 : 400);
   }
 }
 
@@ -139,6 +156,7 @@ const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === COMPANION_HANDOFF_PATH || url.pathname === COMPANION_HEALTH_PATH) return companionInbox.handle(request);
     if (url.pathname.startsWith("/__spine/")) {
       if (request.headers.get("x-ba-spine-token") !== apiToken) return errorResponse("Unauthorized viewer request.", 403);
       return api(request, url);
@@ -155,6 +173,10 @@ const server = Bun.serve({
     return new Response(file, { headers: { "content-type": contentType(full) } });
   },
 });
+
+if (server.port === undefined) throw new Error("The viewer host did not bind to a local port.");
+const companionRegistration = await registerCompanionEndpoint("viewer", server.port, { token: companionInbox.token });
+process.on("exit", () => companionRegistration.close());
 
 const window = new BrowserWindow({
   title: "BA Spine Viewer",

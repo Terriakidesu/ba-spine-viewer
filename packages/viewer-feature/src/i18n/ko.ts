@@ -393,6 +393,7 @@ export const ko: Record<keyof typeof en, string> = {
   "spine.source.localOnly": "업로드나 네트워크 요청은 없습니다. 선택한 파일을 브라우저에서 직접 읽습니다.",
   "spine.source.choose": "폴더 선택",
   "spine.source.change": "폴더 변경",
+  "spine.source.editInEditor": "이 로비 편집",
   "spine.source.helpAria": "폴더 구조 및 파일 형식 도움말",
   "spine.source.helpTitle": "폴더 구조 및 파일 형식",
   "spine.source.helpBody": "내보낸 자산 루트(권장) 또는 lobbies 폴더를 선택하세요. manifest가 각 세트의 파일을 지정합니다.",

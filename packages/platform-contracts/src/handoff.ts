@@ -26,6 +26,13 @@ export class HandoffValidationError extends Error {
   }
 }
 
+/** Stable opaque ID for a library path without putting long paths in the ID field. */
+export async function libraryIdentityForPath(path: string): Promise<string> {
+  const normalized = path.replaceAll("\\", "/").replace(/\/+$/, "") || "/";
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(normalized));
+  return `sha256:${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
 type RecordValue = Record<string, unknown>;
 
 function record(value: unknown, label: string): RecordValue {

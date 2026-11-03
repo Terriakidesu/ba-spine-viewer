@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@ba-spine/app-ui": "workspace:*",
+    "@ba-spine/platform-contracts": "workspace:*",
     "@ba-spine/spine-runtime": "workspace:*",
     "@esotericsoftware/spine-core": "4.2.120",
     "react": "^19.0.0",

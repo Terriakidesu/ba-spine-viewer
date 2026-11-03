@@ -31,6 +31,7 @@
         "@ba-spine/asset-library": "workspace:*",
         "@ba-spine/desktop-host": "workspace:*",
         "@ba-spine/editor-feature": "workspace:*",
+        "@ba-spine/platform-contracts": "workspace:*",
         "@ba-spine/spine-runtime": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.32.2",
         "zod": "^4.6.7",
@@ -56,6 +57,7 @@
       "dependencies": {
         "@ba-spine/asset-library": "workspace:*",
         "@ba-spine/desktop-host": "workspace:*",
+        "@ba-spine/platform-contracts": "workspace:*",
         "@ba-spine/spine-runtime": "workspace:*",
       },
       "devDependencies": {
@@ -81,6 +83,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@ba-spine/asset-library": "workspace:*",
+        "@ba-spine/platform-contracts": "workspace:*",
       },
     },
     "packages/editor-feature": {
@@ -88,6 +91,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@ba-spine/app-ui": "workspace:*",
+        "@ba-spine/platform-contracts": "workspace:*",
         "@ba-spine/spine-runtime": "workspace:*",
         "@esotericsoftware/spine-core": "4.2.120",
         "react": "^19.0.0",
@@ -113,6 +117,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@ba-spine/app-ui": "workspace:*",
+        "@ba-spine/platform-contracts": "workspace:*",
         "@ba-spine/spine-runtime": "workspace:*",
         "react": "^19.0.0",
         "react-dom": "^19.0.0",

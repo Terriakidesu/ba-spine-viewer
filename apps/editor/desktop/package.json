@@ -17,6 +17,7 @@
     "@ba-spine/asset-library": "workspace:*",
     "@ba-spine/desktop-host": "workspace:*",
     "@ba-spine/editor-feature": "workspace:*",
+    "@ba-spine/platform-contracts": "workspace:*",
     "@ba-spine/spine-runtime": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "zod": "^4.6.7"

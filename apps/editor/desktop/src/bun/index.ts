@@ -3,7 +3,9 @@ import { basename, dirname, extname, join, relative, resolve, sep } from "node:p
 import { ApplicationMenu, BrowserWindow, Utils } from "electrobun/main";
 import { assertLibraryWritePath, isPathWithinLibrary, isSupportedEditorWritePath, resolveExistingLibraryPath, resolveLibraryPath } from "@ba-spine/desktop-host/pathPolicy";
 import { createNodeLibraryReader } from "@ba-spine/desktop-host/nodeLibraryReader";
+import { COMPANION_HANDOFF_PATH, COMPANION_HEALTH_PATH, CompanionInbox, CompanionUnavailableError, registerCompanionEndpoint, sendCompanionHandoff } from "@ba-spine/desktop-host/companion";
 import { discoverSpineSets } from "@ba-spine/asset-library/catalog";
+import { parseHandoffMessage } from "@ba-spine/platform-contracts/handoff";
 import { isEditorIgnored, parseEditorIgnore, type EditorIgnoreRule } from "@ba-spine/spine-runtime/spine/editorIgnore";
 import { SpineEditorMcpBridge } from "./mcpBridge";
 
@@ -13,6 +15,7 @@ if (assetRoot) {
   catch { assetRoot = null; }
 }
 const mcpBridge = new SpineEditorMcpBridge(process.env.BA_SPINE_EDITOR_MCP === "1" || Bun.argv.includes("--mcp"));
+const companionInbox = new CompanionInbox("editor");
 
 const EDITOR_DIRECTORIES = new Set([".editor", ".shittim-spine-editor"]);
 
@@ -108,6 +111,20 @@ async function api(request: Request, url: URL): Promise<Response> {
       });
       assetRoot = selected[0] ? await useRoot(selected[0]) : null;
       return json({ rootPath: assetRoot });
+    }
+    if (url.pathname === "/__spine/companion/pending" && request.method === "GET") return json({ messages: companionInbox.pending() });
+    if (url.pathname === "/__spine/companion/ack" && request.method === "POST") {
+      const body = await request.json() as { requestIds?: unknown };
+      if (!Array.isArray(body.requestIds) || body.requestIds.length > 32 || body.requestIds.some((id) => typeof id !== "string")) {
+        return errorResponse("A list of handoff request IDs is required.");
+      }
+      return json({ acknowledged: companionInbox.acknowledge(body.requestIds as string[]) });
+    }
+    if (url.pathname === "/__spine/companion/send" && request.method === "POST") {
+      const message = parseHandoffMessage(await request.json() as unknown);
+      if (message.targetApp !== "viewer") return errorResponse("The editor can only hand off to the viewer.");
+      await sendCompanionHandoff(message);
+      return json({ ok: true, requestId: message.requestId });
     }
     if (url.pathname === "/__spine/use-root" && request.method === "POST") {
       const body = await request.json() as { rootPath?: unknown };
@@ -207,7 +224,7 @@ async function api(request: Request, url: URL): Promise<Response> {
     }
     return errorResponse("Unknown desktop editor endpoint.", 404);
   } catch (value) {
-    return errorResponse(value, 500);
+    return errorResponse(value, value instanceof CompanionUnavailableError ? 503 : 500);
   }
 }
 
@@ -220,6 +237,7 @@ try {
     port: 0,
     async fetch(request) {
       const url = new URL(request.url);
+      if (url.pathname === COMPANION_HANDOFF_PATH || url.pathname === COMPANION_HEALTH_PATH) return companionInbox.handle(request);
       if (url.pathname.startsWith("/__spine/mcp/")) return mcpBridge.handle(request, url);
       if (url.pathname.startsWith("/__spine/")) {
         if (request.headers.get("x-ba-spine-token") !== apiToken) return errorResponse("Unauthorized editor request.", 403);
@@ -244,6 +262,8 @@ try {
 }
 
 if (server.port === undefined) throw new Error("The editor host did not bind to a local port.");
+const companionRegistration = await registerCompanionEndpoint("editor", server.port, { token: companionInbox.token });
+process.on("exit", () => companionRegistration.close());
 const mcpConnectionFile = await mcpBridge.start(server.port);
 if (mcpConnectionFile) {
   console.log(`[ba-spine-editor] MCP enabled; start its stdio server with bun run mcp (connection file ${mcpConnectionFile})`);
@@ -260,6 +280,7 @@ try {
   console.log(`[ba-spine-editor] window ${window.id} opened`);
 } catch (value) {
   console.error("[ba-spine-editor] native window failed", value);
+  companionRegistration.close();
   server.stop();
   mcpBridge.cleanup();
   throw value;

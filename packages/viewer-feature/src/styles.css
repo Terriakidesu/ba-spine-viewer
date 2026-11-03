@@ -379,6 +379,7 @@ a { color: var(--cyan); }
 .spine-source-help-panel p { margin: 8px 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
 .spine-source-help-panel pre { margin: 8px 0; padding: 10px; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-alt); color: var(--text); font: 10px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .spine-alert { margin-top: 11px; }
+.spine-handoff-status { margin-top: 8px; color: var(--muted); font-size: 11px; }
 .spine-layout { display: grid; grid-template-columns: 218px minmax(0, 1fr); gap: 12px; align-items: start; margin-top: 12px; }
 .spine-layout.spine-sidebar-hidden { grid-template-columns: minmax(0, 1fr); }
 .spine-layout.spine-sidebar-hidden .spine-sidebar { display: none; }

@@ -31,7 +31,8 @@ import { hitRegion, inversePoint, regionMatrix, screenToWorld } from "./geometry
 import { detectHeadRegion, repairPatRegions, type HeadRegion } from "./headRegion";
 import { TimelineWorkspace } from "./TimelineWorkspace";
 import { LEGACY_PROJECT_STORAGE_PREFIX } from "./editorModel";
-import { chooseDesktopProject, chooseDesktopSource, chooseDesktopSourceAt, type DesktopAssetSource } from "./desktopSource";
+import { acknowledgeDesktopHandoff, chooseDesktopProject, chooseDesktopSource, chooseDesktopSourceAt, isDesktopHost, receiveDesktopHandoffs, sendDesktopHandoff, type DesktopAssetSource } from "./desktopSource";
+import { libraryIdentityForPath } from "@ba-spine/platform-contracts/handoff";
 import { normalizeRecentFiles, RECENT_FILES_KEY, rememberRecentFile, removeRecentFile, type RecentFile, type RecentFileKind } from "./recentFiles";
 import { AssetPickerModal } from "./AssetPickerModal";
 import { BonePicker } from "./BonePicker";
@@ -402,6 +403,8 @@ export function Editor() {
   const validationDetailsRef = useRef<HTMLDetailsElement>(null);
   const [workspace, setWorkspace] = useState<"interaction" | "timeline">("interaction");
   const [assetPickerOpen, setAssetPickerOpen] = useState(false);
+  const [initialTimelineHandoff, setInitialTimelineHandoff] = useState<{ requestId: string; sequenceId: string; playheadSeconds?: number } | null>(null);
+  const [companionStatus, setCompanionStatus] = useState<string | null>(null);
   const [previewStatus, setPreviewStatus] = useState("Idle");
   const [source, setSource] = useState<DesktopAssetSource | null>(null);
   const [directories, setDirectories] = useState<string[]>([]);
@@ -421,6 +424,7 @@ export function Editor() {
   const sourceRef = useRef<DesktopAssetSource | null>(source);
   const projectSaveQueueRef = useRef(Promise.resolve());
   const pendingProjectRef = useRef<EditorProject | null>(null);
+  const handledHandoffIdsRef = useRef(new Set<string>());
   const [viewSettings, setViewSettings] = useState<EditorViewSettings>(() => readStoredViewSettings());
   const [undo, setUndo] = useState<EditorProject[]>([]);
   const [redo, setRedo] = useState<EditorProject[]>([]);
@@ -883,6 +887,82 @@ export function Editor() {
     setSaveState("idle");
     setSavedAt(null);
   }
+
+  async function previewSavedInViewer() {
+    if (!source || !directory) return;
+    if (saveStateRef.current === "dirty" || saveStateRef.current === "saving" || saveStateRef.current === "error") {
+      setCompanionStatus("Save the project before previewing saved files.");
+      return;
+    }
+    try {
+      const timelineSnapshot = mcpTimelineSnapshotRef.current;
+      const sequenceId = timelineSnapshot?.sequenceId ?? project?.timeline.sequenceId ?? undefined;
+      await sendDesktopHandoff({
+        protocolVersion: 1,
+        requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        targetApp: "viewer",
+        library: { identity: await libraryIdentityForPath(source.rootPath), path: source.rootPath },
+        lobbyId: directory,
+        ...(sequenceId ? { sequenceId } : {}),
+        ...(timelineSnapshot && Number.isFinite(timelineSnapshot.currentTime) ? { playheadSeconds: Math.max(0, timelineSnapshot.currentTime) } : {}),
+      });
+      setCompanionStatus("Saved files sent to BA Spine Viewer.");
+    } catch (reason) {
+      setCompanionStatus(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  useEffect(() => {
+    if (!isDesktopHost()) return;
+    let live = true;
+    let polling = false;
+    const poll = async () => {
+      if (!live || polling) return;
+      polling = true;
+      try {
+        for (const message of await receiveDesktopHandoffs()) {
+          if (!live) continue;
+          if (handledHandoffIdsRef.current.has(message.requestId)) {
+            await acknowledgeDesktopHandoff(message.requestId).catch(() => undefined);
+            break;
+          }
+          try {
+            if (!(await confirmOpen())) {
+              setStatus("Handoff dismissed; the unsaved project was kept.");
+              continue;
+            }
+            const next = await chooseDesktopSourceAt(message.library.path);
+            if (!next) continue;
+            if (await libraryIdentityForPath(next.rootPath) !== message.library.identity) {
+              throw new Error("The library identity does not match the handoff path.");
+            }
+            pendingProjectRef.current = null;
+            setPendingSubtitlePath(null);
+            setPendingAudioPaths(null);
+            await useSource(next, message.lobbyId);
+            setInitialTimelineHandoff(message.sequenceId
+              ? { requestId: message.requestId, sequenceId: message.sequenceId, ...(message.playheadSeconds !== undefined ? { playheadSeconds: message.playheadSeconds } : {}) }
+              : null);
+            setWorkspace(message.sequenceId ? "timeline" : "interaction");
+            setStatus(`Opened ${message.lobbyId} from the companion app.`);
+          } catch (reason) {
+            if (live) setError(`Could not apply the received handoff: ${reason instanceof Error ? reason.message : String(reason)}`);
+          } finally {
+            handledHandoffIdsRef.current.add(message.requestId);
+            await acknowledgeDesktopHandoff(message.requestId).catch(() => undefined);
+          }
+          break;
+        }
+      } catch (reason) {
+        if (live) setError(`Companion handoff polling failed: ${reason instanceof Error ? reason.message : String(reason)}`);
+      } finally {
+        polling = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 800);
+    return () => { live = false; window.clearInterval(timer); };
+  }, [saveState]);
 
   async function openFolder() {
     if (!(await confirmOpen())) return;
@@ -1507,11 +1587,13 @@ export function Editor() {
               {recentList(8)}
             </div>
           </details>
+          {isDesktopHost() && source && <button className="editor-button" type="button" onClick={() => void previewSavedInViewer()} disabled={!assetLoaded || saveState === "saving"} title="Save changes before previewing the saved library files in BA Spine Viewer">Preview saved in Viewer</button>}
             <SaveStatus state={saveState} savedAt={savedAt} hasProject={Boolean(project)} />
            <button className="editor-button editor-save-button" onClick={() => void saveProject()} disabled={!assetLoaded || saveState === "saving"} title="Write the project and linked subtitles to the selected asset root">Save to root</button>
           <button className="editor-button" onClick={() => setHelp((value) => !value)} title="Keyboard shortcuts (?)">? Help</button>
         </div>
       </header>
+      {companionStatus && <div role="status" className="editor-companion-status">{companionStatus}</div>}
       <AssetPickerModal open={assetPickerOpen} title="Switch character or asset set" eyebrow="CHARACTER / ASSET SET" description="Search the loaded Spine catalog, then choose the set to edit." directories={directories} selected={directory} assetRoot={source?.rootPath ?? ""} directoryInfo={directoryInfo} renderLabel={(item) => characterDirectoryLabel(item, directoryLabels)} getSearchText={(item) => characterDirectoryLabel(item, directoryLabels)} onClose={() => setAssetPickerOpen(false)} onSelect={(next) => { setAssetPickerOpen(false); void changeDirectory(next); }} />
       <CommandPalette open={commandPaletteOpen} commands={commandPaletteCommands} onClose={() => setCommandPaletteOpen(false)} />
 
@@ -1771,7 +1853,7 @@ export function Editor() {
           </section>}
         </aside>
       </main>
-      {workspace === "timeline" && assetLoaded && <TimelineWorkspace source={source} directory={directory} directories={directories} directoryLabels={directoryLabels} directoryInfo={directoryInfo} project={project} initialSubtitlePath={pendingSubtitlePath} onSubtitleOpened={() => setPendingSubtitlePath(null)} initialAudioPaths={pendingAudioPaths} onAudioOpened={() => setPendingAudioPaths(null)} onRecentFile={recordRecentFile} onMutate={mutate} onLive={live} onBeginEdit={beginTimelineEdit} onSave={() => saveProject()} onRegisterSave={(callback) => { timelineSaveRef.current = callback; }} onStatus={setStatus} onError={setError} onRegisterMcp={registerMcpTimeline} onMcpSnapshot={publishTimelineMcpSnapshot} />}
+      {workspace === "timeline" && assetLoaded && <TimelineWorkspace source={source} directory={directory} directories={directories} directoryLabels={directoryLabels} directoryInfo={directoryInfo} project={project} initialHandoff={initialTimelineHandoff} initialSubtitlePath={pendingSubtitlePath} onSubtitleOpened={() => setPendingSubtitlePath(null)} initialAudioPaths={pendingAudioPaths} onAudioOpened={() => setPendingAudioPaths(null)} onRecentFile={recordRecentFile} onMutate={mutate} onLive={live} onBeginEdit={beginTimelineEdit} onSave={() => saveProject()} onRegisterSave={(callback) => { timelineSaveRef.current = callback; }} onStatus={setStatus} onError={setError} onRegisterMcp={registerMcpTimeline} onMcpSnapshot={publishTimelineMcpSnapshot} />}
       <footer className="editor-statusbar">
         <span className={error ? "editor-error" : ""}>{error ?? status}</span>
         <span>{directory ? `${displayName(directory)} · ${files?.size ?? 0} files` : "No asset loaded"} · {testing ? "TEST MODE" : workspace === "timeline" ? "TIMELINE" : "EDIT MODE"}</span>

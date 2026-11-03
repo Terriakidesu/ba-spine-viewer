@@ -83,6 +83,7 @@ interface TimelineWorkspaceProps {
   directoryLabels?: CharacterDirectoryLabels;
   directoryInfo?: Readonly<Record<string, CharacterDirectoryInfo>>;
   project: EditorProject | null;
+  initialHandoff?: { requestId: string; sequenceId: string; playheadSeconds?: number } | null;
   initialSubtitlePath?: string | null;
   onSubtitleOpened: () => void;
   initialAudioPaths?: string[] | null;
@@ -283,7 +284,7 @@ function canvasHasVisiblePixels(source: HTMLCanvasElement): boolean {
   return false;
 }
 
-export function TimelineWorkspace({ source, directory, directories, directoryLabels = {}, directoryInfo = {}, project, initialSubtitlePath, onSubtitleOpened, initialAudioPaths, onAudioOpened, onRecentFile, onMutate, onLive, onBeginEdit, onSave, onRegisterSave, onStatus, onError, onRegisterMcp, onMcpSnapshot }: TimelineWorkspaceProps) {
+export function TimelineWorkspace({ source, directory, directories, directoryLabels = {}, directoryInfo = {}, project, initialHandoff, initialSubtitlePath, onSubtitleOpened, initialAudioPaths, onAudioOpened, onRecentFile, onMutate, onLive, onBeginEdit, onSave, onRegisterSave, onStatus, onError, onRegisterMcp, onMcpSnapshot }: TimelineWorkspaceProps) {
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -305,6 +306,7 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
   const [stagePanning, setStagePanning] = useState(false);
   const [markers, setMarkers] = useState<number[]>([]);
   const [inspector, setInspector] = useState<"sequence" | "layer" | "color-layer" | "animation" | "color-clip" | "cue" | "audio" | "multi">("sequence");
+  const appliedHandoffIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stageWrapRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -490,6 +492,23 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
   const referenceLayerId = timeline ? timelineReferenceLayerId(timeline) : "";
   const animations = characterMeta?.animations ?? [];
   const sequenceIds = useMemo(() => [...new Set(["opening", ...animations.filter((name) => /talk[_ -]?\d+/i.test(name)).map(talkSequenceId), ...Object.keys(project?.sequences ?? {}).filter((id) => id !== "legacy")])], [animations, project?.sequences]);
+  useEffect(() => {
+    if (!initialHandoff || appliedHandoffIdRef.current === initialHandoff.requestId || !timeline) return;
+    if (!sequenceIds.includes(initialHandoff.sequenceId)) {
+      if (characterLayer && !metas[characterLayer.id]) return;
+      appliedHandoffIdRef.current = initialHandoff.requestId;
+      onError(`The received sequence “${initialHandoff.sequenceId}” is not present in this project.`);
+      return;
+    }
+    if (timeline.sequenceId !== initialHandoff.sequenceId) {
+      chooseSequence(initialHandoff.sequenceId);
+      return;
+    }
+    if (initialHandoff.playheadSeconds !== undefined) {
+      setCurrentTime(Math.max(0, Math.min(initialHandoff.playheadSeconds, timeline.duration)));
+    }
+    appliedHandoffIdRef.current = initialHandoff.requestId;
+  }, [initialHandoff, sequenceIds, timeline?.sequenceId, timeline?.duration, characterLayer?.id, metas, onError]);
   const talkSequenceIds = useMemo(() => sequenceIds.filter((id) => /^talk-\d+$/i.test(id))
     .sort((a, b) => Number(a.match(/\d+$/)?.[0] ?? 0) - Number(b.match(/\d+$/)?.[0] ?? 0)), [sequenceIds]);
   sequenceContextRef.current = { animations, directories };

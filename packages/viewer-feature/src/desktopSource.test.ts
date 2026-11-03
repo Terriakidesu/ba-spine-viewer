@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { sourceFromDesktop } from "./desktopSource";
+import { acknowledgeDesktopHandoff, receiveDesktopHandoffs, sendDesktopHandoff, sourceFromDesktop } from "./desktopSource";
 
 const manifest = JSON.stringify({
   schemaVersion: 1,
@@ -65,6 +65,56 @@ describe("viewer desktop asset source", () => {
     try {
       const source = sourceFromDesktop("D:/fixture");
       expect(await source.getFile("missing.json")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
+  });
+
+  test("polls, acknowledges, and sends handoffs through the authenticated host API", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const calls: Array<{ path: string; method: string; token: string | null; body?: unknown }> = [];
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { __BA_SPINE_HOST_TOKEN__: "test-token" } });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://127.0.0.1");
+      calls.push({
+        path: url.pathname,
+        method: init?.method ?? "GET",
+        token: new Headers(init?.headers).get("x-ba-spine-token"),
+        ...(init?.body ? { body: JSON.parse(String(init.body)) as unknown } : {}),
+      });
+      return url.pathname.endsWith("/pending")
+        ? Response.json({ messages: [{
+            protocolVersion: 1,
+            requestId: "req_00000003",
+            targetApp: "viewer",
+            library: { identity: "fixture", path: "D:\\fixture" },
+            lobbyId: "Airi_home",
+            sequenceId: "opening",
+          }] })
+        : Response.json({ ok: true });
+    }) as typeof fetch;
+
+    try {
+      const messages = await receiveDesktopHandoffs();
+      expect(messages).toHaveLength(1);
+      expect(messages[0]?.lobbyId).toBe("Airi_home");
+      await acknowledgeDesktopHandoff("req_00000003");
+      await sendDesktopHandoff({
+        protocolVersion: 1,
+        requestId: "req_00000004",
+        targetApp: "editor",
+        library: { identity: "fixture", path: "D:\\fixture" },
+        lobbyId: "Airi_home",
+      });
+      expect(calls.map(({ path, method }) => [path, method])).toEqual([
+        ["/__spine/companion/pending", "GET"],
+        ["/__spine/companion/ack", "POST"],
+        ["/__spine/companion/send", "POST"],
+      ]);
+      expect(calls.every((call) => call.token === "test-token")).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
       if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);

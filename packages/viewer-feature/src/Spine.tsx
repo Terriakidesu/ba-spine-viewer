@@ -2,8 +2,9 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, 
 import { IconChevronDown, IconChevronUp, IconClose, IconCompress, IconDot, IconExpand, IconEye, IconEyeOff, IconFolder, IconHand, IconMessage, IconPause, IconPlay, IconRotate, IconSearch, IconSliders, IconTarget, IconUsers } from "@ba-spine/app-ui/icons";
 import { LanguageSwitch } from "./components/LanguageSwitch";
 import { ThemeSwitch } from "./components/ThemeSwitch";
-import { t, useLanguage, type LangKey } from "./i18n";
-import { chooseDesktopSource, isDesktopHost, loadDesktopSource } from "./desktopSource";
+import { setLanguage, t, useLanguage, type LangKey } from "./i18n";
+import { acknowledgeDesktopHandoff, chooseDesktopSource, chooseDesktopSourceAt, isDesktopHost, loadDesktopSource, receiveDesktopHandoffs, sendDesktopHandoff } from "./desktopSource";
+import { libraryIdentityForPath, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
 import {
   INTRO_ANIMATION,
   SpineRenderer,
@@ -317,6 +318,7 @@ export function Spine() {
   const [compositionLoadProgress, setCompositionLoadProgress] = useState<SpineLoadProgress | null>(null);
   const [voiceAudioProgress, setVoiceAudioProgress] = useState({ loaded: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
+  const [handoffStatus, setHandoffStatus] = useState<string | null>(null);
   const [meta, setMeta] = useState<SpineMeta | null>(null);
   const [animation, setAnimation] = useState("");
   const [playing, setPlaying] = useState(true);
@@ -354,6 +356,8 @@ export function Spine() {
   const voiceAudioCacheRef = useRef(new Map<string, Promise<PreloadedSpineAudio | null>>());
   const voiceRunRef = useRef(0);
   const voiceSessionRef = useRef<VoiceSession | null>(null);
+  const pendingHandoffRef = useRef<SpineHandoffMessage | null>(null);
+  const handledHandoffIdsRef = useRef(new Set<string>());
   const autoPlayTimerRef = useRef<number | null>(null);
   const fullscreenHideTimerRef = useRef<number | null>(null);
   const fullscreenControlsHintTimerRef = useRef<number | null>(null);
@@ -380,6 +384,65 @@ export function Spine() {
       if (live) setError(t("spine.error.folder", { error: errorMessage(reason) }));
     });
     return () => { live = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!isDesktopHost()) return;
+    let live = true;
+    let polling = false;
+    const poll = async () => {
+      if (!live || polling) return;
+      polling = true;
+      try {
+        for (const message of await receiveDesktopHandoffs()) {
+          if (!live) continue;
+          if (handledHandoffIdsRef.current.has(message.requestId)) {
+            await acknowledgeDesktopHandoff(message.requestId).catch(() => undefined);
+            break;
+          }
+          try {
+            const nextSource = await chooseDesktopSourceAt(message.library.path);
+            if (await libraryIdentityForPath(nextSource.rootPath) !== message.library.identity) {
+              throw new Error("The library identity does not match the handoff path.");
+            }
+            const [directories, nextIndex] = await Promise.all([
+              nextSource.getDirectories(),
+              readCharacterIndex(nextSource, bundledCharacterIndex),
+            ]);
+            if (!directories.includes(message.lobbyId)) throw new Error(`The received lobby “${message.lobbyId}” is not in the selected library.`);
+            const character = Object.entries(nextIndex.characters)
+              .find(([, info]) => indexedAssets(info).some((asset) => asset.directory === message.lobbyId));
+            if (!character) throw new Error(`No character entry contains lobby “${message.lobbyId}”.`);
+
+            pendingHandoffRef.current = message;
+            setCharacterIndex(nextIndex);
+            setSelectedCharacter(character[0]);
+            setSelectedDirectory(message.lobbyId);
+            setLocalInteractionProject(null);
+            setSetFiles(null);
+            setSource(nextSource);
+            if (message.language) {
+              const locale = message.language.toLocaleLowerCase();
+              setLanguage(locale.startsWith("ja") ? "ja" : locale.startsWith("ko") ? "ko" : "en");
+            }
+            setError(null);
+          } catch (reason) {
+            if (live) setError(`Could not open the received lobby: ${errorMessage(reason)}`);
+          } finally {
+            handledHandoffIdsRef.current.add(message.requestId);
+            await acknowledgeDesktopHandoff(message.requestId).catch(() => undefined);
+          }
+          break;
+        }
+      } catch (reason) {
+        if (live) setError(`Companion handoff polling failed: ${errorMessage(reason)}`);
+      } finally {
+        polling = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 800);
+    return () => { live = false; window.clearInterval(timer); };
   }, []);
 
   // React's DOM typings do not expose the non-standard directory attribute,
@@ -482,7 +545,11 @@ export function Spine() {
   useEffect(() => {
     const entrySequence = selectedInteractionProject?.entrySequence;
     const sequenceIds = selectedInteractionProject ? timelineSequenceIds(selectedInteractionProject) : [];
-    const initialSequence = entrySequence && sequenceIds.includes(entrySequence) ? entrySequence : "";
+    const pendingHandoff = pendingHandoffRef.current;
+    const handoffSequence = pendingHandoff?.lobbyId === selectedDirectoryName ? pendingHandoff.sequenceId : undefined;
+    const initialSequence = handoffSequence && sequenceIds.includes(handoffSequence)
+      ? handoffSequence
+      : entrySequence && sequenceIds.includes(entrySequence) ? entrySequence : "";
     setIdleMode("none");
     setSelectedSequenceId(initialSequence);
     const initialTimeline = selectedInteractionProject && initialSequence ? timelineForSequence(selectedInteractionProject, initialSequence) : null;
@@ -491,7 +558,22 @@ export function Spine() {
       duration: initialTimeline ? projectTimelineDuration(initialTimeline, selectedInteractionProject) : 0,
       animation: null,
     });
-  }, [selectedInteractionProject]);
+  }, [selectedInteractionProject, selectedDirectoryName]);
+
+  useEffect(() => {
+    const handoff = pendingHandoffRef.current;
+    if (!handoff || handoff.lobbyId !== selectedDirectoryName || !setFiles) return;
+    if (handoff.playheadSeconds !== undefined) {
+      if (compositionActive) {
+        const duration = compositionTimeline ? projectTimelineDuration(compositionTimeline, selectedInteractionProject) : handoff.playheadSeconds;
+        compositionRef.current?.seek(Math.min(handoff.playheadSeconds, duration));
+      } else {
+        const duration = progress.duration || handoff.playheadSeconds;
+        viewportRef.current?.seek(Math.min(handoff.playheadSeconds, duration));
+      }
+    }
+    pendingHandoffRef.current = null;
+  }, [compositionActive, compositionTimeline, progress.duration, selectedDirectoryName, selectedInteractionProject, selectedSequenceId, setFiles]);
 
   const legacyVoiceCharacter = voiceCharacterForDirectory(voiceManifest, selectedDirectoryName);
   const selectedVoiceCharacter = voiceCharacter ?? legacyVoiceCharacter;
@@ -1022,6 +1104,26 @@ export function Spine() {
     }
   };
 
+  const openInEditor = async () => {
+    if (!source || !("rootPath" in source) || typeof source.rootPath !== "string" || !selectedDirectoryName) return;
+    try {
+      const message: SpineHandoffMessage = {
+        protocolVersion: 1,
+        requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        targetApp: "editor",
+        library: { identity: await libraryIdentityForPath(source.rootPath), path: source.rootPath },
+        lobbyId: selectedDirectoryName,
+        ...(compositionSequenceId ? { sequenceId: compositionSequenceId } : {}),
+        language,
+        ...(Number.isFinite(progress.time) && progress.time >= 0 ? { playheadSeconds: progress.time } : {}),
+      };
+      await sendDesktopHandoff(message);
+      setHandoffStatus("Handoff sent to BA Spine Editor.");
+    } catch (reason) {
+      setHandoffStatus(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   const onInputChange = (event: ChangeEvent<HTMLInputElement>) => {
     if (!event.currentTarget.files?.length) return;
     resetAssetPlayback();
@@ -1325,6 +1427,7 @@ export function Spine() {
       </div>
       <small className="spine-source-local">{t("spine.source.localOnly")}</small>
       <div className="spine-source-action">
+        {isDesktopHost() && source && <button className="btn ghost" type="button" onClick={() => void openInEditor()} disabled={!selectedDirectoryName}>{t("spine.source.editInEditor")}</button>}
         <button className="btn ghost" type="button" onClick={chooseFolder}><IconFolder /><span>{t(source ? "spine.source.change" : "spine.source.choose")}</span></button>
         <details className="spine-source-help">
           <summary aria-label={t("spine.source.helpAria")} title={t("spine.source.helpAria")}>?</summary>
@@ -1340,6 +1443,7 @@ export function Spine() {
     </section>
 
     {error && <div className="alert spine-alert" role="alert">{error}</div>}
+    {handoffStatus && <div className="spine-handoff-status" role="status">{handoffStatus}</div>}
 
     <div ref={fullscreenLayoutRef} className={`spine-layout${showSidebar ? "" : " spine-sidebar-hidden"}${fullscreenClean ? " spine-clean-mode" : ""}`}>
       <aside id="spine-sidebar" className="spine-sidebar">

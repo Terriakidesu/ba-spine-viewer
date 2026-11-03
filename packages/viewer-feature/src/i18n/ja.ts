@@ -393,6 +393,7 @@ export const ja: Record<keyof typeof en, string> = {
   "spine.source.localOnly": "アップロードや通信は行いません。選択したファイルをブラウザ内で読み込みます。",
   "spine.source.choose": "フォルダを選択",
   "spine.source.change": "フォルダを変更",
+  "spine.source.editInEditor": "このロビーを編集",
   "spine.source.helpAria": "フォルダ構成とファイル形式のヘルプ",
   "spine.source.helpTitle": "フォルダ構成とファイル形式",
   "spine.source.helpBody": "エクスポートしたアセットのルート（推奨）またはlobbiesフォルダを選択してください。manifestが各セットのファイルを示します。",

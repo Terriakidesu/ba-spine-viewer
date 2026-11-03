@@ -48,6 +48,7 @@ button:disabled { cursor: default; opacity: .4; }
 .editor-save-button { border-color: #4f778d; }
 .editor-statusbar { display: flex; justify-content: space-between; gap: 20px; min-height: 29px; padding: 6px 12px; color: var(--editor-muted); border-top: 1px solid var(--editor-line); background: #09131d; font-size: 10px; flex: none; }
 .editor-statusbar .editor-error { color: var(--editor-pink); }
+.editor-companion-status { padding: 5px 12px; border-bottom: 1px solid var(--editor-line); color: var(--editor-muted); background: #102131; font-size: 11px; }
 
 .editor-start { display: grid; place-items: center; flex: 1; min-height: 0; padding: 32px; background: radial-gradient(circle at 50% 35%, #153348 0, transparent 48%), #08121b; }
 .editor-start-card { display: grid; justify-items: center; gap: 10px; max-width: 480px; padding: 34px 42px; border: 1px solid var(--editor-line); border-radius: 8px; background: #102131e6; box-shadow: 0 16px 48px #0005; text-align: center; }

@@ -409,6 +409,7 @@ export const en = {
   "spine.source.localOnly": "Nothing is uploaded or fetched: the browser reads the selected files locally.",
   "spine.source.choose": "Choose folder",
   "spine.source.change": "Change folder",
+  "spine.source.editInEditor": "Edit this lobby",
   "spine.source.helpAria": "Folder structure and file format help",
   "spine.source.helpTitle": "Folder structure and file format",
   "spine.source.helpBody": "Choose the exported asset root (recommended) or its lobbies folder. A manifest describes each set's files:",

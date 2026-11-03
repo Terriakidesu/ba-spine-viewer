@@ -13,6 +13,7 @@
   "dependencies": {
     "@ba-spine/asset-library": "workspace:*",
     "@ba-spine/desktop-host": "workspace:*",
+    "@ba-spine/platform-contracts": "workspace:*",
     "@ba-spine/spine-runtime": "workspace:*"
   }
 }

@@ -1,6 +1,7 @@
 import type { SpineFiles } from "@ba-spine/spine-runtime/spine/spineRuntime";
 import type { AssetSource } from "@ba-spine/spine-runtime/spine/spineAssets";
 import { normalizeSpineManifest, type SpineManifestRecord } from "@ba-spine/spine-runtime/spine/spineManifest";
+import { parseHandoffMessage, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
 
 declare global {
   interface Window {
@@ -24,6 +25,10 @@ export interface DesktopAssetSource extends AssetSource {
   readText: (path: string) => Promise<string | null>;
   openAudio: () => Promise<string[]>;
   saveText: (path: string, content: string) => Promise<void>;
+}
+
+export function isDesktopHost(): boolean {
+  return typeof window !== "undefined" && Boolean(window.__BA_SPINE_HOST_TOKEN__);
 }
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
@@ -67,6 +72,29 @@ export async function chooseDesktopProject(): Promise<{ source: DesktopAssetSour
   const selected = await request("/__spine/open-project", { method: "POST" }).then((response) => response.json()) as DesktopTextFile & { rootPath: string | null };
   if (!selected.rootPath || !selected.path) return null;
   return { source: sourceFromDesktop(selected.rootPath), file: { path: selected.path, content: selected.content } };
+}
+
+export async function receiveDesktopHandoffs(): Promise<SpineHandoffMessage[]> {
+  if (!isDesktopHost()) return [];
+  const result = await request("/__spine/companion/pending").then((response) => response.json()) as { messages?: unknown };
+  if (!Array.isArray(result.messages)) return [];
+  return result.messages.map(parseHandoffMessage);
+}
+
+export async function acknowledgeDesktopHandoff(requestId: string): Promise<void> {
+  await request("/__spine/companion/ack", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ requestIds: [requestId] }),
+  });
+}
+
+export async function sendDesktopHandoff(message: SpineHandoffMessage): Promise<void> {
+  await request("/__spine/companion/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(parseHandoffMessage(message)),
+  });
 }
 
 export function sourceFromDesktop(rootPath: string): DesktopAssetSource {

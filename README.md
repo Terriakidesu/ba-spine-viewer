@@ -15,9 +15,12 @@ This workspace expects Bun 1.4.x and Windows/macOS/Linux desktop build prerequis
 bun install
 bun run typecheck
 bun test
+bun run build
 bun run dev:viewer
 bun run dev:editor
 ```
+
+`bun run build` builds both native applications (Viewer, then Editor).
 
 In desktop development, `./data/` is offered as the default asset library when present. To use another library, set `BA_SPINE_DATA` to its root. The app also supports choosing a library from its native dialog.
 
@@ -26,6 +29,10 @@ In desktop development, `./data/` is offered as the default asset library when p
 `data/` is a local, gitignored library. It is not application source, not included in builds, and should never be force-added to Git. The viewer has read-only access. The editor saves only authored project and established workspace files; source Spine skeletons, atlases, textures, and audio remain untouched.
 
 Automated persistence tests must use synthetic fixtures under `tests/fixtures/` or a disposable copy—not `data/`.
+
+## Viewer and Editor handoff
+
+When both applications are running, **Edit this lobby** in Viewer sends the selected library/lobby and available playback context to Editor. **Preview saved in Viewer** sends the Editor's selected library/lobby and timeline context back to Viewer; save authored changes first. Handoffs use a versioned, authenticated loopback-only channel and do not upload data. The target app must currently be open; automatic launch/focus and unsaved-draft preview are not implemented yet.
 
 ## Workspace map
 
