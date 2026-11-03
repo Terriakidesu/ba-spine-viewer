@@ -1,9 +1,11 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
+  COMPANION_ACTIVATE_PATH,
   COMPANION_HANDOFF_PATH,
+  CompanionAlreadyRunningError,
   CompanionInbox,
   CompanionUnavailableError,
   registerCompanionEndpoint,
@@ -29,7 +31,8 @@ describe("authenticated local companion transport", () => {
   test("registers and delivers a validated handoff over loopback exactly once", async () => {
     await withRegistry(async (directory) => {
       const token = "a".repeat(64);
-      const inbox = new CompanionInbox("viewer", token);
+      let activations = 0;
+      const inbox = new CompanionInbox("viewer", token, () => { activations += 1; });
       const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => inbox.handle(request) });
       if (server.port === undefined) throw new Error("Test companion server failed to bind.");
       const registration = await registerCompanionEndpoint("viewer", server.port, { directory, token });
@@ -37,6 +40,7 @@ describe("authenticated local companion transport", () => {
         await sendCompanionHandoff(message, { directory });
         await sendCompanionHandoff(message, { directory });
         expect(inbox.pending()).toEqual([message]);
+        expect(activations).toBe(2);
         expect(inbox.acknowledge([message.requestId])).toBe(1);
         expect(inbox.pending()).toEqual([]);
 
@@ -80,15 +84,79 @@ describe("authenticated local companion transport", () => {
     expect(inbox.pending().map((item) => item.targetApp)).toEqual(["editor"]);
   });
 
-  test("reports an unavailable target and preserves a replacement registration on close", async () => {
+  test("activates a live instance and refuses a duplicate registration", async () => {
+    await withRegistry(async (directory) => {
+      let activations = 0;
+      const token = "c".repeat(64);
+      const inbox = new CompanionInbox("viewer", token, () => { activations += 1; });
+      const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => inbox.handle(request) });
+      if (server.port === undefined) throw new Error("Test companion server failed to bind.");
+      const first = await registerCompanionEndpoint("viewer", server.port, { directory, token });
+      try {
+        await expect(registerCompanionEndpoint("viewer", server.port, { directory, token: "d".repeat(64) }))
+          .rejects.toBeInstanceOf(CompanionAlreadyRunningError);
+        expect(activations).toBe(1);
+      } finally {
+        first.close();
+        server.stop(true);
+      }
+      await expect(sendCompanionHandoff(message, { directory })).rejects.toBeInstanceOf(CompanionUnavailableError);
+    });
+  });
+
+  test("requires the session token to activate a window", async () => {
+    let activations = 0;
+    const token = "f".repeat(64);
+    const inbox = new CompanionInbox("editor", token, () => { activations += 1; });
+    const url = `http://127.0.0.1${COMPANION_ACTIVATE_PATH}`;
+    const unauthenticated = await inbox.handle(new Request(url, { method: "POST" }));
+    const authenticated = await inbox.handle(new Request(url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    }));
+    expect(unauthenticated.status).toBe(403);
+    expect(authenticated.status).toBe(200);
+    expect(activations).toBe(1);
+  });
+
+  test("reports an unavailable target when no instance has registered", async () => {
     await withRegistry(async (directory) => {
       await expect(sendCompanionHandoff(message, { directory })).rejects.toBeInstanceOf(CompanionUnavailableError);
-      const first = await registerCompanionEndpoint("viewer", 43121, { directory, token: "c".repeat(64) });
-      const second = await registerCompanionEndpoint("viewer", 43122, { directory, token: "d".repeat(64) });
-      first.close();
-      const endpoint = JSON.parse(await readFile(join(directory, "viewer.json"), "utf8")) as { port: number; token: string };
-      expect(endpoint).toEqual(expect.objectContaining({ port: 43122, token: "d".repeat(64) }));
-      second.close();
+      const endpoint = join(directory, "viewer.json");
+      await expect(readFile(endpoint, "utf8")).rejects.toThrow();
+    });
+  });
+
+  test("removes its lock and endpoint on close", async () => {
+    await withRegistry(async (directory) => {
+      const registration = await registerCompanionEndpoint("viewer", 43121, { directory, token: "e".repeat(64) });
+      registration.close();
+      await expect(readFile(join(directory, "viewer.json"), "utf8")).rejects.toThrow();
+      await expect(readFile(join(directory, "viewer.lock"), "utf8")).rejects.toThrow();
+    });
+  });
+
+  test("releases the owned lock if the endpoint disappeared before close", async () => {
+    await withRegistry(async (directory) => {
+      const registration = await registerCompanionEndpoint("viewer", 43122, { directory, token: "7".repeat(64) });
+      await unlink(join(directory, "viewer.json"));
+      registration.close();
+      await expect(readFile(join(directory, "viewer.lock"), "utf8")).rejects.toThrow();
+    });
+  });
+
+  test("reclaims a stale lock left by a crashed process", async () => {
+    await withRegistry(async (directory) => {
+      const stale = { protocolVersion: 1, app: "viewer", token: "9".repeat(64), pid: 2_147_483_647 };
+      await writeFile(join(directory, "viewer.lock"), JSON.stringify(stale));
+      await writeFile(join(directory, "viewer.json"), JSON.stringify({ ...stale, port: 43120 }));
+      const registration = await registerCompanionEndpoint("viewer", 43121, { directory, token: "8".repeat(64) });
+      try {
+        const endpoint = JSON.parse(await readFile(join(directory, "viewer.json"), "utf8")) as { port: number; token: string };
+        expect(endpoint).toEqual(expect.objectContaining({ port: 43121, token: "8".repeat(64) }));
+      } finally {
+        registration.close();
+      }
     });
   });
 });

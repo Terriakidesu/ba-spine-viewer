@@ -3,7 +3,7 @@ import { basename, dirname, extname, join, relative, resolve, sep } from "node:p
 import { ApplicationMenu, BrowserWindow, Utils } from "electrobun/main";
 import { assertLibraryWritePath, isPathWithinLibrary, isSupportedEditorWritePath, resolveExistingLibraryPath, resolveLibraryPath } from "@ba-spine/desktop-host/pathPolicy";
 import { createNodeLibraryReader } from "@ba-spine/desktop-host/nodeLibraryReader";
-import { COMPANION_HANDOFF_PATH, COMPANION_HEALTH_PATH, CompanionInbox, CompanionUnavailableError, registerCompanionEndpoint, sendCompanionHandoff } from "@ba-spine/desktop-host/companion";
+import { COMPANION_ACTIVATE_PATH, COMPANION_HANDOFF_PATH, COMPANION_HEALTH_PATH, CompanionAlreadyRunningError, CompanionInbox, CompanionUnavailableError, registerCompanionEndpoint, sendCompanionHandoff, type CompanionRegistration } from "@ba-spine/desktop-host/companion";
 import { discoverSpineSets } from "@ba-spine/asset-library/catalog";
 import { parseHandoffMessage } from "@ba-spine/platform-contracts/handoff";
 import { isEditorIgnored, parseEditorIgnore, type EditorIgnoreRule } from "@ba-spine/spine-runtime/spine/editorIgnore";
@@ -15,7 +15,14 @@ if (assetRoot) {
   catch { assetRoot = null; }
 }
 const mcpBridge = new SpineEditorMcpBridge(process.env.BA_SPINE_EDITOR_MCP === "1" || Bun.argv.includes("--mcp"));
-const companionInbox = new CompanionInbox("editor");
+let window: BrowserWindow | null = null;
+const companionInbox = new CompanionInbox("editor", undefined, () => {
+  const current = window;
+  if (!current) return;
+  if (current.isMinimized()) current.unminimize();
+  current.show();
+  current.activate();
+});
 
 const EDITOR_DIRECTORIES = new Set([".editor", ".shittim-spine-editor"]);
 
@@ -237,7 +244,7 @@ try {
     port: 0,
     async fetch(request) {
       const url = new URL(request.url);
-      if (url.pathname === COMPANION_HANDOFF_PATH || url.pathname === COMPANION_HEALTH_PATH) return companionInbox.handle(request);
+      if (url.pathname === COMPANION_HANDOFF_PATH || url.pathname === COMPANION_HEALTH_PATH || url.pathname === COMPANION_ACTIVATE_PATH) return companionInbox.handle(request);
       if (url.pathname.startsWith("/__spine/mcp/")) return mcpBridge.handle(request, url);
       if (url.pathname.startsWith("/__spine/")) {
         if (request.headers.get("x-ba-spine-token") !== apiToken) return errorResponse("Unauthorized editor request.", 403);
@@ -262,7 +269,14 @@ try {
 }
 
 if (server.port === undefined) throw new Error("The editor host did not bind to a local port.");
-const companionRegistration = await registerCompanionEndpoint("editor", server.port, { token: companionInbox.token });
+let companionRegistration: CompanionRegistration;
+try {
+  companionRegistration = await registerCompanionEndpoint("editor", server.port, { token: companionInbox.token });
+} catch (error) {
+  server.stop(true);
+  if (error instanceof CompanionAlreadyRunningError) process.exit(0);
+  throw error;
+}
 process.on("exit", () => companionRegistration.close());
 const mcpConnectionFile = await mcpBridge.start(server.port);
 if (mcpConnectionFile) {
@@ -270,7 +284,6 @@ if (mcpConnectionFile) {
   process.on("exit", () => mcpBridge.cleanup());
 }
 
-let window: BrowserWindow;
 try {
   window = new BrowserWindow({
     title: "BA Spine Editor",

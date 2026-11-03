@@ -32,7 +32,7 @@ Automated persistence tests must use synthetic fixtures under `tests/fixtures/` 
 
 ## Viewer and Editor handoff
 
-When both applications are running, **Edit this lobby** in Viewer sends the selected library/lobby and available playback context to Editor. **Preview saved in Viewer** sends the Editor's selected library/lobby and timeline context back to Viewer; save authored changes first. Handoffs use a versioned, authenticated loopback-only channel and do not upload data. The target app must currently be open; automatic launch/focus and unsaved-draft preview are not implemented yet.
+When both applications are running, **Edit this lobby** in Viewer sends the selected library/lobby and available playback context to Editor. **Preview saved in Viewer** sends the Editor's selected library/lobby and timeline context back to Viewer; save authored changes first. Handoffs use a versioned, authenticated loopback-only channel and do not upload data. Handoffs and duplicate app launches activate the existing window. If the target app is not running, the sender reports that it is unavailable; automatic app launch and unsaved-draft preview are not implemented yet.
 
 ## Workspace map
 

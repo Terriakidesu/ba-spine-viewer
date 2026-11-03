@@ -27,6 +27,10 @@ declare module "electrobun/main" {
       url: string;
       frame?: { width: number; height: number };
     });
+    activate(): void;
+    isMinimized(): boolean;
+    show(): void;
+    unminimize(): void;
   }
 
   export const Utils: {
