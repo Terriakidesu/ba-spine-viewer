@@ -8,6 +8,29 @@ export interface TimelineRange {
   end: number;
 }
 
+export interface TimelineAdvance {
+  time: number;
+  finished: boolean;
+}
+
+/** Wrap playback within a selected timeline range instead of at sequence zero. */
+export function advanceTimelineRangeLoop(
+  currentTime: number,
+  deltaSeconds: number,
+  speed: number,
+  range: TimelineRange,
+): TimelineAdvance {
+  if (!Number.isFinite(range.start) || !Number.isFinite(range.end)) return { time: 0, finished: true };
+  const start = Math.max(0, range.start);
+  if (range.end <= start) return { time: start, finished: true };
+  const span = range.end - start;
+  const current = !Number.isFinite(currentTime) || currentTime < start || currentTime >= range.end ? start : currentTime;
+  const elapsed = Number.isFinite(deltaSeconds) ? Math.max(0, deltaSeconds) : 0;
+  const rate = Number.isFinite(speed) ? Math.max(0, speed) : 0;
+  const next = current + elapsed * rate;
+  return { time: start + ((next - start) % span), finished: false };
+}
+
 /** Fit a selected time range in the scrollable track area, leaving readable edge padding. */
 export function fitTimelineToRange(
   range: TimelineRange,

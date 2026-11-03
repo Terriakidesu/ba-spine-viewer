@@ -152,9 +152,11 @@ The Viewer host watches the selected library recursively, coalesces filesystem e
 
 The Editor timeline inspector validates the active sequence without writing files: layer availability and manifest-declared file references, loaded animation names, unsupported manifest versions, clip and sequence bounds, subtitle overlaps and preview-language gaps, missing audio, and stale explicit subtitle links. Each issue navigates to its affected timeline item. Manifest reference checks reuse the already-loaded file set rather than rereading asset bytes; fixes remain explicit authoring actions. Future project schema versions remain rejected with a clear load error.
 
-#### Timeline selection-fit slice (2026-11-04)
+#### Timeline selection QoL slice (2026-11-04)
 
 The timeline **Fit selection** control calculates a viewport-aware zoom and horizontal scroll for the selected items, preserving the authored timeline and the existing whole-sequence fit action. Unit tests cover padding, zoom limits, and unusable ranges.
+
+The Editor transport also plays the combined selected range once or loops within its start/end; pause/resume retains the loop, while a new selection or seek clears it. Range-clock tests cover start positioning, wraparound, speed, and invalid bounds.
 
 ### Editor-to-viewer handoff
 

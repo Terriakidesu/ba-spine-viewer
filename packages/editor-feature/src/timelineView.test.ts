@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { fitTimelineToRange, zoomTimelineAtCursor } from "./timelineView";
+import { advanceTimelineRangeLoop, fitTimelineToRange, zoomTimelineAtCursor } from "./timelineView";
+
+describe("selected timeline range playback", () => {
+  test("starts within the selected range and wraps at its end", () => {
+    expect(advanceTimelineRangeLoop(0, 0.25, 1, { start: 3, end: 5 })).toEqual({ time: 3.25, finished: false });
+    expect(advanceTimelineRangeLoop(4.8, 0.5, 1, { start: 3, end: 5 })).toEqual({ time: 3.3, finished: false });
+  });
+
+  test("scales elapsed time and stops cleanly for an invalid range", () => {
+    expect(advanceTimelineRangeLoop(3.5, 0.25, 2, { start: 3, end: 5 })).toEqual({ time: 4, finished: false });
+    expect(advanceTimelineRangeLoop(2, 0.25, 1, { start: 4, end: 4 })).toEqual({ time: 4, finished: true });
+  });
+});
 
 describe("fit timeline to selection", () => {
   test("fits the selected time range and includes edge padding", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type SetStateAction, type WheelEvent as ReactWheelEvent } from "react";
 import { type SpineCameraPose, type SpineFiles, type SpineMeta, type SpineRenderer } from "@ba-spine/spine-runtime/spine/spineRuntime";
 import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration } from "@ba-spine/spine-runtime/spine/spineInteraction";
 import {
@@ -36,7 +36,7 @@ import { SubtitleTextEditor } from "./SubtitleTextEditor";
 import { TimelinePanelResizer } from "./TimelinePanelResizer";
 import { TimelineSplitHandle } from "./TimelineSplitHandle";
 import { DEFAULT_TIMELINE_LAYOUT_PREFERENCES, normalizeTimelineLayoutPreferences, TIMELINE_LAYOUT_PREFERENCES_KEY, type TimelineLayoutPreferences } from "./timelineLayout";
-import { fitTimelineToRange, zoomTimelineAtCursor } from "./timelineView";
+import { advanceTimelineRangeLoop, fitTimelineToRange, zoomTimelineAtCursor, type TimelineRange } from "./timelineView";
 import { audioEnvelopePeaks } from "./audioEnvelope";
 import { missingManifestAssetFiles, validateTimeline, type TimelineDiagnostic } from "./timelineDiagnostics";
 import { IconChevronDown, IconChevronLeft, IconChevronRight, IconEye, IconEyeOff, IconExpand, IconLink, IconLock, IconMinus, IconPause, IconPlay, IconPlus, IconSkipBack, IconSkipForward, IconSound, IconSync, IconUnlock, IconUnlink } from "@ba-spine/app-ui/icons";
@@ -283,7 +283,12 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
-  const [previewUntil, setPreviewUntil] = useState<number | null>(null);
+  const [previewUntil, setPreviewUntilState] = useState<number | null>(null);
+  const [selectionLoopRange, setSelectionLoopRange] = useState<TimelineRange | null>(null);
+  function setPreviewUntil(value: number | null) {
+    setSelectionLoopRange(null);
+    setPreviewUntilState(value);
+  }
   const [talkAutoplayActive, setTalkAutoplayActive] = useState(false);
   const [loopTalkList, setLoopTalkList] = useState(false);
   const [pauseBetweenTalks, setPauseBetweenTalks] = useState(0.35);
@@ -311,7 +316,11 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
   const stagePanRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   const addMenuRef = useRef<HTMLDetailsElement>(null);
   const scrubRef = useRef<number | null>(null);
-  const [selectedClips, setSelectedClips] = useState<TimelineSelection[]>([]);
+  const [selectedClips, setSelectedClipsState] = useState<TimelineSelection[]>([]);
+  function setSelectedClips(next: SetStateAction<TimelineSelection[]>) {
+    setSelectionLoopRange(null);
+    setSelectedClipsState(next);
+  }
   const [selectedAudioId, setSelectedAudioId] = useState<string | null>(null);
   const [dragSnapFeedback, setDragSnapFeedback] = useState<TimelineSnapFeedback | null>(null);
   const [layerPickerOpen, setLayerPickerOpen] = useState(false);
@@ -1327,8 +1336,10 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     const tick = (now: number) => {
       const delta = Math.min(0.1, Math.max(0, (now - previous) / 1000));
       previous = now;
-      const stopAt = previewUntil === null ? duration : Math.min(duration, previewUntil);
-      const advanced = advanceSpineTimeline(currentTimeRef.current, delta, speed, stopAt, previewUntil === null && Boolean(timeline?.loop) && !talkAutoplayActive);
+      const stopAt = selectionLoopRange?.end ?? (previewUntil === null ? duration : Math.min(duration, previewUntil));
+      const advanced = selectionLoopRange
+        ? advanceTimelineRangeLoop(currentTimeRef.current, delta, speed, selectionLoopRange)
+        : advanceSpineTimeline(currentTimeRef.current, delta, speed, stopAt, previewUntil === null && Boolean(timeline?.loop) && !talkAutoplayActive);
       currentTimeRef.current = advanced.time;
       setCurrentTime(advanced.time);
       if (advanced.finished) {
@@ -1343,7 +1354,7 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [audioPreloadsReady, duration, isTalkSequence, loopTalkList, playing, previewUntil, speed, talkAutoplayActive, talkSequenceIds, timeline?.audio, timeline?.loop, timeline?.sequenceId]);
+  }, [audioPreloadsReady, duration, isTalkSequence, loopTalkList, playing, previewUntil, selectionLoopRange, speed, talkAutoplayActive, talkSequenceIds, timeline?.audio, timeline?.loop, timeline?.sequenceId]);
 
   useEffect(() => {
     if (!pendingTalkSequence || !talkAutoplayActive) return;
@@ -1629,6 +1640,7 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
   }
 
   function clearTimelineSelection() {
+    setSelectionLoopRange(null);
     setSelectedClips([]);
     setSelectedAudioId(null);
     setInspector("sequence");
@@ -1637,6 +1649,10 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
 
   function selectTimelineClip(selection: TimelineSelection, event: ReactPointerEvent<HTMLElement>): TimelineSelection[] | null {
     event.stopPropagation();
+    if (selectionLoopRange) {
+      setSelectionLoopRange(null);
+      setPlaying(false);
+    }
     const additive = event.shiftKey || event.ctrlKey || event.metaKey;
     if (additive) {
       const exists = isClipSelected(selection.kind, selection.id);
@@ -1661,6 +1677,7 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
 
   function setSelectedAudio(id: string | null) {
     if (!id) { clearTimelineSelection(); return; }
+    setSelectionLoopRange(null);
     const selection = { kind: "audio" as const, id };
     setSelectedClips([selection]);
     focusTimelineClip(selection);
@@ -2302,8 +2319,8 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     if ((event.ctrlKey || event.metaKey) && ["z", "y"].includes(key)) return;
     if ((event.ctrlKey || event.metaKey) && key === "s") { event.preventDefault(); void onSave(); }
     else if (key === " ") { event.preventDefault(); setPlaying((value) => !value); }
-    else if (key === "arrowleft" || key === "arrowright") { event.preventDefault(); setPlaying(false); setCurrentTime((value) => Math.max(0, Math.min(duration, value + (key === "arrowright" ? 1 : -1) * (event.shiftKey ? 10 : 1) / 60))); }
-    else if (key === "home" || key === "end") { event.preventDefault(); setPlaying(false); setCurrentTime(key === "home" ? 0 : duration); }
+    else if (key === "arrowleft" || key === "arrowright") { event.preventDefault(); setPreviewUntil(null); setPlaying(false); setCurrentTime((value) => Math.max(0, Math.min(duration, value + (key === "arrowright" ? 1 : -1) * (event.shiftKey ? 10 : 1) / 60))); }
+    else if (key === "home" || key === "end") { event.preventDefault(); setPreviewUntil(null); setPlaying(false); setCurrentTime(key === "home" ? 0 : duration); }
     else if (key === "delete" || key === "backspace") { event.preventDefault(); if (selectedClips.length > 0) deleteSelectedClips(); else if (inspector === "cue") deleteCue(); else if (inspector === "audio") deleteAudio(); }
     else if ((event.ctrlKey || event.metaKey) && key === "d") { event.preventDefault(); if (selectedColorClip) duplicateSelectedColorClip(); else if (selectedAnimationClip) duplicateSelectedAnimationClip(); else duplicateCue(); }
     else if (key === "s" && selectedCue) updateTimeline((value) => splitCue(value, selectedCue.id, currentTime));
@@ -2352,6 +2369,27 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     ["audio", selectedClipDetails.filter((item) => item.kind === "audio").length, "audio"],
   ] as const).filter(([, count]) => count > 0).map(([, count, label]) => `${count} ${label}${count === 1 ? "" : "s"}`).join(" · ");
   const deletableSelectionCount = selectedClipDetails.filter((item) => item.removable).length;
+  const selectedPlaybackRange: TimelineRange | null = selectedClipDetails.length > 0 ? (() => {
+    const start = Math.max(0, Math.min(duration, ...selectedClipDetails.map((item) => item.start)));
+    const end = Math.min(duration, Math.max(...selectedClipDetails.map((item) => item.end)));
+    return Number.isFinite(start) && Number.isFinite(end) && end - start >= 0.01 ? { start, end } : null;
+  })() : null;
+  function playSelectedRange(loop: boolean) {
+    if (!selectedPlaybackRange) return;
+    currentTimeRef.current = selectedPlaybackRange.start;
+    setCurrentTime(selectedPlaybackRange.start);
+    setSelectionLoopRange(loop ? selectedPlaybackRange : null);
+    setPreviewUntilState(loop ? null : selectedPlaybackRange.end);
+    setPlaying(true);
+  }
+  function toggleSelectionLoop() {
+    if (selectionLoopRange) {
+      setSelectionLoopRange(null);
+      setPlaying(false);
+      return;
+    }
+    playSelectedRange(true);
+  }
   function fitTimelineToSelection() {
     const scroller = scrollRef.current;
     if (!scroller || selectedClipDetails.length === 0) return;
@@ -2377,6 +2415,7 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     else if (target.kind === "cue") targetTime = timeline?.subtitles.find((item) => item.id === target.id)?.start ?? null;
     else targetTime = timeline?.audio.find((item) => item.id === target.id)?.start ?? null;
     setPlaying(false);
+    setSelectionLoopRange(null);
     setSelectedClips([target]);
     focusTimelineClip(target);
     if (targetTime !== null && Number.isFinite(targetTime)) setCurrentTime(Math.min(duration, Math.max(0, targetTime)));
@@ -2456,7 +2495,9 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
          </div>
 
           <div className="timeline-transport">
-              <button className="editor-icon-button" aria-label={playing ? "Pause sequence" : "Play sequence"} onClick={() => { setPreviewUntil(null); setPlaying((value) => !value); }}>{playing ? <IconPause /> : <IconPlay />}</button>
+              <button className="editor-icon-button" aria-label={playing ? "Pause sequence" : "Play sequence"} onClick={() => setPlaying((value) => !value)}>{playing ? <IconPause /> : <IconPlay />}</button>
+              <button className="editor-button" type="button" disabled={!selectedPlaybackRange} onClick={() => playSelectedRange(false)} title="Play from the start of the selected range to its end"><IconPlay /> Play selection</button>
+              <button className={`editor-button${selectionLoopRange ? " active" : ""}`} type="button" aria-pressed={selectionLoopRange !== null} disabled={!selectedPlaybackRange} onClick={toggleSelectionLoop} title="Loop playback between the start and end of the selected range"><IconSync /> Loop selection</button>
               <button className="editor-button" onClick={() => { setPreviewUntil(null); setCurrentTime(0); setPlaying(false); }}><IconSkipBack /> Start</button>
               {isTalkSequence && <>
                 <button className="editor-button" onClick={replayTalkSequence} title="Restart this Talk from the beginning"><IconSkipBack /> Replay Talk</button>
