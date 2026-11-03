@@ -40,6 +40,8 @@ Editor saves stage the project and linked subtitle JSON as one batch, compare ea
 
 The timeline inspector provides read-only, navigable diagnostics for unavailable layers, missing manifest-declared files or audio, unknown Spine animations, unsupported manifest versions, invalid/out-of-duration ranges, overlapping subtitles, missing preview-language translations, and stale audio-to-subtitle links. Unsupported project schemas are rejected with a load error. Diagnostics select the affected item; fixes remain explicit Editor actions.
 
+Use **Find subtitle cue** in the timeline inspector to search English, Japanese, Korean, or all translations. Results are case-insensitive and ordered by cue time; selecting a result selects the cue, stops playback, moves the playhead, and scrolls the timeline to it. Search and navigation do not edit subtitle data.
+
 Timeline selections can be played once or looped between their combined start and end. Pause/resume preserves selection playback; changing the selection or seeking exits the loop. **Fit selection** zooms and scrolls the timeline to the selected items without changing authored timing.
 
 Copy selected animation, color, subtitle, or audio clips with **Ctrl/Cmd+C**, then paste at the playhead with **Ctrl/Cmd+V**. Pasting preserves relative timing, remaps links when both audio and its cue are copied, skips locked tracks, and moves color clips around occupied same-track ranges. Links to cues not copied are cleared. The clipboard stays in memory for the current sequence and does not use the OS clipboard.

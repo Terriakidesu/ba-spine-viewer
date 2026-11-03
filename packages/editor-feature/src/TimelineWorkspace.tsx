@@ -40,6 +40,7 @@ import { advanceTimelineRangeLoop, fitTimelineToRange, zoomTimelineAtCursor, typ
 import { audioEnvelopePeaks } from "./audioEnvelope";
 import { missingManifestAssetFiles, validateTimeline, type TimelineDiagnostic } from "./timelineDiagnostics";
 import { copyTimelineSelection, pasteTimelineSelection, type TimelineClipboard, type TimelineClipboardSelection } from "./timelineClipboard";
+import { searchSubtitleCues, type SubtitleSearchLanguage } from "./subtitleCueSearch";
 import { IconChevronDown, IconChevronLeft, IconChevronRight, IconEye, IconEyeOff, IconExpand, IconLink, IconLock, IconMinus, IconPause, IconPlay, IconPlus, IconSkipBack, IconSkipForward, IconSound, IconSync, IconUnlock, IconUnlink } from "@ba-spine/app-ui/icons";
 import "./timelineSnapFeedback.css";
 
@@ -284,6 +285,8 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [subtitleSearchQuery, setSubtitleSearchQuery] = useState("");
+  const [subtitleSearchLanguage, setSubtitleSearchLanguage] = useState<SubtitleSearchLanguage>("all");
   const [previewUntil, setPreviewUntilState] = useState<number | null>(null);
   const [selectionLoopRange, setSelectionLoopRange] = useState<TimelineRange | null>(null);
   function setPreviewUntil(value: number | null) {
@@ -1642,6 +1645,17 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     }
   }
 
+  function jumpToSubtitleCue(cue: EditorSubtitleCue) {
+    const selection: TimelineSelection = { kind: "cue", id: cue.id };
+    setPlaying(false);
+    setSelectedClips([selection]);
+    focusTimelineClip(selection);
+    setCurrentTime(Math.max(0, Math.min(duration, cue.start)));
+    requestAnimationFrame(() => {
+      document.getElementById(`timeline-subtitle-cue-${cue.id}`)?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    });
+  }
+
   function clearTimelineSelection() {
     setSelectionLoopRange(null);
     setSelectedClips([]);
@@ -2316,6 +2330,8 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     setSelectedClips([]);
     timelineClipboardRef.current = null;
     setClipboardAvailable(false);
+    setSubtitleSearchQuery("");
+    setSubtitleSearchLanguage("all");
   }, [directory, timeline?.sequenceId]);
 
   timelineKeydownRef.current = (event: KeyboardEvent) => {
@@ -2376,6 +2392,7 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     ["audio", selectedClipDetails.filter((item) => item.kind === "audio").length, "audio"],
   ] as const).filter(([, count]) => count > 0).map(([, count, label]) => `${count} ${label}${count === 1 ? "" : "s"}`).join(" · ");
   const deletableSelectionCount = selectedClipDetails.filter((item) => item.removable).length;
+  const subtitleSearchResults = searchSubtitleCues(timeline.subtitles, subtitleSearchQuery, subtitleSearchLanguage);
   const copyableSelections = selectedClips.filter((selection): selection is TimelineClipboardSelection => selection.kind !== "layer" && selection.kind !== "color-layer");
   function copySelectedTimelineClips() {
     if (!timeline) return;
@@ -2608,7 +2625,7 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
             <div className="timeline-row subtitle-row" style={{ gridTemplateColumns: `${trackLabelWidth}px minmax(0, 1fr)` }}>
               <div className="timeline-track-label"><b>SUBS</b><span>{timeline.language.toUpperCase()}</span></div>
               <div className="timeline-track timeline-subtitle-track" onPointerDown={seekFromEvent}>
-                 {timeline.subtitles.map((cue) => <div key={cue.id} className={`timeline-cue${isClipSelected("cue", cue.id) || cue.id === timeline.selectedCueId ? " is-selected" : ""}${cue.enabled ? "" : " is-disabled"}`} style={{ left: cue.start * TIMELINE_SCALE * zoom, width: Math.max(12, (cue.end - cue.start) * TIMELINE_SCALE * zoom) }} onPointerDown={(event) => { const selection = selectTimelineClip({ kind: "cue", id: cue.id }, event); if (selection) beginDrag(event, "cue", cue.id, cue.start, cue.end, selection); }}>
+                  {timeline.subtitles.map((cue) => <div key={cue.id} id={`timeline-subtitle-cue-${cue.id}`} className={`timeline-cue${isClipSelected("cue", cue.id) || cue.id === timeline.selectedCueId ? " is-selected" : ""}${cue.enabled ? "" : " is-disabled"}`} style={{ left: cue.start * TIMELINE_SCALE * zoom, width: Math.max(12, (cue.end - cue.start) * TIMELINE_SCALE * zoom) }} onPointerDown={(event) => { const selection = selectTimelineClip({ kind: "cue", id: cue.id }, event); if (selection) beginDrag(event, "cue", cue.id, cue.start, cue.end, selection); }}>
                    <button className="timeline-cue-handle left" aria-label="Move subtitle start" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "cue", id: cue.id }, event); if (selection) beginDrag(event, "cue-start", cue.id, cue.start, cue.end, selection); }} />
                    <span>{cueText(cue, timeline.language)}</span>
                    <button className="timeline-cue-handle right" aria-label="Move subtitle end" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "cue", id: cue.id }, event); if (selection) beginDrag(event, "cue-end", cue.id, cue.start, cue.end, selection); }} />
@@ -2654,8 +2671,33 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
        </section>
 
       {!inspectorPanelCollapsed && <TimelinePanelResizer side="inspector" value={inspectorPanelWidth} onChange={(inspectorPanelWidth) => updateTimelineLayout({ inspectorPanelWidth })} />}
-       <aside id="timeline-inspector" className="editor-panel timeline-inspector" hidden={inspectorPanelCollapsed}>
-          <details className={`editor-section editor-validation timeline-diagnostics${timelineDiagnostics.length ? " has-warnings" : ""}`}>
+        <aside id="timeline-inspector" className="editor-panel timeline-inspector" hidden={inspectorPanelCollapsed}>
+           <section className="editor-section timeline-subtitle-search" aria-label="Find subtitle cue">
+             <div className="editor-section-title"><strong>Find subtitle cue</strong><span>{timeline.subtitles.length} cue{timeline.subtitles.length === 1 ? "" : "s"}</span></div>
+             <div className="timeline-subtitle-search-controls">
+               <label>Text<input type="search" aria-label="Search subtitle text" placeholder="Search translations…" value={subtitleSearchQuery} onChange={(event) => setSubtitleSearchQuery(event.target.value)} /></label>
+               <label>Language<select aria-label="Subtitle search language" value={subtitleSearchLanguage} onChange={(event) => setSubtitleSearchLanguage(event.target.value as SubtitleSearchLanguage)}><option value="all">All</option><option value="en">English</option><option value="ja">日本語</option><option value="ko">한국어</option></select></label>
+             </div>
+             {subtitleSearchQuery.trim() ? subtitleSearchResults.length > 0
+               ? <>
+                   <div className="timeline-subtitle-search-results" aria-label="Matching subtitle cues">
+                     {subtitleSearchResults.slice(0, 100).map(({ cue, matches }) => {
+                       const cueNumber = timeline.subtitles.findIndex((item) => item.id === cue.id) + 1;
+                       return <button key={cue.id} type="button" className="timeline-subtitle-search-result" onClick={() => jumpToSubtitleCue(cue)} aria-label={`Jump to subtitle ${cueNumber} at ${seconds(cue.start)}: ${matches.map(({ language, text }) => `${language.toUpperCase()} ${text}`).join("; ")}`}>
+                         <span className="timeline-subtitle-search-time">{seconds(cue.start)}</span>
+                         <span className="timeline-subtitle-search-match">
+                           <span className="timeline-subtitle-search-languages">{matches.map(({ language }) => language.toUpperCase()).join(" · ")}</span>
+                           <span className="timeline-subtitle-search-excerpt" title={matches.map(({ language, text }) => `${language.toUpperCase()}: ${text}`).join(" / ")}>{matches.map(({ language, text }) => <span key={language}><b>{language.toUpperCase()}</b> {text}</span>)}</span>
+                         </span>
+                       </button>;
+                     })}
+                   </div>
+                   <small className="editor-field-hint" role="status">{subtitleSearchResults.length > 100 ? `Showing first 100 of ${subtitleSearchResults.length} matches.` : `${subtitleSearchResults.length} matching cue${subtitleSearchResults.length === 1 ? "" : "s"}. Select one to jump to it.`}</small>
+                 </>
+               : <p className="editor-muted timeline-subtitle-search-empty" role="status">No subtitle cues match this search.</p>
+               : <p className="editor-muted timeline-subtitle-search-empty">Search English, Japanese, and Korean text, then select a result to jump to its cue.</p>}
+           </section>
+           <details className={`editor-section editor-validation timeline-diagnostics${timelineDiagnostics.length ? " has-warnings" : ""}`}>
             <summary>{timelineChecksPending ? "Checking timeline assets…" : timelineDiagnostics.length ? `${timelineDiagnostics.length} timeline checks to review` : "No current timeline warnings"}</summary>
             <div className="editor-section-title"><strong>Timeline diagnostics</strong><span>{timelineDiagnostics.length ? `${timelineDiagnostics.length} warning${timelineDiagnostics.length === 1 ? "" : "s"}` : "Ready"}</span></div>
             {timelineChecksPending && <p className="editor-muted" role="status">Checking manifest references and audio. Animation checks are added as Spine metadata loads.</p>}

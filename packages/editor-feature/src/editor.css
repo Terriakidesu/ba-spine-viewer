@@ -440,6 +440,19 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--editor-cy
 .timeline-bottom-tools input[type="range"] { width: 90px; vertical-align: middle; accent-color: var(--editor-cyan); }
 .timeline-inspector { min-width: 0; overflow: auto; }
 .timeline-inspector-empty { min-height: 220px; }
+.timeline-subtitle-search .editor-section-title { margin-bottom: 7px; }
+.timeline-subtitle-search-controls { display: grid; grid-template-columns: minmax(0, 1fr) 92px; gap: 6px; }
+.timeline-subtitle-search-controls label { display: grid; gap: 4px; min-width: 0; color: var(--editor-muted); font-size: 10px; font-weight: 650; }
+.timeline-subtitle-search-controls input, .timeline-subtitle-search-controls select { width: 100%; min-width: 0; height: 29px; padding: 4px 6px; border: 1px solid var(--editor-line); border-radius: 3px; background: #0c1a27; color: var(--editor-text); font: inherit; }
+.timeline-subtitle-search-results { display: grid; gap: 4px; max-height: 190px; overflow: auto; margin-top: 7px; }
+.timeline-subtitle-search-result { display: grid !important; grid-template-columns: 54px minmax(0, 1fr); align-items: start !important; gap: 6px !important; width: 100%; min-width: 0; padding: 5px 6px !important; text-align: left; }
+.timeline-subtitle-search-time { padding-top: 1px; color: var(--editor-cyan); font: 9px ui-monospace, monospace; white-space: nowrap; }
+.timeline-subtitle-search-match { display: grid; gap: 2px; min-width: 0; }
+.timeline-subtitle-search-languages { color: var(--editor-pink); font: 8px ui-monospace, monospace; font-weight: 800; }
+.timeline-subtitle-search-excerpt { display: grid; gap: 2px; min-width: 0; color: var(--editor-text); font-size: 9px; font-weight: 400; }
+.timeline-subtitle-search-excerpt > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timeline-subtitle-search-excerpt b { color: var(--editor-muted); font-size: 8px; }
+.timeline-subtitle-search-empty { margin: 7px 0 0; font-size: 9px; }
 .timeline-role-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--editor-cyan); }
 .timeline-role-dot.background { background: #61d095; }
 .timeline-role-dot.scene { background: var(--editor-yellow); }
