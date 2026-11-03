@@ -16,7 +16,8 @@
     "build:editor": "bun --cwd=apps/editor run desktop:build",
     "build": "bun run build:viewer && bun run build:editor",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "bun test"
+    "test": "bun test",
+    "profile:wasm-candidates": "bun scripts/profile-wasm-candidates.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",

@@ -98,6 +98,19 @@ Use WASM deliberately, behind stable TypeScript interfaces, and only where profi
 - Load kernels on demand, version cache keys with the kernel/API version and input identity, and store derived data outside `data/`. Avoid copying the same large buffer repeatedly between JS and WASM.
 - Do not make Rust a prerequisite for ordinary app development or runtime use. Rust/WASM toolchains are needed only to rebuild kernels; checked-in source plus a reproducible build script produces the packaged artifact.
 
+#### JavaScript baseline (2026-11-03)
+
+`bun run profile:wasm-candidates` measures the production PCM-envelope helper over synthetic decoded mono PCM at 48 kHz (Bun 1.4.2, Windows x64, Intel i3-1115G4). It deliberately excludes file I/O, audio decoding, and UI rendering:
+
+| Workload | Median JS kernel time | p95 |
+| --- | ---: | ---: |
+| One 5-second clip, 160 peaks | 0.571 ms | 0.751 ms |
+| One 10-second clip, 160 peaks | 1.252 ms | 1.552 ms |
+| One 30-second clip, 160 peaks | 3.723 ms | 4.583 ms |
+| Synthetic batch of 32 five-second clips | 19.591 ms | 21.240 ms |
+
+Keep WASM deferred: individual clips stay well below a 16.67 ms frame, and the only over-frame result is a deliberately synchronous 32-clip aggregate, not yet observed as one production UI task. Profile actual timeline interaction and decode scheduling before considering worker/WASM batching; any candidate must still beat the JS kernel by the documented gate and demonstrate an end-to-end win.
+
 ## Shared app and data contracts
 
 ### Project and library compatibility
@@ -130,6 +143,10 @@ Define a versioned local handoff message with at least: request ID, target app, 
 - Provide clear loading, retry, missing-resource, and invalid-manifest states with relative paths.
 - Generate thumbnails asynchronously into an external cache; invalidate only affected entries.
 - Debounce file watching, cancel stale loads, and provide a manual refresh fallback.
+
+#### Desktop library refresh slice (2026-11-03)
+
+The Viewer host watches the selected library recursively, coalesces filesystem events over a 300 ms quiet period, ignores `.editorignore`-excluded paths, and reports a revision through its authenticated loopback API. The Viewer polls for changes and shows a non-disruptive “Changes available” status; **Refresh library** remains available if watching is unsupported. Refresh rebuilds the catalog and preserves the selected lobby and still-valid playback, sequence, playhead, camera, language, volume, and playback settings. Primary and composition asset requests are aborted when their load becomes stale. Fake-timer tests cover debounce/cancel behavior; authenticated bridge tests cover change status, refresh, and request cancellation. Manual two-app GUI smoke testing remains a release gate.
 
 ### Editor-to-viewer handoff
 

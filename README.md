@@ -28,11 +28,19 @@ In desktop development, `./data/` is offered as the default asset library when p
 
 `data/` is a local, gitignored library. It is not application source, not included in builds, and should never be force-added to Git. The viewer has read-only access. The editor saves only authored project and established workspace files; source Spine skeletons, atlases, textures, and audio remain untouched.
 
+Viewer library search matches character names, variants, lobby IDs, and asset IDs. Use the character list's arrow keys or Home/End to browse; mark the selected lobby as a favorite or reopen it from recent lobbies. Desktop favorites and recents are stored locally per library identity. Browser-picked folders use session-only navigation preferences because they do not expose a reliable persistent library identity.
+
+The desktop Viewer creates small previews lazily for visible character rows, using a single serialized idle-time WebGL capture lane. Fingerprinted thumbnails are stored in the Viewer’s OS app-data cache (bounded to 256 images / 128 MB), never under the selected library; a changed lobby replaces only that lobby’s cache entries. Thumbnail failures do not block browsing or playback.
+
+The desktop Viewer debounces selected-library filesystem events and marks changes as available without interrupting playback. Use **Refresh library** to reload; the current lobby, sequence, playhead, camera, language, voice volume, and playback settings are retained where still valid. The manual action remains available if filesystem watching is unsupported or unavailable.
+
 Automated persistence tests must use synthetic fixtures under `tests/fixtures/` or a disposable copy—not `data/`.
+
+Editor saves stage the project and linked subtitle JSON as one batch, compare each file with its session baseline, and ask before overwriting external edits. Replacements are atomic per file, prior project JSON is kept in a bounded `.editor/backups/` history, and a failed multi-file commit attempts rollback and reports any incomplete rollback. Local recovery snapshots are separate, bounded browser storage; the Editor always prompts before restoring them, and restore marks the project unsaved. Linked subtitle files are not written until **Save to root**.
 
 ## Viewer and Editor handoff
 
-When both applications are running, **Edit this lobby** in Viewer sends the selected library/lobby and available playback context to Editor. **Preview saved in Viewer** sends the Editor's selected library/lobby and timeline context back to Viewer; save authored changes first. Handoffs use a versioned, authenticated loopback-only channel and do not upload data. Handoffs and duplicate app launches activate the existing window. If the target app is not running, the sender reports that it is unavailable; automatic app launch and unsaved-draft preview are not implemented yet.
+**Edit this lobby** in Viewer sends the selected library/lobby and available playback context to Editor. **Preview saved in Viewer** sends the Editor's selected library/lobby and timeline context back to Viewer; save authored changes first. When the Editor project is dirty, **Preview unsaved draft in Viewer** sends a debounced, read-only project snapshot through the authenticated loopback companion channel. Draft data is held in Editor memory only, never written to the asset library; Viewer visibly marks draft mode and offers **Return to saved files**. Draft preview ends when its session is revoked or Editor disconnects. Handoffs do not upload data. If the target is not running, the sender starts it from its per-user launch plan (or discovers the Electrobun install) and waits up to 12 seconds for registration. Handoffs and duplicate app launches activate the existing window. On same-lobby saved-file reloads, Viewer keeps its language, camera framing/pose, voice volume, and playback position/speed/loop/pause state; explicit handoff sequence/time takes precedence when supplied. Editor asks before replacing a dirty project and refuses replacement during a save or save error.
 
 ## Workspace map
 
