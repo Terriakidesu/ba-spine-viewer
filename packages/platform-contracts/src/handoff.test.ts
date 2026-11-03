@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HANDOFF_PROTOCOL_VERSION, HandoffValidationError, libraryIdentityForPath, parseHandoffMessage } from "./handoff";
+import { HANDOFF_PROTOCOL_VERSION, HandoffValidationError, libraryIdentityForPath, parseHandoffMessage, parseSpineDraftSnapshot } from "./handoff";
 
 const validMessage = {
   protocolVersion: 1,
@@ -59,5 +59,32 @@ describe("versioned companion handoff contract", () => {
     }
     expect(() => parseHandoffMessage({ ...validMessage, language: "english language" })).toThrow(HandoffValidationError);
     expect(() => parseHandoffMessage({ ...validMessage, draft: { sessionId: "short" } })).toThrow(HandoffValidationError);
+  });
+});
+
+describe("volatile unsaved draft snapshot contract", () => {
+  const snapshot = {
+    protocolVersion: 1,
+    sessionId: "draft_session_01",
+    library: { identity: "sha256:library-fixture", path: "D:\\BA Spine\\data" },
+    lobbyId: "Airi_home",
+    revision: 1,
+    project: { assetDirectory: "Airi_home", interactions: [], timeline: { sequenceId: "opening" } },
+  } as const;
+
+  test("accepts and normalizes a bounded project snapshot", () => {
+    expect(parseSpineDraftSnapshot(snapshot)).toEqual(snapshot);
+  });
+
+  test("rejects invalid session, revision, identity, or unsupported fields", () => {
+    expect(() => parseSpineDraftSnapshot({ ...snapshot, sessionId: "../draft" })).toThrow(HandoffValidationError);
+    expect(() => parseSpineDraftSnapshot({ ...snapshot, revision: 0 })).toThrow(HandoffValidationError);
+    expect(() => parseSpineDraftSnapshot({ ...snapshot, library: { ...snapshot.library, path: "relative" } })).toThrow(HandoffValidationError);
+    expect(() => parseSpineDraftSnapshot({ ...snapshot, extra: true })).toThrow(HandoffValidationError);
+  });
+
+  test("rejects non-object and oversized project payloads", () => {
+    expect(() => parseSpineDraftSnapshot({ ...snapshot, project: [] })).toThrow(HandoffValidationError);
+    expect(() => parseSpineDraftSnapshot({ ...snapshot, project: { data: "x".repeat(8 * 1024 * 1024) } })).toThrow(HandoffValidationError);
   });
 });

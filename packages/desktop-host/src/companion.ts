@@ -1,15 +1,30 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { parseHandoffMessage, type HandoffTargetApp, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+import { parseHandoffMessage, parseSpineDraftSnapshot, type HandoffTargetApp, type SpineDraftSnapshot, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
+import { launchCompanionProcess, parseCompanionLaunchPlan, type CompanionLaunchPlan } from "./companionLaunch";
 
 export const COMPANION_HANDOFF_PATH = "/__spine/companion/handoff";
 export const COMPANION_HEALTH_PATH = "/__spine/companion/health";
 export const COMPANION_ACTIVATE_PATH = "/__spine/companion/activate";
+export const COMPANION_DRAFT_PATH = "/__spine/companion/draft";
 const COMPANION_PROTOCOL_VERSION = 1;
-const DEFAULT_REGISTRY_DIRECTORY = join(tmpdir(), "ba-spine-suite-companions");
+function appDataRoot(): string {
+  switch (process.platform) {
+    case "win32": return process.env.LOCALAPPDATA || join(process.env.USERPROFILE || homedir(), "AppData", "Local");
+    case "darwin": return join(homedir(), "Library", "Application Support");
+    default: {
+      const configured = process.env.XDG_DATA_HOME;
+      return configured && isAbsolute(configured) && resolve(configured) !== "/"
+        ? resolve(configured)
+        : join(homedir(), ".local", "share");
+    }
+  }
+}
+
+export const DEFAULT_COMPANION_REGISTRY_DIRECTORY = join(appDataRoot(), "BA Spine Suite", "companions");
 const MAX_MESSAGE_BYTES = 128 * 1024;
 const MAX_PENDING_MESSAGES = 32;
 const MAX_SEEN_REQUEST_IDS = 256;
@@ -59,6 +74,10 @@ function leasePath(directory: string, app: HandoffTargetApp): string {
   return join(directory, `${app}.lock`);
 }
 
+function launchPlanPath(directory: string, app: HandoffTargetApp): string {
+  return join(directory, `${app}.launch.json`);
+}
+
 function json(value: unknown, status = 200): Response {
   return Response.json(value, { status, headers: { "cache-control": "no-store" } });
 }
@@ -75,7 +94,7 @@ function authorizationToken(request: Request): string | null {
   return match?.[1] ?? null;
 }
 
-async function readBoundedBody(request: Request): Promise<{ text: string; tooLarge: boolean }> {
+export async function readBoundedBody(request: Request, maxBytes = MAX_MESSAGE_BYTES): Promise<{ text: string; tooLarge: boolean }> {
   const reader = request.body?.getReader();
   if (!reader) return { text: "", tooLarge: false };
   const chunks: Uint8Array[] = [];
@@ -85,7 +104,7 @@ async function readBoundedBody(request: Request): Promise<{ text: string; tooLar
       const { done, value } = await reader.read();
       if (done) break;
       length += value.byteLength;
-      if (length > MAX_MESSAGE_BYTES) {
+      if (length > maxBytes) {
         await reader.cancel();
         return { text: "", tooLarge: true };
       }
@@ -218,14 +237,61 @@ export interface CompanionRegistration {
   close(): void;
 }
 
+export interface CompanionAutoLaunchOptions {
+  resolvePlan(targetApp: HandoffTargetApp): unknown | Promise<unknown>;
+  launch?: (targetApp: HandoffTargetApp, plan: CompanionLaunchPlan) => Promise<void>;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}
+
+interface StoredLaunchPlan {
+  protocolVersion: number;
+  app: HandoffTargetApp;
+  plan: CompanionLaunchPlan;
+}
+
+/** Save a validated, shell-free plan so a companion can start this app later. */
+export async function writeCompanionLaunchPlan(
+  app: HandoffTargetApp,
+  value: unknown,
+  directory = DEFAULT_COMPANION_REGISTRY_DIRECTORY,
+): Promise<void> {
+  const plan = parseCompanionLaunchPlan(value);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const destination = launchPlanPath(directory, app);
+  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  const record: StoredLaunchPlan = { protocolVersion: COMPANION_PROTOCOL_VERSION, app, plan };
+  try {
+    await writeFile(temporary, JSON.stringify(record), { encoding: "utf8", flag: "wx", mode: 0o600 });
+    await rename(temporary, destination);
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Read only a versioned plan that passes the same safe spawn validation. */
+export async function readCompanionLaunchPlan(
+  app: HandoffTargetApp,
+  directory = DEFAULT_COMPANION_REGISTRY_DIRECTORY,
+): Promise<CompanionLaunchPlan | null> {
+  try {
+    const record = JSON.parse(await readFile(launchPlanPath(directory, app), "utf8")) as Partial<StoredLaunchPlan>;
+    if (record.protocolVersion !== COMPANION_PROTOCOL_VERSION || record.app !== app) return null;
+    return parseCompanionLaunchPlan(record.plan);
+  } catch {
+    return null;
+  }
+}
+
 /** Publish one app's loopback endpoint for the current process session. */
 export async function registerCompanionEndpoint(
   app: HandoffTargetApp,
   port: number,
-  options: { directory?: string; token?: string } = {},
+  options: { directory?: string; token?: string; launchPlan?: unknown } = {},
 ): Promise<CompanionRegistration> {
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("Companion port must be a valid TCP port.");
-  const directory = options.directory ?? DEFAULT_REGISTRY_DIRECTORY;
+  const directory = options.directory ?? DEFAULT_COMPANION_REGISTRY_DIRECTORY;
   const token = options.token ?? randomToken();
   if (!tokenValue(token)) throw new Error("Companion session token has an invalid format.");
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -237,6 +303,7 @@ export async function registerCompanionEndpoint(
   const lease: CompanionLeaseRecord = { protocolVersion: COMPANION_PROTOCOL_VERSION, app, token, pid: process.pid };
   await acquireInstanceLease(directory, app, lease);
   try {
+    if (options.launchPlan !== undefined) await writeCompanionLaunchPlan(app, options.launchPlan, directory);
     try {
       const existing = parseEndpoint(JSON.parse(await readFile(destination, "utf8")) as unknown, app);
       if (processIsAlive(existing.pid)) {
@@ -279,6 +346,7 @@ export class CompanionInbox {
   readonly token: string;
   private readonly messages: SpineHandoffMessage[] = [];
   private readonly seen = new Set<string>();
+  private draftSnapshot: SpineDraftSnapshot | null = null;
 
   constructor(readonly app: HandoffTargetApp, token = randomToken(), private readonly onActivate?: () => void) {
     if (!tokenValue(token)) throw new Error("Companion session token has an invalid format.");
@@ -287,6 +355,15 @@ export class CompanionInbox {
 
   async handle(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === COMPANION_DRAFT_PATH && request.method === "GET") {
+      if (!sameToken(authorizationToken(request), this.token)) return json({ error: "Unauthorized companion request." }, 403);
+      if (this.app !== "editor") return json({ error: "Draft preview is available only from BA Spine Editor." }, 404);
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId) || this.draftSnapshot?.sessionId !== sessionId) {
+        return json({ error: "Draft preview session is unavailable or stale." }, 404);
+      }
+      return json(this.draftSnapshot);
+    }
     if (url.pathname === COMPANION_ACTIVATE_PATH && request.method === "POST") {
       if (!sameToken(authorizationToken(request), this.token)) return json({ error: "Unauthorized companion request." }, 403);
       try { this.onActivate?.(); }
@@ -343,27 +420,113 @@ export class CompanionInbox {
     }
     return before - this.messages.length;
   }
+
+  /** Keep one bounded, volatile unsaved project snapshot in the Editor process only. */
+  publishDraft(value: unknown): SpineDraftSnapshot {
+    if (this.app !== "editor") throw new Error("Only the Editor can publish an unsaved draft.");
+    const snapshot = parseSpineDraftSnapshot(value);
+    const current = this.draftSnapshot;
+    if (current && current.sessionId === snapshot.sessionId) {
+      if (current.library.identity !== snapshot.library.identity
+        || current.library.path !== snapshot.library.path
+        || current.lobbyId !== snapshot.lobbyId) {
+        throw new Error("A draft session cannot change its library or lobby.");
+      }
+      if (snapshot.revision <= current.revision) return current;
+    }
+    this.draftSnapshot = snapshot;
+    return snapshot;
+  }
+
+  revokeDraft(sessionId: string): boolean {
+    if (this.draftSnapshot?.sessionId !== sessionId) return false;
+    this.draftSnapshot = null;
+    return true;
+  }
+}
+
+/** Read a volatile draft from the authenticated Editor loopback endpoint; never launch an absent Editor. */
+export async function readCompanionDraftSnapshot(
+  sessionId: string,
+  options: { directory?: string; fetch?: typeof fetch; timeoutMs?: number } = {},
+): Promise<SpineDraftSnapshot | null> {
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error("Draft session ID is invalid.");
+  const directory = options.directory ?? DEFAULT_COMPANION_REGISTRY_DIRECTORY;
+  let rawEndpoint: string;
+  try { rawEndpoint = await readFile(endpointPath(directory, "editor"), "utf8"); }
+  catch { return null; }
+  let endpoint: CompanionEndpointRecord;
+  try { endpoint = parseEndpoint(JSON.parse(rawEndpoint) as unknown, "editor"); }
+  catch { return null; }
+  if (!processIsAlive(endpoint.pid)) return null;
+  const fetcher = options.fetch ?? fetch;
+  let response: Response;
+  try {
+    response = await fetcher(`http://127.0.0.1:${endpoint.port}${COMPANION_DRAFT_PATH}?sessionId=${encodeURIComponent(sessionId)}`, {
+      headers: { authorization: `Bearer ${endpoint.token}` },
+      redirect: "error",
+      signal: AbortSignal.timeout(options.timeoutMs ?? 1_500),
+    });
+  } catch {
+    throw new CompanionUnavailableError("BA Spine Editor could not be reached for its draft preview.");
+  }
+  if (response.status === 404) return null;
+  if (!response.ok) throw new CompanionUnavailableError(`BA Spine Editor rejected the draft preview (${response.status}).`);
+  try {
+    const snapshot = parseSpineDraftSnapshot(await response.json() as unknown);
+    return snapshot.sessionId === sessionId ? snapshot : null;
+  } catch {
+    throw new CompanionUnavailableError("BA Spine Editor returned an invalid draft preview.");
+  }
 }
 
 /** Send only to the fixed loopback address recorded for the target app. */
 export async function sendCompanionHandoff(
   value: unknown,
-  options: { directory?: string; fetch?: typeof fetch; timeoutMs?: number } = {},
+  options: { directory?: string; fetch?: typeof fetch; timeoutMs?: number; autoLaunch?: CompanionAutoLaunchOptions } = {},
 ): Promise<void> {
   const message = parseHandoffMessage(value);
-  const directory = options.directory ?? DEFAULT_REGISTRY_DIRECTORY;
-  let raw: string;
-  try {
-    raw = await readFile(endpointPath(directory, message.targetApp), "utf8");
-  } catch {
-    throw new CompanionUnavailableError(`BA Spine ${message.targetApp} is not currently registered on this device.`);
-  }
-
-  let endpoint: CompanionEndpointRecord;
-  try { endpoint = parseEndpoint(JSON.parse(raw) as unknown, message.targetApp); }
-  catch (error) { throw error instanceof CompanionUnavailableError ? error : new CompanionUnavailableError("Companion registration could not be read."); }
-
+  const directory = options.directory ?? DEFAULT_COMPANION_REGISTRY_DIRECTORY;
   const fetcher = options.fetch ?? fetch;
+
+  const readEndpoint = async (): Promise<CompanionEndpointRecord | null> => {
+    let raw: string;
+    try { raw = await readFile(endpointPath(directory, message.targetApp), "utf8"); }
+    catch { return null; }
+    let endpoint: CompanionEndpointRecord;
+    try { endpoint = parseEndpoint(JSON.parse(raw) as unknown, message.targetApp); }
+    catch { return null; }
+    return processIsAlive(endpoint.pid) ? endpoint : null;
+  };
+
+  const launchAndWait = async (): Promise<CompanionEndpointRecord> => {
+    if (!options.autoLaunch) throw new CompanionUnavailableError(`BA Spine ${message.targetApp} is not currently registered on this device.`);
+    const plan = await readCompanionLaunchPlan(message.targetApp, directory) ?? parseCompanionLaunchPlan(
+      await options.autoLaunch.resolvePlan(message.targetApp),
+    );
+    try {
+      if (options.autoLaunch.launch) await options.autoLaunch.launch(message.targetApp, plan);
+      else await launchCompanionProcess(plan);
+    } catch {
+      throw new CompanionUnavailableError(`BA Spine ${message.targetApp} could not be started from its registered launch plan.`);
+    }
+
+    const requestedTimeout = options.autoLaunch.timeoutMs ?? 12_000;
+    const requestedPollInterval = options.autoLaunch.pollIntervalMs ?? 150;
+    const timeoutMs = Math.min(60_000, Math.max(0, Number.isFinite(requestedTimeout) ? requestedTimeout : 12_000));
+    const pollIntervalMs = Math.min(1_000, Math.max(10, Number.isFinite(requestedPollInterval) ? requestedPollInterval : 150));
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const endpoint = await readEndpoint();
+      if (endpoint) return endpoint;
+      await new Promise((resolveWait) => setTimeout(resolveWait, Math.min(pollIntervalMs, Math.max(1, deadline - Date.now()))));
+    }
+    throw new CompanionUnavailableError(`BA Spine ${message.targetApp} started but did not register in time.`);
+  };
+
+  let endpoint = await readEndpoint();
+  endpoint ??= await launchAndWait();
+
   let response: Response;
   try {
     response = await fetcher(`http://127.0.0.1:${endpoint.port}${COMPANION_HANDOFF_PATH}`, {

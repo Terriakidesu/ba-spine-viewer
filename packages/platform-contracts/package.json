@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./handoff": "./src/handoff.ts"
+    "./handoff": "./src/handoff.ts",
+    "./contentVersion": "./src/contentVersion.ts"
   }
 }

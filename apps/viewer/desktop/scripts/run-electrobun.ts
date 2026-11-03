@@ -14,7 +14,10 @@ const command = task === "build"
   ? ["bunx", "electrobun", "build", "--env=stable"]
   : ["bunx", "electrobun", "dev", "--watch"];
 const environment = { ...process.env };
-if (task === "dev" && !environment.BA_SPINE_DATA) environment.BA_SPINE_DATA = resolve(repositoryRoot, "data");
+if (task === "dev") {
+  if (!environment.BA_SPINE_DATA) environment.BA_SPINE_DATA = resolve(repositoryRoot, "data");
+  environment.BA_SPINE_WORKSPACE_ROOT = repositoryRoot;
+}
 const app = Bun.spawn(command, {
   cwd: desktopRoot,
   env: environment,

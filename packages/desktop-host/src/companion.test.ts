@@ -4,12 +4,16 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
   COMPANION_ACTIVATE_PATH,
+  COMPANION_DRAFT_PATH,
   COMPANION_HANDOFF_PATH,
   CompanionAlreadyRunningError,
   CompanionInbox,
   CompanionUnavailableError,
+  readCompanionDraftSnapshot,
+  readCompanionLaunchPlan,
   registerCompanionEndpoint,
   sendCompanionHandoff,
+  writeCompanionLaunchPlan,
 } from "./companion";
 
 const message = {
@@ -19,6 +23,12 @@ const message = {
   library: { identity: "fixture-library", path: "D:\\fixtures\\library" },
   lobbyId: "Airi_home",
   sequenceId: "opening",
+} as const;
+
+const editorMessage = {
+  ...message,
+  requestId: "req_00000002",
+  targetApp: "editor",
 } as const;
 
 async function withRegistry<T>(run: (directory: string) => Promise<T>): Promise<T> {
@@ -52,6 +62,57 @@ describe("authenticated local companion transport", () => {
       }
       await expect(readFile(join(directory, "viewer.json"), "utf8")).rejects.toThrow();
     });
+  });
+
+  test("serves volatile Editor drafts only to authenticated requests and revokes stale sessions", async () => {
+    await withRegistry(async (directory) => {
+      const token = "7".repeat(64);
+      const snapshot = {
+        protocolVersion: 1,
+        sessionId: "draft_session_02",
+        library: { identity: "fixture-library", path: "D:\\fixtures\\library" },
+        lobbyId: "Airi_home",
+        revision: 1,
+        project: { assetDirectory: "Airi_home", interactions: [], timeline: { sequenceId: "opening" } },
+      } as const;
+      const inbox = new CompanionInbox("editor", token);
+      const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => inbox.handle(request) });
+      let registration: Awaited<ReturnType<typeof registerCompanionEndpoint>> | undefined;
+      try {
+        if (server.port === undefined) throw new Error("Test companion server failed to bind.");
+        registration = await registerCompanionEndpoint("editor", server.port, { directory, token });
+        inbox.publishDraft(snapshot);
+        const response = await fetch(`http://127.0.0.1:${server.port}${COMPANION_DRAFT_PATH}?sessionId=${snapshot.sessionId}`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual(snapshot);
+        const unauthorized = await fetch(`http://127.0.0.1:${server.port}${COMPANION_DRAFT_PATH}?sessionId=${snapshot.sessionId}`);
+        expect(unauthorized.status).toBe(403);
+        expect(await readCompanionDraftSnapshot(snapshot.sessionId, { directory })).toEqual(snapshot);
+        expect(inbox.revokeDraft(snapshot.sessionId)).toBe(true);
+        expect(await readCompanionDraftSnapshot(snapshot.sessionId, { directory })).toBeNull();
+      } finally {
+        registration?.close();
+        server.stop(true);
+      }
+    });
+  });
+
+  test("keeps draft revisions monotonic and binds a session to one library and lobby", () => {
+    const inbox = new CompanionInbox("editor", "8".repeat(64));
+    const snapshot = {
+      protocolVersion: 1,
+      sessionId: "draft_session_03",
+      library: { identity: "fixture-library", path: "D:\\fixtures\\library" },
+      lobbyId: "Airi_home",
+      revision: 2,
+      project: { timeline: { duration: 12 } },
+    } as const;
+    inbox.publishDraft(snapshot);
+    expect(inbox.publishDraft({ ...snapshot, revision: 1, project: { timeline: { duration: 3 } } })).toEqual(snapshot);
+    expect(() => inbox.publishDraft({ ...snapshot, revision: 3, lobbyId: "Hina_home" })).toThrow();
+    expect(inbox.publishDraft({ ...snapshot, revision: 3, project: { timeline: { duration: 13 } } }).revision).toBe(3);
   });
 
   test("rejects unauthorized, wrong-target, malformed, and oversized requests", async () => {
@@ -124,6 +185,80 @@ describe("authenticated local companion transport", () => {
       await expect(sendCompanionHandoff(message, { directory })).rejects.toBeInstanceOf(CompanionUnavailableError);
       const endpoint = join(directory, "viewer.json");
       await expect(readFile(endpoint, "utf8")).rejects.toThrow();
+    });
+  });
+
+  test("persists a validated launch plan after an app exits", async () => {
+    await withRegistry(async (directory) => {
+      const plan = { command: "bun", args: ["run", "dev:viewer"], cwd: "C:\\workspace" };
+      await writeCompanionLaunchPlan("viewer", plan, directory);
+      expect(await readCompanionLaunchPlan("viewer", directory)).toEqual(plan);
+      await expect(writeCompanionLaunchPlan("viewer", { command: "cmd.exe & whoami", args: [] }, directory)).rejects.toThrow();
+      expect(await readCompanionLaunchPlan("viewer", directory)).toEqual(plan);
+    });
+  });
+
+  test("launches a missing target, waits for its registration, then delivers and focuses", async () => {
+    await withRegistry(async (directory) => {
+      let focused = 0;
+      let server: ReturnType<typeof Bun.serve> | undefined;
+      let registration: Awaited<ReturnType<typeof registerCompanionEndpoint>> | undefined;
+      const token = "6".repeat(64);
+      const inbox = new CompanionInbox("editor", token, () => { focused += 1; });
+      const plan = { command: "fixture-editor-launcher", args: [] };
+      let launches = 0;
+      try {
+        await sendCompanionHandoff(editorMessage, {
+          directory,
+          autoLaunch: {
+            resolvePlan: (target) => {
+              expect(target).toBe("editor");
+              return plan;
+            },
+            launch: async (target, discoveredPlan) => {
+              expect(target).toBe("editor");
+              expect(discoveredPlan).toEqual(plan);
+              launches += 1;
+              server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => inbox.handle(request) });
+              if (server.port === undefined) throw new Error("Test companion server failed to bind.");
+              registration = await registerCompanionEndpoint("editor", server.port, {
+                directory,
+                token,
+                launchPlan: plan,
+              });
+            },
+            timeoutMs: 1_000,
+            pollIntervalMs: 5,
+          },
+        });
+        expect(launches).toBe(1);
+        expect(inbox.pending()).toEqual([editorMessage]);
+        expect(focused).toBe(1);
+      } finally {
+        registration?.close();
+        server?.stop(true);
+      }
+    });
+  });
+
+  test("uses the saved launch plan instead of asking discovery again", async () => {
+    await withRegistry(async (directory) => {
+      const plan = { command: "fixture-editor-launcher", args: [] };
+      await writeCompanionLaunchPlan("viewer", plan, directory);
+      let launches = 0;
+      await expect(sendCompanionHandoff(message, {
+        directory,
+        autoLaunch: {
+          resolvePlan: () => { throw new Error("persisted plan should win"); },
+          launch: async (_target, actual) => {
+            expect(actual).toEqual(plan);
+            launches += 1;
+          },
+          timeoutMs: 30,
+          pollIntervalMs: 5,
+        },
+      })).rejects.toBeInstanceOf(CompanionUnavailableError);
+      expect(launches).toBe(1);
     });
   });
 

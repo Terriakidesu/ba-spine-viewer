@@ -19,6 +19,19 @@ export interface SpineHandoffMessage {
   };
 }
 
+/** Volatile in-memory project snapshot used only for an explicitly requested draft preview. */
+export interface SpineDraftSnapshot {
+  protocolVersion: typeof HANDOFF_PROTOCOL_VERSION;
+  sessionId: string;
+  library: {
+    identity: string;
+    path: string;
+  };
+  lobbyId: string;
+  revision: number;
+  project: Record<string, unknown>;
+}
+
 export class HandoffValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -121,5 +134,40 @@ export function parseHandoffMessage(value: unknown): SpineHandoffMessage {
     ...(language ? { language } : {}),
     ...(playheadSeconds !== undefined ? { playheadSeconds } : {}),
     ...(draft ? { draft } : {}),
+  };
+}
+
+export const MAX_SPINE_DRAFT_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+
+/** Validate a bounded unsaved draft snapshot before it crosses the local companion channel. */
+export function parseSpineDraftSnapshot(value: unknown): SpineDraftSnapshot {
+  const input = record(value, "Draft snapshot");
+  exactKeys(input, ["protocolVersion", "sessionId", "library", "lobbyId", "revision", "project"], "Draft snapshot");
+  if (input.protocolVersion !== HANDOFF_PROTOCOL_VERSION) {
+    throw new HandoffValidationError(`Unsupported draft protocol version: ${String(input.protocolVersion)}.`);
+  }
+  const sessionId = text(input.sessionId, "draft.sessionId", 128, /^[A-Za-z0-9_-]{8,128}$/);
+  const rawLibrary = record(input.library, "draft.library");
+  exactKeys(rawLibrary, ["identity", "path"], "draft.library");
+  const library = {
+    identity: text(rawLibrary.identity, "draft.library.identity", 256),
+    path: absoluteLibraryPath(rawLibrary.path),
+  };
+  const lobbyId = projectId(input.lobbyId, "draft.lobbyId");
+  if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 1) {
+    throw new HandoffValidationError("draft.revision must be a positive safe integer.");
+  }
+  const project = record(input.project, "draft.project");
+  let size: number;
+  try { size = new TextEncoder().encode(JSON.stringify(input)).byteLength; }
+  catch { throw new HandoffValidationError("Draft snapshot must contain serializable data."); }
+  if (size > MAX_SPINE_DRAFT_SNAPSHOT_BYTES) throw new HandoffValidationError("Draft snapshot exceeds the 8 MB safety limit.");
+  return {
+    protocolVersion: HANDOFF_PROTOCOL_VERSION,
+    sessionId,
+    library,
+    lobbyId,
+    revision: Number(input.revision),
+    project,
   };
 }

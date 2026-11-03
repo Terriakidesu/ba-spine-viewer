@@ -34,7 +34,7 @@ declare module "electrobun/main" {
   }
 
   export const Utils: {
-    paths: { home: string };
+    paths: { appData: string; home: string };
     openFileDialog(options: {
       startingFolder?: string;
       allowedFileTypes?: string;

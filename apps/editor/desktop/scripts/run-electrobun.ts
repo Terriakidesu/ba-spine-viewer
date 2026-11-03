@@ -19,6 +19,7 @@ const app = Bun.spawn(command, {
   env: {
     ...process.env,
     ...(task === "dev" && !process.env.BA_SPINE_DATA ? { BA_SPINE_DATA: resolve(repositoryRoot, "data") } : {}),
+    ...(task === "dev" ? { BA_SPINE_WORKSPACE_ROOT: repositoryRoot } : {}),
     BA_SPINE_EDITOR_MCP: mcpEnabled ? "1" : "0",
   },
   stdout: "inherit",
