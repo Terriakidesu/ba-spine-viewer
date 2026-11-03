@@ -50,6 +50,16 @@ async function writeTarZstd(path: string, entries: Array<{ name: string; content
   await writeFile(path, zstdCompressSync(archive));
 }
 
+function paxPathRecord(path: string): string {
+  const payload = `path=${path}\n`;
+  let length = Buffer.byteLength(payload) + 2;
+  for (;;) {
+    const nextLength = Buffer.byteLength(String(length)) + 1 + Buffer.byteLength(payload);
+    if (nextLength === length) return `${length} ${payload}`;
+    length = nextLength;
+  }
+}
+
 describe("release artifact audit", () => {
   test("accepts a package without library data or workspace markers", async () => {
     const root = await temporaryRoot("ba-spine-release-clean-");
@@ -94,6 +104,26 @@ describe("release artifact audit", () => {
       expect.stringContaining('compressed TAR contains forbidden asset-library data directory "BASpineViewer/Resources/app/data/"'),
       expect.stringContaining('compressed TAR contains forbidden marker "C:\\Source Workspace"'),
       expect.stringContaining('compressed TAR contains an unexpected link entry "BASpineViewer/Resources/app/link"'),
+    ]));
+  });
+
+  test("honors PAX and GNU long-path metadata when checking archive directories", async () => {
+    const root = await temporaryRoot("ba-spine-release-long-path-archive-");
+    const archivePath = join(root, "Resources", "long-paths.tar.zst");
+    await mkdir(join(root, "Resources"), { recursive: true });
+    const paxDirectory = `BASpineViewer/${"nested-folder/".repeat(10)}data/日本語/`;
+    const gnuDirectory = `BASpineEditor/${"long-folder/".repeat(10)}data/`;
+    await writeTarZstd(archivePath, [
+      { name: "PaxHeaders/entry", type: "x", content: paxPathRecord(paxDirectory) },
+      { name: "short-pax-name/", type: "5" },
+      { name: "././@LongLink", type: "L", content: `${gnuDirectory}\0` },
+      { name: "short-gnu-name/", type: "5" },
+    ]);
+
+    const issues = await auditPackagedDirectory(root);
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.stringContaining(`compressed TAR contains forbidden asset-library data directory "${paxDirectory}"`),
+      expect.stringContaining(`compressed TAR contains forbidden asset-library data directory "${gnuDirectory}"`),
     ]));
   });
 
