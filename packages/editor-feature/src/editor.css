@@ -207,7 +207,7 @@ input[type="color"] { width: 100%; height: 32px; padding: 2px; border: 1px solid
 .editor-empty span { max-width: 360px; }
 .editor-timeline { padding: 10px 12px; border-top: 1px solid var(--editor-line); background: var(--editor-surface); }
 .editor-timeline-top { display: flex; align-items: center; gap: 8px; }
-.editor-timeline-top select { min-width: 0; flex: 1; height: 32px; padding: 4px 7px; border: 1px solid var(--editor-line); border-radius: 3px; background: #0c1a27; color: var(--editor-text); font-size: 11px; }
+.editor-timeline-top .editor-animation-picker { min-width: 0; flex: 1; }
 .editor-icon-button { display: grid; place-items: center; width: 34px; height: 32px; padding: 0; border: 1px solid var(--editor-cyan); border-radius: 3px; background: #164a60; color: #fff; }
 .editor-icon-button svg { width: 16px; height: 16px; }
 .editor-speed { display: flex; align-items: center; gap: 4px; color: var(--editor-muted); font-size: 10px; white-space: nowrap; }
@@ -259,6 +259,25 @@ input[type="color"] { width: 100%; height: 32px; padding: 2px; border: 1px solid
 .editor-phase-card > span { color: var(--editor-text); font-size: 10px; }
 .editor-phase-card small { color: var(--editor-muted); font-size: 9px; }
 .editor-phase-card .editor-preview-button { min-height: 22px; padding: 2px 5px; font-size: 9px; }
+.editor-animation-field { display: grid; gap: 4px; min-width: 0; color: var(--editor-muted); font-size: 10px; font-weight: 650; }
+.editor-animation-field > span { min-width: 0; }
+.editor-animation-picker { position: relative; z-index: 1; min-width: 0; width: 100%; font-weight: 400; }
+.editor-animation-picker.is-open { z-index: 30; }
+.editor-animation-picker-trigger { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; min-width: 0; min-height: 31px; padding: 5px 7px; border: 1px solid var(--editor-line); border-radius: 3px; background: #0c1a27; color: var(--editor-text); font-size: 10px; text-align: left; }
+.editor-animation-picker-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editor-animation-picker-trigger > i { flex: none; color: var(--editor-muted); font-size: 12px; font-style: normal; }
+.editor-animation-picker-trigger:hover:not(:disabled), .editor-animation-picker-trigger[aria-expanded="true"] { border-color: var(--editor-cyan); }
+.editor-animation-picker-trigger.is-missing { border-color: var(--editor-yellow); color: #ffe89a; }
+.editor-animation-picker-trigger:disabled { opacity: .5; }
+.editor-animation-picker-popover { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 40; display: grid; gap: 6px; min-width: 180px; padding: 8px; border: 1px solid #4b7890; border-radius: 4px; background: #0b1925; box-shadow: 0 8px 24px #0008; }
+.editor-animation-picker-search { display: grid; gap: 4px; color: var(--editor-cyan); font-size: 9px; font-weight: 700; }
+.editor-animation-picker-search input { width: 100%; min-width: 0; height: 30px; padding: 5px 7px; border: 1px solid var(--editor-line); border-radius: 3px; background: #08141f; color: var(--editor-text); font-size: 11px; }
+.editor-animation-picker-count { color: var(--editor-muted); font-size: 9px; }
+.editor-animation-picker-list { display: grid; max-height: min(240px, 40dvh); overflow: auto; border: 1px solid var(--editor-line); border-radius: 3px; background: #0c1a27; overscroll-behavior: contain; }
+.editor-animation-picker-option { width: 100%; min-height: 30px; padding: 5px 7px; border: 0; border-bottom: 1px solid #213b4d; background: transparent; color: var(--editor-text); font-size: 10px; text-align: left; overflow-wrap: anywhere; }
+.editor-animation-picker-option:hover, .editor-animation-picker-option.is-active { background: #16374a; }
+.editor-animation-picker-option.is-selected { box-shadow: inset 2px 0 var(--editor-yellow); background: #1d455c; }
+.editor-animation-picker-empty { margin: 0; padding: 12px 8px; }
 .editor-bone-picker { position: relative; display: grid; gap: 6px; min-width: 0; }
 .editor-bone-picker-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
 .editor-bone-picker-heading > strong { overflow: hidden; color: var(--editor-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }

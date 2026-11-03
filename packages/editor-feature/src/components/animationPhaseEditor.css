@@ -8,8 +8,7 @@
 .editor-phase-number { display: grid; place-items: center; width: 24px; height: 24px; flex: none; border: 1px solid var(--editor-line); border-radius: 50%; color: var(--editor-cyan); font: 9px ui-monospace, monospace; }
 .editor-phase-editor-heading .editor-preview-button { min-height: 25px; margin-left: auto; padding: 3px 7px; }
 .editor-phase-animation-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.editor-phase-animation-fields select { min-width: 0; }
-.editor-phase-animation-fields select.is-missing { border-color: var(--editor-yellow); color: #ffe89a; }
+.editor-phase-animation-fields .editor-animation-field { gap: 4px; }
 .editor-phase-missing { color: var(--editor-yellow); font-size: 9px; font-weight: 500; }
 .editor-phase-suggestion { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 8px; border: 1px solid var(--editor-line); border-radius: 4px; background: #112532; }
 .editor-phase-suggestion.has-suggestion { border-color: #5bdcff77; background: #123142; }

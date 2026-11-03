@@ -1,4 +1,6 @@
 import { NumberField } from "./NumberField";
+import { AnimationPicker } from "../AnimationPicker";
+import type { AnimationPickerOption } from "../animationPickerModel";
 import "./animationPhaseEditor.css";
 
 export type AnimationPhaseField = "startAnimation" | "followAnimation" | "endAnimation" | "faceStartAnimation" | "faceFollowAnimation" | "faceEndAnimation";
@@ -41,14 +43,10 @@ export function AnimationPhaseEditor({ animations, press, hold, release, facePre
     { key: "release", title: "Release", animationField: "endAnimation", faceField: "faceEndAnimation", mixField: "releaseMixDuration", body: release, face: faceRelease, loop: false, activePhase: "releasing" },
   ];
   const mixByField: Record<AnimationMixField, number> = { startMixDuration: mixPress, followMixDuration: mixHold, releaseMixDuration: mixRelease };
-
-  function animationOptions(value: string) {
-    return <>
-      <option value="">None</option>
-      {value && !animations.includes(value) && <option value={value}>{value} · missing from rig</option>}
-      {animations.map((animation) => <option key={animation} value={animation}>{animation}</option>)}
-    </>;
-  }
+  const animationOptions: AnimationPickerOption[] = [
+    { value: "", label: "None" },
+    ...animations.map((animation) => ({ value: animation, label: animation })),
+  ];
 
   return <div className="editor-phase-editor" aria-label="Press, hold, and release animation phases">
     {phases.map((phase, index) => {
@@ -61,8 +59,8 @@ export function AnimationPhaseEditor({ animations, press, hold, release, facePre
           <button type="button" className="editor-preview-button" disabled={disabled || (!phase.body && !phase.face)} onClick={() => onPreview(phase.title, phase.body, phase.face, phase.loop)}>Preview</button>
         </header>
         <div className="editor-two-fields editor-phase-animation-fields">
-          <label>Body animation{bodyMissing && <small className="editor-phase-missing">Missing from rig</small>}<select disabled={disabled} className={bodyMissing ? "is-missing" : ""} aria-label={`${phase.title} body animation${bodyMissing ? ", missing from rig" : ""}`} value={phase.body} onChange={(event) => onAnimationChange(phase.animationField, event.target.value)}>{animationOptions(phase.body)}</select></label>
-          <label>Face animation{faceMissing && <small className="editor-phase-missing">Missing from rig</small>}<select disabled={disabled} className={faceMissing ? "is-missing" : ""} aria-label={`${phase.title} face animation${faceMissing ? ", missing from rig" : ""}`} value={phase.face} onChange={(event) => onAnimationChange(phase.faceField, event.target.value)}>{animationOptions(phase.face)}</select></label>
+          <div className="editor-animation-field"><span>Body animation</span>{bodyMissing && <small className="editor-phase-missing">Missing from rig</small>}<AnimationPicker disabled={disabled} ariaLabel={`${phase.title} body animation${bodyMissing ? ", missing from rig" : ""}`} value={phase.body} options={animationOptions} onChange={(value) => onAnimationChange(phase.animationField, value)} /></div>
+          <div className="editor-animation-field"><span>Face animation</span>{faceMissing && <small className="editor-phase-missing">Missing from rig</small>}<AnimationPicker disabled={disabled} ariaLabel={`${phase.title} face animation${faceMissing ? ", missing from rig" : ""}`} value={phase.face} options={animationOptions} onChange={(value) => onAnimationChange(phase.faceField, value)} /></div>
         </div>
         <NumberField label="Blend duration" value={mixByField[phase.mixField]} min={0} max={2} step={0.05} unit="s" disabled={disabled} scrub={false} onCommit={(value) => onMixChange(phase.mixField, value)} />
       </article>;

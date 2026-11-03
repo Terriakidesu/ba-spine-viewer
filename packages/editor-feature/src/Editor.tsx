@@ -37,6 +37,7 @@ import { AssetPickerModal } from "./AssetPickerModal";
 import { BonePicker } from "./BonePicker";
 import { BoneNavigator, type BoneRevealRequest } from "./BoneNavigator";
 import { CommandPalette, type EditorCommand } from "./CommandPalette";
+import { AnimationPicker } from "./AnimationPicker";
 import { AnimationPhaseEditor } from "./components/AnimationPhaseEditor";
 import { BoundedSliderField } from "./components/BoundedSliderField";
 import { InteractionSummary } from "./components/InteractionSummary";
@@ -1925,9 +1926,7 @@ export function Editor() {
           <div className="editor-timeline">
             <div className="editor-timeline-top">
                <button className="editor-icon-button" title="Play/pause (Space)" onClick={() => { const next = !playing; setPlaying(next); rendererRef.current?.setPlaying(next); }} disabled={!frame || testing}>{playing ? <IconPause /> : <IconPlay />}</button>
-              <select aria-label="Preview animation" value={selectedAnimation} onChange={(event) => { setSelectedAnimation(event.target.value); rendererRef.current?.setAnimation(event.target.value, true); }} disabled={!meta || testing}>
-                {meta?.animations.map((animation) => <option key={animation} value={animation}>{animation}</option>)}
-              </select>
+               <AnimationPicker ariaLabel="Preview animation" value={selectedAnimation} options={(meta?.animations ?? []).map((animation) => ({ value: animation, label: animation }))} onChange={(animation) => { setSelectedAnimation(animation); rendererRef.current?.setAnimation(animation, true); }} disabled={!meta || testing} />
               <NumberField label="Speed" value={speed} min={0.1} max={3} step={0.1} precision={1} unit="×" scrub={false} compact onCommit={setSpeed} />
               <span className="editor-time">{progress.time.toFixed(2)} / {progress.duration.toFixed(2)}s</span>
             </div>

@@ -164,6 +164,10 @@ Ctrl/Cmd+C copies selected animation, color, subtitle, and audio clips to an in-
 
 The timeline inspector searches English, Japanese, Korean, or all subtitle translations using case-insensitive Unicode-normalized matching. Results are ordered by cue time; choosing one stops playback, selects the cue, moves the playhead, and scrolls the timeline into view. Search/navigation do not modify authored data. Fixture tests cover language filtering, normalization, blank queries, and chronological ordering.
 
+#### Searchable animation picker slice (2026-11-04)
+
+Interaction-phase, preview, and timeline animation fields use a shared searchable picker with normalized, ranked name matching and arrow/Enter/Escape keyboard navigation. Existing values absent from the loaded rig remain selectable and are visibly marked as missing. Picker filtering does not alter authored values; only choosing an option invokes the existing edit action. Tests cover exact/prefix ranking, normalized matching, empty queries, and missing-name retention.
+
 ### Editor-to-viewer handoff
 
 - **Open in Viewer** focuses or starts the viewer and opens the selected lobby/sequence.
