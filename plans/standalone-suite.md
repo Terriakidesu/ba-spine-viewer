@@ -327,6 +327,8 @@ Viewer and Editor now reopen their own last-selected library from a small versio
 
 A fresh temporary checkout made from the committed Git archive (excluding ignored library/build outputs) installed with `bun install --frozen-lockfile`; typecheck, all 364 tests, and the full Viewer→Editor build plus artifact audit passed without relying on another workspace. The same full check passed with a checkout path containing spaces. Library read/write and companion launch-plan round-trip tests cover paths with spaces and non-ASCII names.
 
+After adding compressed-archive inspection, the clean source-archive check was repeated from a temporary path containing spaces: frozen install, typecheck, all 368 tests, both native builds, and the archive-aware release audit passed. The clean Git archive contains no ignored local `data/` or build output.
+
 #### Remaining release gates (2026-11-04)
 
 - A direct Windows package build from a workspace path containing Japanese characters remains unverified: Electrobun 2.0.5's packaging step passed the path to `System32/tar.exe` with the non-ASCII characters replaced by `?`. No application workaround was added; the supported library-path behavior is covered separately by synthetic tests.
