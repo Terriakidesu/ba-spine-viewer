@@ -311,6 +311,10 @@ Keep commits small, reviewable, and buildable. Each commit should include its fo
 - Verify the packaged WASM artifact is lazy-loaded and that the JS fallback works when WASM initialization fails.
 - Run full tests/typecheck/builds and a final read-only smoke test against the real library.
 
+#### Packaged artifact audit slice (2026-11-04)
+
+The root `bun run build` now runs a streaming audit over every stable Viewer and Editor package. It rejects bundled `data/` directories, embedded catalog paths, symbolic links, and references to the current source workspace; optional OS-delimited environment lists extend the check to external source paths and captured build logs. Synthetic tests use temporary directories only.
+
 ## Verification gates
 
 Run the narrowest relevant tests for each commit, then the full workspace checks at integration points. Final release gate:

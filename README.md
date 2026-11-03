@@ -20,7 +20,7 @@ bun run dev:viewer
 bun run dev:editor
 ```
 
-`bun run build` builds both native applications (Viewer, then Editor).
+`bun run build` builds both native applications (Viewer, then Editor) and audits the packaged outputs for bundled `data/` directories, catalog paths, and the current source-workspace path. `bun run audit:release` reruns that audit; optionally provide OS-delimited `BA_SPINE_FORBIDDEN_PATHS` and `BA_SPINE_BUILD_LOGS` lists to check additional source paths and captured build logs.
 
 In desktop development, `./data/` is offered as the default asset library when present. To use another library, set `BA_SPINE_DATA` to its root. The app also supports choosing a library from its native dialog.
 

@@ -14,7 +14,8 @@
     "dev:editor": "bun --cwd=apps/editor run desktop:dev",
     "build:viewer": "bun --cwd=apps/viewer run desktop:build",
     "build:editor": "bun --cwd=apps/editor run desktop:build",
-    "build": "bun run build:viewer && bun run build:editor",
+    "build": "bun run build:viewer && bun run build:editor && bun run audit:release",
+    "audit:release": "bun scripts/releaseArtifactAudit.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "profile:wasm-candidates": "bun scripts/profile-wasm-candidates.ts"
