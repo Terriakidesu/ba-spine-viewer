@@ -1,0 +1,17 @@
+{
+  "name": "@ba-spine/spine-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./spine/*": "./src/spine/*.ts",
+    "./ui/*": "./src/spine/*.tsx",
+    "./i18n": "./src/i18n/index.ts"
+  },
+  "dependencies": {
+    "@esotericsoftware/spine-core": "4.2.120",
+    "@esotericsoftware/spine-webgl": "4.2.120",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

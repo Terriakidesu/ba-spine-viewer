@@ -1,0 +1,12 @@
+{
+  "name": "@ba-spine/app-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./icons": "./src/icons.tsx"
+  },
+  "dependencies": {
+    "react": "^19.0.0"
+  }
+}

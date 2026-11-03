@@ -1,0 +1,13 @@
+.editor-bone-nav-filters { display: flex; flex-wrap: wrap; gap: 4px; margin: -2px 0 5px; }
+.editor-bone-nav-filters button { min-height: 25px; padding: 3px 7px; border: 1px solid var(--editor-line); border-radius: 999px; background: #0d202e; color: var(--editor-muted); font-size: 9px; font-weight: 700; }
+.editor-bone-nav-filters button:hover:not(:disabled), .editor-bone-nav-filters button:focus-visible { border-color: var(--editor-cyan); color: var(--editor-text); }
+.editor-bone-nav-filters button.is-active { border-color: #5bdcff99; background: #15384a; color: var(--editor-cyan); }
+.editor-bone-nav-filters button:disabled { opacity: .4; }
+.editor-bone-shortcuts { display: grid; gap: 4px; margin: 0 0 5px; }
+.editor-bone-shortcuts > strong { color: var(--editor-muted); font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+.editor-bone-shortcuts > div { display: flex; flex-wrap: wrap; gap: 4px; }
+.editor-bone-shortcuts button { max-width: 100%; min-height: 24px; padding: 3px 6px; overflow: hidden; border: 1px solid var(--editor-line); border-radius: 3px; background: #0d202e; color: var(--editor-text); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.editor-bone-shortcuts.is-favorite button { border-color: #ffd45c55; color: #ffe18a; }
+.editor-bone-shortcuts button[aria-current="true"] { box-shadow: inset 0 0 0 1px var(--editor-cyan); }
+.editor-bone-row.is-pinned .editor-bone-item { box-shadow: inset 0 0 0 1px #5bdcff99; color: var(--editor-cyan); }
+.editor-bone-nav-filters button:focus-visible, .editor-bone-shortcuts button:focus-visible, .editor-bone-actions button:focus-visible { outline: 2px solid var(--editor-cyan); outline-offset: 1px; }

@@ -1,0 +1,9 @@
+.editor-interaction-summary { position: sticky; top: 37px; z-index: 1; display: flex; align-items: center; gap: 9px; min-width: 0; padding: 8px; border: 1px solid var(--editor-line); border-radius: 4px; background: #0d1d2a; box-shadow: 0 4px 10px #06111a99; }
+.editor-interaction-summary-swatch { width: 12px; height: 30px; flex: none; border: 1px solid #ffffff77; border-radius: 3px; box-shadow: 0 0 0 1px #0006; }
+.editor-interaction-summary-copy { display: grid; gap: 2px; min-width: 0; }
+.editor-interaction-summary-copy strong { overflow: hidden; color: var(--editor-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.editor-interaction-summary-copy small { overflow: hidden; color: var(--editor-muted); font: 9px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.editor-interaction-enabled { display: inline-flex; align-items: center; gap: 5px; min-height: 27px; flex: none; margin-left: auto; padding: 4px 7px; border: 1px solid var(--editor-line); border-radius: 999px; background: #172632; color: var(--editor-muted); font-size: 9px; font-weight: 750; }
+.editor-interaction-enabled > span { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.editor-interaction-enabled.is-enabled { border-color: #61d09577; background: #17382e; color: #91e1b4; }
+.editor-interaction-enabled:hover { border-color: var(--editor-cyan); }

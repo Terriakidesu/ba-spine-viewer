@@ -1,0 +1,23 @@
+.editor-phase-editor { container-type: inline-size; display: grid; gap: 7px; }
+.editor-phase-editor-card { display: grid; gap: 8px; min-width: 0; padding: 9px; border: 1px solid var(--editor-line); border-radius: 4px; background: #0d202e; }
+.editor-phase-editor-card.is-active { border-color: var(--editor-yellow); box-shadow: 0 0 0 1px #ffd45c44; }
+.editor-phase-editor-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.editor-phase-editor-heading > span:nth-child(2) { display: grid; gap: 1px; min-width: 0; }
+.editor-phase-editor-heading strong { color: var(--editor-text); font-size: 11px; }
+.editor-phase-editor-heading small { color: var(--editor-muted); font-size: 9px; }
+.editor-phase-number { display: grid; place-items: center; width: 24px; height: 24px; flex: none; border: 1px solid var(--editor-line); border-radius: 50%; color: var(--editor-cyan); font: 9px ui-monospace, monospace; }
+.editor-phase-editor-heading .editor-preview-button { min-height: 25px; margin-left: auto; padding: 3px 7px; }
+.editor-phase-animation-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.editor-phase-animation-fields select { min-width: 0; }
+.editor-phase-animation-fields select.is-missing { border-color: var(--editor-yellow); color: #ffe89a; }
+.editor-phase-missing { color: var(--editor-yellow); font-size: 9px; font-weight: 500; }
+.editor-phase-suggestion { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 8px; border: 1px solid var(--editor-line); border-radius: 4px; background: #112532; }
+.editor-phase-suggestion.has-suggestion { border-color: #5bdcff77; background: #123142; }
+.editor-phase-suggestion > span { display: grid; place-items: center; color: var(--editor-cyan); }
+.editor-phase-suggestion svg { width: 15px; height: 15px; }
+.editor-phase-suggestion p { margin: 0; color: var(--editor-muted); font-size: 9px; line-height: 1.45; }
+.editor-phase-suggestion p b { color: var(--editor-text); }
+.editor-phase-suggestion button { min-height: 27px; padding: 4px 7px; }
+@container (max-width: 360px) {
+  .editor-phase-animation-fields { grid-template-columns: minmax(0, 1fr); }
+}

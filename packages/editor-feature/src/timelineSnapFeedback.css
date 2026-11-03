@@ -1,0 +1,4 @@
+.timeline-snap-feedback { position: absolute; top: 0; bottom: 0; z-index: 30; width: 0; border-left: 2px solid var(--editor-cyan); pointer-events: none; }
+.timeline-snap-feedback.is-grid { border-left-color: var(--editor-yellow); }
+.timeline-snap-feedback > span { position: absolute; top: 4px; left: 5px; display: block; max-width: 190px; padding: 4px 6px; border: 1px solid #5bdcff99; border-radius: 3px; background: #102b3beb; color: #c7f4ff; font: 9px ui-monospace, monospace; font-weight: 750; white-space: nowrap; box-shadow: 0 2px 7px #0008; }
+.timeline-snap-feedback.is-grid > span { border-color: #ffd45c99; background: #342b18eb; color: #ffe7a2; }

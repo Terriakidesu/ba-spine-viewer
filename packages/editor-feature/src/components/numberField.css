@@ -1,0 +1,20 @@
+.editor-number-field { display: grid; gap: 4px; min-width: 0; color: var(--editor-muted); font-size: 10px; font-weight: 650; }
+.editor-number-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.editor-number-field .editor-number-heading > label { display: block; min-width: 0; color: inherit; font: inherit; }
+.editor-number-input-wrap { position: relative; display: flex; align-items: center; min-width: 0; }
+.editor-number-input-wrap input { width: 100%; min-width: 0; height: 32px; padding: 5px 25px 5px 8px; border: 1px solid var(--editor-line); border-radius: 3px; outline: 0; background: #0c1a27; color: var(--editor-text); font: inherit; font-variant-numeric: tabular-nums; }
+.editor-number-input-wrap input:focus-visible { border-color: var(--editor-cyan); box-shadow: 0 0 0 2px #5bdcff24; }
+.editor-number-field.is-invalid .editor-number-input-wrap input { border-color: var(--editor-pink); }
+.editor-number-field.is-invalid .editor-number-input-wrap input:focus-visible { box-shadow: 0 0 0 2px #ff769d24; }
+.editor-number-input-wrap input:disabled { opacity: .45; }
+.editor-number-unit-suffix { position: absolute; right: 8px; color: var(--editor-muted); font-size: 9px; pointer-events: none; }
+.editor-number-scrub { display: inline-flex; align-items: center; gap: 3px; min-height: 22px; padding: 2px 5px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--editor-muted); font: inherit; font-size: 9px; cursor: ew-resize; touch-action: none; }
+.editor-number-scrub svg { width: 12px; height: 12px; }
+.editor-number-scrub:hover, .editor-number-scrub:focus-visible { border-color: var(--editor-line); color: var(--editor-cyan); outline: 0; }
+.editor-number-error { color: var(--editor-pink); font-size: 9px; font-weight: 500; }
+.editor-number-field.is-compact { display: flex; align-items: center; gap: 6px; width: max-content; }
+.editor-number-field.is-compact .editor-number-heading { flex: none; }
+.editor-number-field.is-compact .editor-number-heading > label { white-space: nowrap; }
+.editor-number-field.is-compact .editor-number-scrub { display: none; }
+.editor-number-field.is-compact .editor-number-input-wrap { width: 72px; flex: none; }
+.editor-number-field.is-compact .editor-number-input-wrap input { height: 28px; padding: 4px 23px 4px 7px; }

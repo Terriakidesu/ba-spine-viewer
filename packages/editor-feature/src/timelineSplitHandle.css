@@ -1,0 +1,6 @@
+.timeline-split-handle { position: relative; z-index: 4; display: grid; place-items: center; flex: none; min-height: 9px; border-block: 1px solid var(--editor-line); background: #0b1924; cursor: row-resize; touch-action: none; }
+.timeline-split-handle > span { width: 34px; height: 3px; border-radius: 2px; background: #557080; }
+.timeline-split-handle:hover > span, .timeline-split-handle:focus-visible > span { background: var(--editor-cyan); }
+.timeline-split-handle:focus-visible { outline: 2px solid var(--editor-cyan); outline-offset: -2px; }
+.timeline-main > .timeline-stage-wrap { min-height: 170px; }
+.timeline-main .timeline-stage { min-height: 150px; }

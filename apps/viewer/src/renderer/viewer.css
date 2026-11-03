@@ -1,0 +1,19 @@
+html,
+body,
+#root {
+  min-width: 360px;
+  min-height: 100%;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+.app-loading {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  color: #d9e7f1;
+  background: #102131;
+  font: 600 16px system-ui, sans-serif;
+}

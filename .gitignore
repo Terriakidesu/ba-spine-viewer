@@ -1,0 +1,14 @@
+data/
+
+node_modules/
+**/node_modules/
+dist/
+build/
+release/
+artifacts/
+**/.hutch/
+coverage/
+.cache/
+.recovery/
+.playwright-mcp/
+*.log

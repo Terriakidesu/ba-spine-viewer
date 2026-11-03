@@ -1,0 +1,2285 @@
+{
+  "schemaVersion": 1,
+  "characters": {
+    "Airi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Airi_home",
+          "devName": "Airi_default"
+        },
+        {
+          "variant": "Band",
+          "directory": "CH0251_home",
+          "assetId": "CH0251",
+          "devName": "CH0251"
+        }
+      ],
+      "extras": [
+        {
+          "type": "alternate-home",
+          "directory": "Airi0_home"
+        }
+      ]
+    },
+    "Akane": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Akane_home",
+          "devName": "Akane_default"
+        },
+        {
+          "variant": "Bunny Girl",
+          "directory": "CH0099_home",
+          "assetId": "CH0099",
+          "devName": "CH0099"
+        },
+        {
+          "variant": "School Uniform",
+          "directory": "CH0307_home",
+          "assetId": "CH0307",
+          "devName": "CH0307"
+        }
+      ]
+    },
+    "Akari": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Akari_home",
+          "devName": "Akari_default"
+        },
+        {
+          "variant": "New Year",
+          "directory": "CH0196_home",
+          "assetId": "CH0196",
+          "devName": "CH0196"
+        }
+      ],
+      "extras": [
+        {
+          "type": "background",
+          "directory": "akari_bg"
+        },
+        {
+          "type": "scene",
+          "directory": "akari_scene"
+        }
+      ]
+    },
+    "Ako": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Ako_home",
+          "devName": "Ako_default"
+        },
+        {
+          "variant": "Dress",
+          "directory": "CH0231_home",
+          "assetId": "CH0231",
+          "devName": "CH0231"
+        }
+      ]
+    },
+    "Anna": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0320_home",
+          "assetId": "CH0320",
+          "devName": "CH0320"
+        }
+      ]
+    },
+    "Aoba": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0288_home",
+          "assetId": "CH0288",
+          "devName": "CH0288"
+        }
+      ]
+    },
+    "Arisu": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Aris_home",
+          "devName": "Aris_default"
+        },
+        {
+          "variant": "Battle",
+          "directory": "CH0334_home",
+          "assetId": "CH0334",
+          "devName": "CH0334"
+        },
+        {
+          "variant": "Maid",
+          "directory": "CH0200_home",
+          "assetId": "CH0200",
+          "devName": "CH0200"
+        }
+      ]
+    },
+    "Aru": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Aru_home",
+          "devName": "Aru_default"
+        },
+        {
+          "variant": "Dress",
+          "directory": "CH0240_home",
+          "assetId": "CH0240",
+          "devName": "CH0240"
+        },
+        {
+          "variant": "New Year",
+          "directory": "Aru_newyear_home",
+          "devName": "Aru_Newyear"
+        }
+      ],
+      "extras": [
+        {
+          "type": "scene",
+          "directory": "Aru_scene"
+        }
+      ]
+    },
+    "Asuna": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Asuna_home",
+          "devName": "Asuna_default"
+        },
+        {
+          "variant": "Bunny Girl",
+          "directory": "CH0098_home",
+          "assetId": "CH0098",
+          "devName": "CH0098"
+        },
+        {
+          "variant": "School Uniform",
+          "directory": "CH0281_home",
+          "assetId": "CH0281",
+          "devName": "CH0281"
+        }
+      ]
+    },
+    "Atsuko": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Atsuko_home",
+          "devName": "Atsuko_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0267_home",
+          "assetId": "CH0267",
+          "devName": "CH0267"
+        }
+      ]
+    },
+    "Ayane": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Ayane_home",
+          "devName": "Ayane_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0176_home",
+          "assetId": "CH0176",
+          "devName": "CH0176"
+        }
+      ],
+      "extras": [
+        {
+          "type": "multi-lobby",
+          "directory": "LobbyAyane_multi"
+        }
+      ]
+    },
+    "Azusa": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Azusa_home",
+          "devName": "Azusa_default"
+        },
+        {
+          "variant": "Racing",
+          "directory": "CH0380_home",
+          "assetId": "CH0380",
+          "devName": "CH0380"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "Azusa_swimsuit_home",
+          "devName": "Azusa_Swimsuit"
+        }
+      ]
+    },
+    "Cherino": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Cherino_home",
+          "devName": "Cherino_default"
+        },
+        {
+          "variant": "Hot Spring",
+          "directory": "CH0164_home",
+          "assetId": "CH0164",
+          "devName": "CH0164"
+        }
+      ]
+    },
+    "Chiaki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0238_home",
+          "assetId": "CH0238",
+          "devName": "CH0238"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0348_home",
+          "assetId": "CH0348",
+          "devName": "CH0348"
+        }
+      ]
+    },
+    "Chihiro": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0160_home",
+          "assetId": "CH0160",
+          "devName": "CH0160"
+        }
+      ]
+    },
+    "Chinatsu": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Chinatsu_home",
+          "devName": "Chinatsu_default"
+        },
+        {
+          "variant": "Hot Spring",
+          "directory": "CH0163_home",
+          "assetId": "CH0163",
+          "devName": "CH0163"
+        }
+      ]
+    },
+    "Chise": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Chise_home",
+          "devName": "Chise_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0178_home",
+          "assetId": "CH0178",
+          "devName": "CH0178"
+        }
+      ]
+    },
+    "Eimi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Eimi_home",
+          "devName": "Eimi_default"
+        },
+        {
+          "variant": "Battle",
+          "directory": "CH0337_home",
+          "assetId": "CH0337",
+          "devName": "CH0337"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0219_home",
+          "assetId": "CH0219",
+          "devName": "CH0219"
+        }
+      ]
+    },
+    "Eri": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0304_home",
+          "assetId": "CH0304",
+          "devName": "CH0304"
+        }
+      ]
+    },
+    "Erika": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "erika_home",
+          "devName": "CH0076"
+        }
+      ]
+    },
+    "Erina": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0321_home",
+          "assetId": "CH0321",
+          "devName": "CH0321"
+        }
+      ]
+    },
+    "Fubuki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0141_home",
+          "assetId": "CH0141",
+          "devName": "CH0141"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0261_home",
+          "assetId": "CH0261",
+          "devName": "CH0261"
+        }
+      ]
+    },
+    "Fuuka": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Fuuka_home",
+          "devName": "Fuuka_default"
+        },
+        {
+          "variant": "New Year",
+          "directory": "CH0177_home",
+          "assetId": "CH0177",
+          "devName": "CH0177"
+        }
+      ],
+      "extras": [
+        {
+          "type": "scene",
+          "directory": "Fuuka_Scene"
+        }
+      ]
+    },
+    "Fuyu": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0318_home",
+          "assetId": "CH0318",
+          "devName": "CH0318"
+        }
+      ]
+    },
+    "Hanae": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Hanae_home",
+          "devName": "Hanae_default"
+        },
+        {
+          "variant": "Christmas",
+          "directory": "CH0195_home",
+          "assetId": "CH0195",
+          "devName": "CH0195"
+        }
+      ]
+    },
+    "Hanako": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Hanako_home",
+          "devName": "Hanako_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0209_home",
+          "assetId": "CH0209",
+          "devName": "CH0209"
+        }
+      ]
+    },
+    "Hare": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Hare_home",
+          "devName": "Hare_default"
+        },
+        {
+          "variant": "Camping",
+          "directory": "CH0233_home",
+          "assetId": "CH0233",
+          "devName": "CH0233"
+        }
+      ]
+    },
+    "Haruka": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Haruka_home",
+          "devName": "Haruka_default"
+        },
+        {
+          "variant": "Dress",
+          "directory": "CH0247_home",
+          "assetId": "CH0247",
+          "devName": "CH0247"
+        },
+        {
+          "variant": "New Year",
+          "directory": "CH0087_home",
+          "assetId": "CH0087",
+          "devName": "CH0087"
+        }
+      ]
+    },
+    "Haruna": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Haruna_home",
+          "devName": "Haruna_default"
+        },
+        {
+          "variant": "New Year",
+          "directory": "CH0191_home",
+          "assetId": "CH0191",
+          "devName": "CH0191"
+        },
+        {
+          "variant": "Sportswear",
+          "directory": "CH0193_home",
+          "assetId": "CH0193",
+          "devName": "CH0193"
+        }
+      ]
+    },
+    "Hasumi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Hasumi_home",
+          "devName": "Hasumi_default"
+        },
+        {
+          "variant": "Sportswear",
+          "directory": "CH0190_home",
+          "assetId": "CH0190",
+          "devName": "CH0190"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0291_home",
+          "assetId": "CH0291",
+          "devName": "CH0291"
+        }
+      ]
+    },
+    "Hatsune Miku": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH9999_home",
+          "assetId": "CH9999",
+          "devName": "CH9999"
+        }
+      ]
+    },
+    "Hibiki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Hibiki_home",
+          "devName": "Hibiki_default"
+        },
+        {
+          "variant": "Cheerleader",
+          "directory": "CH0181_home",
+          "assetId": "CH0181",
+          "devName": "CH0181"
+        }
+      ]
+    },
+    "Hifumi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Hihumi_home",
+          "devName": "Hihumi_default"
+        },
+        {
+          "variant": "Racing",
+          "directory": "CH0379_home",
+          "assetId": "CH0379",
+          "devName": "CH0379"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0058_home",
+          "assetId": "CH0058",
+          "devName": "Hihumi_Swimsuit"
+        }
+      ]
+    },
+    "Hikari": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0242_home",
+          "assetId": "CH0242",
+          "devName": "CH0242"
+        }
+      ]
+    },
+    "Himari": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0159_home",
+          "assetId": "CH0159",
+          "devName": "CH0159"
+        },
+        {
+          "variant": "Battle",
+          "directory": "CH0332_home",
+          "assetId": "CH0332",
+          "devName": "CH0332"
+        }
+      ]
+    },
+    "Hina": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Hina_home",
+          "devName": "Hina_default"
+        },
+        {
+          "variant": "Dress",
+          "directory": "CH0230_home",
+          "assetId": "CH0230",
+          "devName": "CH0230"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0063_home",
+          "assetId": "CH0063",
+          "devName": "CH0063"
+        }
+      ]
+    },
+    "Hinata": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Hinata_home",
+          "devName": "Hinata_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0210_home",
+          "assetId": "CH0210",
+          "devName": "CH0210"
+        }
+      ]
+    },
+    "Hiyori": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Hiyori_home",
+          "devName": "Hiyori_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0269_home",
+          "assetId": "CH0269",
+          "devName": "CH0269"
+        }
+      ]
+    },
+    "Hoshino": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Hoshino_home",
+          "devName": "Hoshino_default"
+        },
+        {
+          "variant": "Battle",
+          "directory": "CH0258_home",
+          "assetId": "CH0258",
+          "devName": "CH0258_02"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "Hoshino_swimsuit_home",
+          "devName": "Hoshino_Swimsuit"
+        }
+      ],
+      "extras": [
+        {
+          "type": "background",
+          "directory": "Hoshino_home_background"
+        },
+        {
+          "type": "multi-lobby",
+          "directory": "LobbyHoshino_multi"
+        }
+      ]
+    },
+    "Ibuki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Ibuki_home",
+          "devName": "CH0077"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0347_home",
+          "assetId": "CH0347",
+          "devName": "CH0347"
+        }
+      ]
+    },
+    "Ichika": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0071_home",
+          "assetId": "CH0071",
+          "devName": "CH0071"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0292_home",
+          "assetId": "CH0292",
+          "devName": "CH0292"
+        }
+      ]
+    },
+    "Iori": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Iori_home",
+          "devName": "Iori_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0064_home",
+          "assetId": "CH0064",
+          "devName": "CH0064"
+        }
+      ]
+    },
+    "Iroha": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0156_home",
+          "assetId": "CH0156",
+          "devName": "CH0156"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0346_home",
+          "assetId": "CH0346",
+          "devName": "CH0346"
+        }
+      ]
+    },
+    "Izumi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Izumi_home",
+          "devName": "Izumi_default"
+        },
+        {
+          "variant": "New Year",
+          "directory": "CH0197_home",
+          "assetId": "CH0197",
+          "devName": "CH0197"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "Izumi_swimsuit_home",
+          "devName": "Izumi_swimsuit"
+        }
+      ]
+    },
+    "Izuna": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Izuna_home",
+          "devName": "Izuna_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0179_home",
+          "assetId": "CH0179",
+          "devName": "CH0179"
+        }
+      ]
+    },
+    "Junko": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Zunko_home",
+          "devName": "Zunko_default"
+        },
+        {
+          "variant": "New Year",
+          "directory": "CH0192_home",
+          "assetId": "CH0192",
+          "devName": "CH0192"
+        }
+      ]
+    },
+    "Juri": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Juri_home",
+          "devName": "Juri_default"
+        },
+        {
+          "variant": "Part-Timer",
+          "directory": "CH0286_home",
+          "assetId": "CH0286",
+          "devName": "CH0286"
+        }
+      ]
+    },
+    "Kaede": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Kaede_home",
+          "devName": "Kaede_default"
+        }
+      ]
+    },
+    "Kaho": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0107_home",
+          "assetId": "CH0107",
+          "devName": "CH0107"
+        }
+      ]
+    },
+    "Kanna": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0170_home",
+          "assetId": "CH0170",
+          "devName": "CH0170"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0260_home",
+          "assetId": "CH0260",
+          "devName": "CH0260"
+        }
+      ]
+    },
+    "Kanoe": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0306_home",
+          "assetId": "CH0306",
+          "devName": "CH0306"
+        }
+      ]
+    },
+    "Karin": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Karin_home",
+          "devName": "karin_default"
+        },
+        {
+          "variant": "Bunny Girl",
+          "directory": "CH0100_home",
+          "assetId": "CH0100",
+          "devName": "CH0100"
+        },
+        {
+          "variant": "School Uniform",
+          "directory": "CH0282_home",
+          "assetId": "CH0282",
+          "devName": "CH0282"
+        }
+      ]
+    },
+    "Kasumi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0089_home",
+          "assetId": "CH0089",
+          "devName": "CH0089"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0328_home",
+          "assetId": "CH0328",
+          "devName": "CH0328"
+        }
+      ]
+    },
+    "Kayoko": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Kayoko_home",
+          "devName": "Kayoko_default"
+        },
+        {
+          "variant": "Dress",
+          "directory": "CH0239_home",
+          "assetId": "CH0239",
+          "devName": "CH0239"
+        },
+        {
+          "variant": "New Year",
+          "directory": "CH0086_home",
+          "assetId": "CH0086",
+          "devName": "CH0086"
+        }
+      ]
+    },
+    "Kazusa": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "kazusa_home",
+          "devName": "Kazusa_default"
+        },
+        {
+          "variant": "Band",
+          "directory": "CH0250_home",
+          "assetId": "CH0250",
+          "devName": "CH0250"
+        }
+      ]
+    },
+    "Kei": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0335_home",
+          "assetId": "CH0335",
+          "devName": "CH0335"
+        }
+      ]
+    },
+    "Kikyou": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0225_home",
+          "assetId": "CH0225",
+          "devName": "CH0225"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0300_home",
+          "assetId": "CH0300",
+          "devName": "CH0300"
+        }
+      ]
+    },
+    "Kirara": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Kirara_home",
+          "devName": "kirara"
+        }
+      ]
+    },
+    "Kirino": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "kirino_home",
+          "devName": "Kirino_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0262_home",
+          "assetId": "CH0262",
+          "devName": "CH0262"
+        }
+      ]
+    },
+    "Kisaki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0139_home",
+          "assetId": "CH0139",
+          "devName": "CH0139"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0356_home",
+          "assetId": "CH0356",
+          "devName": "CH0356"
+        }
+      ]
+    },
+    "Koharu": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Koharu_home",
+          "devName": "Koharu_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0205_home",
+          "assetId": "CH0205",
+          "devName": "CH0205"
+        }
+      ]
+    },
+    "Kokona": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0137_home",
+          "assetId": "CH0137",
+          "devName": "CH0137"
+        }
+      ]
+    },
+    "Kokoro": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0368_home",
+          "assetId": "CH0368",
+          "devName": "CH0368"
+        }
+      ]
+    },
+    "Konoka": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0264_home",
+          "assetId": "CH0264",
+          "devName": "CH0264"
+        }
+      ]
+    },
+    "Kotama": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Kotama_home",
+          "devName": "Kotama_default"
+        },
+        {
+          "variant": "Camping",
+          "directory": "CH0232_home",
+          "assetId": "CH0232",
+          "devName": "CH0232"
+        }
+      ]
+    },
+    "Kotone": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0369_home",
+          "assetId": "CH0369",
+          "devName": "CH0369"
+        }
+      ]
+    },
+    "Kotori": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Kotori_home",
+          "devName": "Kotori_default"
+        },
+        {
+          "variant": "Cheerleader",
+          "directory": "CH0185_home",
+          "assetId": "CH0185",
+          "devName": "CH0185"
+        }
+      ]
+    },
+    "Koyuki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0198_home",
+          "assetId": "CH0198",
+          "devName": "CH0198"
+        },
+        {
+          "variant": "Pajama",
+          "directory": "CH0310_home",
+          "assetId": "CH0310",
+          "devName": "CH0310"
+        }
+      ]
+    },
+    "Kurumi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0173_home",
+          "assetId": "CH0173",
+          "devName": "CH0173"
+        }
+      ]
+    },
+    "Maki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Maki_home",
+          "devName": "Maki_default"
+        },
+        {
+          "variant": "Camping",
+          "directory": "CH0235_home",
+          "assetId": "CH0235",
+          "devName": "CH0235"
+        }
+      ]
+    },
+    "Makoto": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0079_home",
+          "assetId": "CH0079",
+          "devName": "CH0079"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0344_home",
+          "assetId": "CH0344",
+          "devName": "CH0344"
+        }
+      ]
+    },
+    "Mari": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "mari_home",
+          "devName": "Mari_default"
+        },
+        {
+          "variant": "Idol",
+          "directory": "CH0273_home",
+          "assetId": "CH0273",
+          "devName": "CH0273"
+        },
+        {
+          "variant": "Sportswear",
+          "directory": "CH0186_home",
+          "assetId": "CH0186",
+          "devName": "CH0186"
+        }
+      ]
+    },
+    "Marina": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Marina_home",
+          "devName": "Marina_default"
+        },
+        {
+          "variant": "Qipao",
+          "directory": "CH0270_home",
+          "assetId": "CH0270",
+          "devName": "CH0270"
+        }
+      ]
+    },
+    "Mashiro": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Mashiro_home",
+          "devName": "Mashiro_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "Mashiro_swimsuit_home",
+          "devName": "Mashiro_Swimsuit"
+        }
+      ]
+    },
+    "Megu": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0088_home",
+          "assetId": "CH0088",
+          "devName": "CH0088"
+        }
+      ]
+    },
+    "Meru": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0124_home",
+          "assetId": "CH0124",
+          "devName": "CH0124"
+        }
+      ]
+    },
+    "Michiru": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0113_home",
+          "assetId": "CH0113",
+          "devName": "CH0113"
+        },
+        {
+          "variant": "Dress",
+          "directory": "CH0296_home",
+          "assetId": "CH0296",
+          "devName": "CH0296"
+        }
+      ]
+    },
+    "Midori": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Midori_home",
+          "devName": "Midori_default"
+        },
+        {
+          "variant": "Maid",
+          "directory": "CH0202_home",
+          "assetId": "CH0202",
+          "devName": "CH0202"
+        }
+      ]
+    },
+    "Mika": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0069_home",
+          "assetId": "CH0069",
+          "devName": "CH0069"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0294_home",
+          "assetId": "CH0294",
+          "devName": "CH0294"
+        }
+      ]
+    },
+    "Mimori": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Mimori_home",
+          "devName": "Mimori_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0183_home",
+          "assetId": "CH0183",
+          "devName": "CH0183"
+        }
+      ]
+    },
+    "Mina": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0138_home",
+          "assetId": "CH0138",
+          "devName": "CH0138"
+        }
+      ]
+    },
+    "Mine": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0152_home",
+          "assetId": "CH0152",
+          "devName": "CH0152"
+        },
+        {
+          "variant": "Idol",
+          "directory": "CH0275_home",
+          "assetId": "CH0275",
+          "devName": "CH0275"
+        }
+      ]
+    },
+    "Minori": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0214_home",
+          "assetId": "CH0214",
+          "devName": "CH0214"
+        }
+      ]
+    },
+    "Misaka Mikoto": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH9998_home",
+          "assetId": "CH9998",
+          "devName": "CH9998"
+        }
+      ]
+    },
+    "Misaki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Misaki_home",
+          "devName": "Misaki_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0268_home",
+          "assetId": "CH0268",
+          "devName": "CH0268"
+        }
+      ]
+    },
+    "Miyako": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Miyako_home",
+          "devName": "miyako_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0215_home",
+          "assetId": "CH0215",
+          "devName": "CH0215"
+        }
+      ]
+    },
+    "Miyo": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0317_home",
+          "assetId": "CH0317",
+          "devName": "CH0317"
+        }
+      ]
+    },
+    "Miyu": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0145_home",
+          "assetId": "CH0145",
+          "devName": "CH0145"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0218_home",
+          "assetId": "CH0218",
+          "devName": "CH0218"
+        }
+      ]
+    },
+    "Moe": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Moe_home",
+          "devName": "Moe_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0216_home",
+          "assetId": "CH0216",
+          "devName": "CH0216"
+        }
+      ]
+    },
+    "Momiji": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "momiji_home",
+          "devName": "Momiji_default"
+        }
+      ]
+    },
+    "Momoi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Momoi_home",
+          "devName": "Momoi_default"
+        },
+        {
+          "variant": "Maid",
+          "directory": "CH0201_home",
+          "assetId": "CH0201",
+          "devName": "CH0201"
+        }
+      ],
+      "extras": [
+        {
+          "type": "scene",
+          "directory": "Momoi_Scene"
+        }
+      ]
+    },
+    "Mutsuki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Mutsuki_home",
+          "devName": "Mutsuki_default"
+        },
+        {
+          "variant": "Dress",
+          "directory": "CH0246_home",
+          "assetId": "CH0246",
+          "devName": "CH0246"
+        },
+        {
+          "variant": "New Year",
+          "directory": "mutsuki_newyear_home",
+          "devName": "Mutsuki_Newyear"
+        }
+      ]
+    },
+    "Nagisa": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Nagisa_home",
+          "devName": "Nagisa"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0293_home",
+          "assetId": "CH0293",
+          "devName": "CH0293"
+        }
+      ]
+    },
+    "Nagusa": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0222_home",
+          "assetId": "CH0222",
+          "devName": "CH0222"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0303_home",
+          "assetId": "CH0303",
+          "devName": "CH0303"
+        }
+      ]
+    },
+    "Natsu": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0155_home",
+          "assetId": "CH0155",
+          "devName": "CH0155"
+        },
+        {
+          "variant": "Band",
+          "directory": "CH0221_home",
+          "assetId": "CH0221",
+          "devName": "CH0221"
+        }
+      ]
+    },
+    "Neru": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Neru_home",
+          "devName": "Neru_default"
+        },
+        {
+          "variant": "Bunny Girl",
+          "directory": "CH0101_home",
+          "assetId": "CH0101",
+          "devName": "CH0101"
+        },
+        {
+          "variant": "School Uniform",
+          "directory": "CH0280_home",
+          "assetId": "CH0280",
+          "devName": "CH0280"
+        }
+      ]
+    },
+    "Niko": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0172_home",
+          "assetId": "CH0172",
+          "devName": "CH0172"
+        }
+      ]
+    },
+    "Niya": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0109_home",
+          "assetId": "CH0109",
+          "devName": "CH0109"
+        }
+      ]
+    },
+    "Noa": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0095_home",
+          "assetId": "CH0095",
+          "devName": "CH0095"
+        },
+        {
+          "variant": "Pajama",
+          "directory": "CH0285_home",
+          "assetId": "CH0285",
+          "devName": "CH0285"
+        }
+      ]
+    },
+    "Nodoka": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Nodoka_home",
+          "devName": "Nodoka_default"
+        },
+        {
+          "variant": "Hot Spring",
+          "directory": "CH0165_home",
+          "assetId": "CH0165",
+          "devName": "CH0165"
+        }
+      ]
+    },
+    "Nonomi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Nonomi_home",
+          "devName": "Nonomi_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0092_home",
+          "assetId": "CH0092",
+          "devName": "CH0092"
+        }
+      ],
+      "extras": [
+        {
+          "type": "multi-lobby",
+          "directory": "LobbyNonomi_multi"
+        }
+      ]
+    },
+    "Nozomi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0243_home",
+          "assetId": "CH0243",
+          "devName": "CH0243"
+        }
+      ]
+    },
+    "Otogi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0174_home",
+          "assetId": "CH0174",
+          "devName": "CH0174"
+        }
+      ]
+    },
+    "Pina": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Pina_home",
+          "devName": "Pina_default"
+        },
+        {
+          "variant": "Guide",
+          "directory": "CH0257_home",
+          "assetId": "CH0257",
+          "devName": "CH0257"
+        }
+      ]
+    },
+    "Rabu": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0166_home",
+          "assetId": "CH0166",
+          "devName": "CH0166"
+        }
+      ]
+    },
+    "Rana": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0322_home",
+          "assetId": "CH0322",
+          "devName": "CH0322"
+        }
+      ]
+    },
+    "Rei": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0245_home",
+          "assetId": "CH0245",
+          "devName": "CH0245"
+        }
+      ]
+    },
+    "Reisa": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0167_home",
+          "assetId": "CH0167",
+          "devName": "CH0167"
+        },
+        {
+          "variant": "Magical",
+          "directory": "CH0326_home",
+          "assetId": "CH0326",
+          "devName": "CH0326"
+        }
+      ]
+    },
+    "Reizyo": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Reizyo_home",
+          "devName": "Reizyo_default"
+        }
+      ]
+    },
+    "Rena": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0305_home",
+          "assetId": "CH0305",
+          "devName": "CH0305"
+        }
+      ]
+    },
+    "Renge": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0224_home",
+          "assetId": "CH0224",
+          "devName": "CH0224"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0302_home",
+          "assetId": "CH0302",
+          "devName": "CH0302"
+        }
+      ]
+    },
+    "Rio": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0158_home",
+          "assetId": "CH0158",
+          "devName": "CH0158"
+        },
+        {
+          "variant": "Battle",
+          "directory": "CH0331_home",
+          "assetId": "CH0331",
+          "devName": "CH0331"
+        }
+      ]
+    },
+    "Ritsu": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0319_home",
+          "assetId": "CH0319",
+          "devName": "CH0319"
+        }
+      ]
+    },
+    "Rumi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0135_home",
+          "assetId": "CH0135",
+          "devName": "CH0135"
+        }
+      ]
+    },
+    "Saki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0144_home",
+          "assetId": "CH0144",
+          "devName": "CH0144"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0217_home",
+          "assetId": "CH0217",
+          "devName": "CH0217"
+        }
+      ]
+    },
+    "Sakurako": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Sakurako_home",
+          "devName": "Sakurako_default"
+        },
+        {
+          "variant": "Idol",
+          "directory": "CH0274_home",
+          "assetId": "CH0274",
+          "devName": "CH0274"
+        }
+      ]
+    },
+    "Saori": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Saori_home",
+          "devName": "Saori"
+        },
+        {
+          "variant": "Dress",
+          "directory": "CH0259_home",
+          "assetId": "CH0259",
+          "devName": "CH0259"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0266_home",
+          "assetId": "CH0266",
+          "devName": "CH0266"
+        }
+      ]
+    },
+    "Saten Ruiko": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0996_home",
+          "assetId": "CH0996",
+          "devName": "CH9996"
+        }
+      ]
+    },
+    "Satsuki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0080_home",
+          "assetId": "CH0080",
+          "devName": "CH0080"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0345_home",
+          "assetId": "CH0345",
+          "devName": "CH0345"
+        }
+      ]
+    },
+    "Saya": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Saya_home",
+          "devName": "Saya_default"
+        },
+        {
+          "variant": "Casual",
+          "directory": "Saya_casual_home",
+          "devName": "Saya_Casual"
+        }
+      ]
+    },
+    "Seia": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0070_home",
+          "assetId": "CH0070",
+          "devName": "CH0070"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0295_home",
+          "assetId": "CH0295",
+          "devName": "CH0295"
+        }
+      ]
+    },
+    "Sena": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0081_home",
+          "assetId": "CH0081",
+          "devName": "CH0081"
+        },
+        {
+          "variant": "Casual",
+          "directory": "CH0082_home",
+          "assetId": "CH0082",
+          "devName": "CH0082"
+        }
+      ]
+    },
+    "Serika": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Serika_home",
+          "devName": "Serika_default"
+        },
+        {
+          "variant": "New Year",
+          "directory": "Serika_newyear_home",
+          "devName": "Serika_Newyear"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0189_home",
+          "assetId": "CH0189",
+          "devName": "CH0189"
+        }
+      ],
+      "extras": [
+        {
+          "type": "multi-lobby",
+          "directory": "LobbySerika_multi"
+        }
+      ]
+    },
+    "Serina": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Serina_home",
+          "devName": "Serina_default"
+        },
+        {
+          "variant": "Christmas",
+          "directory": "CH0194_home",
+          "assetId": "CH0194",
+          "devName": "CH0194"
+        }
+      ]
+    },
+    "Shigure": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Shigure_home",
+          "devName": "Shigure_default"
+        },
+        {
+          "variant": "Hot Spring",
+          "directory": "CH0123_home",
+          "assetId": "CH0123",
+          "devName": "CH0123"
+        }
+      ],
+      "extras": [
+        {
+          "type": "scene",
+          "directory": "Shigure_00"
+        },
+        {
+          "type": "scene",
+          "directory": "Shigure_01"
+        }
+      ]
+    },
+    "Shimiko": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Shimiko_home",
+          "devName": "Shimiko_default"
+        }
+      ]
+    },
+    "Shiroko": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Shiroko_home",
+          "devName": "Shiroko_default"
+        },
+        {
+          "variant": "Riding Suit",
+          "directory": "Shiroko_ridingsuit_home",
+          "devName": "Shiroko_Ridingsuit"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0188_home",
+          "assetId": "CH0188",
+          "devName": "CH0188"
+        }
+      ],
+      "extras": [
+        {
+          "type": "multi-lobby",
+          "directory": "LobbyShiroko_multi"
+        }
+      ]
+    },
+    "Shiroko＊Terror": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0263_home",
+          "assetId": "CH0263",
+          "devName": "CH0263"
+        }
+      ]
+    },
+    "Shizuko": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Shizuko_home",
+          "devName": "Shizuko_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0180_home",
+          "assetId": "CH0180",
+          "devName": "CH0180"
+        }
+      ]
+    },
+    "Shokuhou Misaki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH9997_home",
+          "assetId": "CH9997",
+          "devName": "CH9997"
+        }
+      ]
+    },
+    "Shun": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Shun_home",
+          "devName": "Shun_default"
+        },
+        {
+          "variant": "Kid",
+          "directory": "CH0066_home",
+          "assetId": "CH0066",
+          "devName": "CH0066"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0355_home",
+          "assetId": "CH0355",
+          "devName": "CH0355_01"
+        }
+      ]
+    },
+    "Subaru": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0309_home",
+          "assetId": "CH0309",
+          "devName": "CH0309"
+        }
+      ]
+    },
+    "Sumire": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Sumire_home",
+          "devName": "Sumire_default"
+        },
+        {
+          "variant": "Part-Timer",
+          "directory": "CH0287_home",
+          "assetId": "CH0287",
+          "devName": "CH0287"
+        }
+      ]
+    },
+    "Suzumi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Suzumi_home",
+          "devName": "Suzumi_default"
+        },
+        {
+          "variant": "Magical",
+          "directory": "CH0325_home",
+          "assetId": "CH0325",
+          "devName": "CH0325"
+        }
+      ]
+    },
+    "Takane": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0229_home",
+          "assetId": "CH0229",
+          "devName": "CH0229"
+        }
+      ]
+    },
+    "Toki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0187_home",
+          "assetId": "CH0187",
+          "devName": "CH0187"
+        },
+        {
+          "variant": "Battle",
+          "directory": "CH0333_home",
+          "assetId": "CH0333",
+          "devName": "CH0333"
+        },
+        {
+          "variant": "Bunny Girl",
+          "directory": "CH0211_home",
+          "assetId": "CH0211",
+          "devName": "CH0211"
+        }
+      ]
+    },
+    "Tomoe": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Tomoe_home",
+          "devName": "Tomoe_default"
+        },
+        {
+          "variant": "Qipao",
+          "directory": "CH0271_home",
+          "assetId": "CH0271",
+          "devName": "CH0271"
+        }
+      ]
+    },
+    "Tsubaki": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Tsubaki_home",
+          "devName": "Tsubaki_default"
+        },
+        {
+          "variant": "Guide",
+          "directory": "CH0255_home",
+          "assetId": "CH0255",
+          "devName": "CH0255"
+        }
+      ]
+    },
+    "Tsukuyo": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0114_home",
+          "assetId": "CH0114",
+          "devName": "CH0114"
+        },
+        {
+          "variant": "Dress",
+          "directory": "CH0297_home",
+          "assetId": "CH0297",
+          "devName": "CH0297"
+        }
+      ]
+    },
+    "Tsumugi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0252_home",
+          "assetId": "CH0252",
+          "devName": "CH0252"
+        }
+      ]
+    },
+    "Tsurugi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Tsurugi_home",
+          "devName": "Tsurugi_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0060_home",
+          "assetId": "CH0060",
+          "devName": "Tsurugi_Swimsuit"
+        }
+      ],
+      "extras": [
+        {
+          "type": "background",
+          "directory": "CH0060_home_background"
+        }
+      ]
+    },
+    "Ui": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0169_home",
+          "assetId": "CH0169",
+          "devName": "CH0169"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0204_home",
+          "assetId": "CH0204",
+          "devName": "CH0204"
+        }
+      ]
+    },
+    "Umika": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0110_home",
+          "assetId": "CH0110",
+          "devName": "CH0110"
+        }
+      ]
+    },
+    "Utaha": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Utaha_home",
+          "devName": "Utaha_default"
+        },
+        {
+          "variant": "Cheerleader",
+          "directory": "CH0182_home",
+          "assetId": "CH0182",
+          "devName": "CH0182"
+        }
+      ]
+    },
+    "Wakamo": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Wakamo_home",
+          "devName": "Wakamo_default"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0175_home",
+          "assetId": "CH0175",
+          "devName": "CH0175"
+        }
+      ],
+      "extras": [
+        {
+          "type": "scene",
+          "directory": "Wakamo_Scene_0"
+        }
+      ]
+    },
+    "Yakumo": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0228_home",
+          "assetId": "CH0228",
+          "devName": "CH0228"
+        }
+      ]
+    },
+    "Yoshimi": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Yoshimi_home",
+          "devName": "Yoshimi_default"
+        },
+        {
+          "variant": "Band",
+          "directory": "CH0220_home",
+          "assetId": "CH0220",
+          "devName": "CH0220"
+        }
+      ]
+    },
+    "Yukari": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "CH0161_home",
+          "assetId": "CH0161",
+          "devName": "CH0161"
+        },
+        {
+          "variant": "Swimsuit",
+          "directory": "CH0301_home",
+          "assetId": "CH0301",
+          "devName": "CH0301"
+        }
+      ]
+    },
+    "Yuuka": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Yuuka_home",
+          "devName": "Yuuka_default"
+        },
+        {
+          "variant": "Pajama",
+          "directory": "CH0284_home",
+          "assetId": "CH0284",
+          "devName": "CH0284"
+        },
+        {
+          "variant": "Sportswear",
+          "directory": "CH0184_00",
+          "assetId": "CH0184",
+          "devName": "CH0184"
+        }
+      ]
+    },
+    "Yuzu": {
+      "variants": [
+        {
+          "variant": "Base",
+          "directory": "Yuzu_home",
+          "devName": "Yuzu_default"
+        },
+        {
+          "variant": "Battle",
+          "directory": "CH0336_home",
+          "assetId": "CH0336",
+          "devName": "CH0336"
+        },
+        {
+          "variant": "Maid",
+          "directory": "CH0203_home",
+          "assetId": "CH0203",
+          "devName": "CH0203"
+        }
+      ],
+      "extras": [
+        {
+          "type": "background",
+          "directory": "yuzu_bg"
+        }
+      ]
+    }
+  }
+}

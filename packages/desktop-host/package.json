@@ -1,0 +1,12 @@
+{
+  "name": "@ba-spine/desktop-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@ba-spine/asset-library": "workspace:*"
+  }
+}

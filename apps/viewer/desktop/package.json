@@ -1,0 +1,18 @@
+{
+  "name": "@ba-spine/viewer-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun scripts/run-electrobun.ts dev",
+    "build": "bun scripts/run-electrobun.ts build"
+  },
+  "devDependencies": {
+    "electrobun": "2.0.5"
+  },
+  "dependencies": {
+    "@ba-spine/asset-library": "workspace:*",
+    "@ba-spine/desktop-host": "workspace:*",
+    "@ba-spine/spine-runtime": "workspace:*"
+  }
+}

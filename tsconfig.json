@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["bun", "vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@ba-spine/spine-runtime/*": ["packages/spine-runtime/src/*"],
+      "@ba-spine/spine-runtime/ui/*": ["packages/spine-runtime/src/spine/*.tsx"],
+      "@ba-spine/app-ui/*": ["packages/app-ui/src/*"],
+      "@ba-spine/editor-feature": ["packages/editor-feature/src/Editor.tsx"],
+      "@ba-spine/editor-feature/*": ["packages/editor-feature/src/*"],
+      "@ba-spine/viewer-feature": ["packages/viewer-feature/src/Spine.tsx"],
+      "@ba-spine/viewer-feature/*": ["packages/viewer-feature/src/*"]
+    }
+  },
+  "include": ["apps", "packages", "scripts", "tests", "types", "vite.config.ts"],
+  "exclude": ["data", "node_modules", "**/dist", "**/build"]
+}

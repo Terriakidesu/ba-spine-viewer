@@ -1,0 +1,8 @@
+.subtitle-text-editor { display: grid; gap: 7px; min-width: 0; }
+.subtitle-editor-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 6px; min-width: 0; }
+.subtitle-editor-toolbar .subtitle-preview-language { flex: 1; min-width: 0; }
+.subtitle-compare-toggle { min-height: 27px; flex: none; padding: 4px 7px; font-size: 9px; }
+.subtitle-compare-toggle.is-selected { border-color: var(--editor-pink); color: #fff; background: #753c58; }
+.subtitle-language-grid.is-focused { grid-template-columns: minmax(0, 1fr); }
+.subtitle-language-grid.is-comparing { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.subtitle-language-grid.is-comparing .timeline-textarea { min-height: 92px; padding: 5px; font-size: 10px; }

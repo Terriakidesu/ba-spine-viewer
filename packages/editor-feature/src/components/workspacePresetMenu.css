@@ -1,0 +1,13 @@
+.editor-layout-menu { position: relative; }
+.editor-layout-menu > summary { list-style: none; cursor: pointer; }
+.editor-layout-menu > summary::-webkit-details-marker { display: none; }
+.editor-layout-menu-popover { position: absolute; top: calc(100% + 5px); right: 0; z-index: 65; display: grid; gap: 4px; width: 270px; padding: 6px; border: 1px solid var(--editor-line); border-radius: 5px; background: #102333; box-shadow: 0 8px 28px #000a; }
+.editor-layout-preset { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 0; padding: 7px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--editor-text); text-align: left; }
+.editor-layout-preset:hover:not(:disabled), .editor-layout-preset.is-selected { border-color: #5bdcff77; background: #143548; }
+.editor-layout-preset:disabled { cursor: not-allowed; opacity: .4; }
+.editor-layout-preset-icon { display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid var(--editor-line); border-radius: 4px; color: var(--editor-cyan); }
+.editor-layout-preset-icon svg { width: 14px; height: 14px; }
+.editor-layout-preset > span:nth-child(2) { display: grid; gap: 1px; min-width: 0; }
+.editor-layout-preset strong { font-size: 11px; }
+.editor-layout-preset small { color: var(--editor-muted); font-size: 9px; }
+.editor-layout-preset-current { color: var(--editor-cyan); font-size: 8px; font-weight: 800; text-transform: uppercase; }

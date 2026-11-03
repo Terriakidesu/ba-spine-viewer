@@ -1,0 +1,20 @@
+{
+  "name": "@ba-spine/editor-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build:renderer": "vite build",
+    "desktop:dev": "bun --cwd=desktop run dev",
+    "desktop:build": "bun --cwd=desktop run build",
+    "typecheck": "tsc --noEmit -p ../../tsconfig.json"
+  },
+  "dependencies": {
+    "@ba-spine/app-ui": "workspace:*",
+    "@ba-spine/editor-feature": "workspace:*",
+    "@ba-spine/spine-runtime": "workspace:*",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

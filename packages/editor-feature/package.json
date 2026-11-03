@@ -1,0 +1,17 @@
+{
+  "name": "@ba-spine/editor-feature",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@ba-spine/app-ui": "workspace:*",
+    "@ba-spine/spine-runtime": "workspace:*",
+    "@esotericsoftware/spine-core": "4.2.120",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}
