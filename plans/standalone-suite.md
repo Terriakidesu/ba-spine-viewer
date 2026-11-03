@@ -109,7 +109,7 @@ Use WASM deliberately, behind stable TypeScript interfaces, and only where profi
 | One 30-second clip, 160 peaks | 3.723 ms | 4.583 ms |
 | Synthetic batch of 32 five-second clips | 19.591 ms | 21.240 ms |
 
-Keep WASM deferred. The 32-clip aggregate is deliberately synchronous and not representative of observed project timelines. The Editor computes each waveform on the main thread after `AudioContext.decodeAudioData`; read-only project and decoded-audio samples show the current JS kernel below a frame for the largest observed timeline, but browser decode scheduling and React/UI frame impact are not yet measured. Profile those stages before considering a bounded worker; WASM would still need to beat the JS kernel by the documented gate and demonstrate an end-to-end win.
+Keep WASM deferred. The 32-clip aggregate is deliberately synchronous and not representative of observed project timelines. The Editor computes each waveform on the main thread after `AudioContext.decodeAudioData`; read-only project and decoded-audio samples show the current JS kernel below a frame for the largest observed timeline. Browser decode scheduling and React/UI frame impact have a development fixture now, but no valid representative frame profile yet. Profile those stages in a visible foreground browser before considering a bounded worker; WASM would still need to beat the JS kernel by the documented gate and demonstrate an end-to-end win.
 
 #### Timeline waveform profiling recheck (2026-11-04)
 
