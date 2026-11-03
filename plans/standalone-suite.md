@@ -158,6 +158,8 @@ The timeline **Fit selection** control calculates a viewport-aware zoom and hori
 
 The Editor transport also plays the combined selected range once or loops within its start/end; pause/resume retains the loop, while a new selection or seek clears it. Range-clock tests cover start positioning, wraparound, speed, and invalid bounds.
 
+Ctrl/Cmd+C copies selected animation, color, subtitle, and audio clips to an in-memory sequence-local clipboard; Ctrl/Cmd+V pastes at the playhead with relative offsets, link remapping, locked-track skips, and color-track collision handling. It does not use the OS clipboard or write library files until the user saves.
+
 ### Editor-to-viewer handoff
 
 - **Open in Viewer** focuses or starts the viewer and opens the selected lobby/sequence.

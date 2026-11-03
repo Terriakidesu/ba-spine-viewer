@@ -39,6 +39,7 @@ import { DEFAULT_TIMELINE_LAYOUT_PREFERENCES, normalizeTimelineLayoutPreferences
 import { advanceTimelineRangeLoop, fitTimelineToRange, zoomTimelineAtCursor, type TimelineRange } from "./timelineView";
 import { audioEnvelopePeaks } from "./audioEnvelope";
 import { missingManifestAssetFiles, validateTimeline, type TimelineDiagnostic } from "./timelineDiagnostics";
+import { copyTimelineSelection, pasteTimelineSelection, type TimelineClipboard, type TimelineClipboardSelection } from "./timelineClipboard";
 import { IconChevronDown, IconChevronLeft, IconChevronRight, IconEye, IconEyeOff, IconExpand, IconLink, IconLock, IconMinus, IconPause, IconPlay, IconPlus, IconSkipBack, IconSkipForward, IconSound, IconSync, IconUnlock, IconUnlink } from "@ba-spine/app-ui/icons";
 import "./timelineSnapFeedback.css";
 
@@ -321,6 +322,8 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     setSelectionLoopRange(null);
     setSelectedClipsState(next);
   }
+  const timelineClipboardRef = useRef<TimelineClipboard | null>(null);
+  const [clipboardAvailable, setClipboardAvailable] = useState(false);
   const [selectedAudioId, setSelectedAudioId] = useState<string | null>(null);
   const [dragSnapFeedback, setDragSnapFeedback] = useState<TimelineSnapFeedback | null>(null);
   const [layerPickerOpen, setLayerPickerOpen] = useState(false);
@@ -2311,6 +2314,8 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     setStagePanning(false);
     setStageView(resetStageView());
     setSelectedClips([]);
+    timelineClipboardRef.current = null;
+    setClipboardAvailable(false);
   }, [directory, timeline?.sequenceId]);
 
   timelineKeydownRef.current = (event: KeyboardEvent) => {
@@ -2318,6 +2323,8 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     const key = event.key.toLowerCase();
     if ((event.ctrlKey || event.metaKey) && ["z", "y"].includes(key)) return;
     if ((event.ctrlKey || event.metaKey) && key === "s") { event.preventDefault(); void onSave(); }
+    else if ((event.ctrlKey || event.metaKey) && key === "c" && selectedClips.some((item) => item.kind === "animation" || item.kind === "color" || item.kind === "cue" || item.kind === "audio")) { event.preventDefault(); copySelectedTimelineClips(); }
+    else if ((event.ctrlKey || event.metaKey) && key === "v" && timelineClipboardRef.current) { event.preventDefault(); pasteTimelineClips(); }
     else if (key === " ") { event.preventDefault(); setPlaying((value) => !value); }
     else if (key === "arrowleft" || key === "arrowright") { event.preventDefault(); setPreviewUntil(null); setPlaying(false); setCurrentTime((value) => Math.max(0, Math.min(duration, value + (key === "arrowright" ? 1 : -1) * (event.shiftKey ? 10 : 1) / 60))); }
     else if (key === "home" || key === "end") { event.preventDefault(); setPreviewUntil(null); setPlaying(false); setCurrentTime(key === "home" ? 0 : duration); }
@@ -2369,6 +2376,32 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
     ["audio", selectedClipDetails.filter((item) => item.kind === "audio").length, "audio"],
   ] as const).filter(([, count]) => count > 0).map(([, count, label]) => `${count} ${label}${count === 1 ? "" : "s"}`).join(" · ");
   const deletableSelectionCount = selectedClipDetails.filter((item) => item.removable).length;
+  const copyableSelections = selectedClips.filter((selection): selection is TimelineClipboardSelection => selection.kind !== "layer" && selection.kind !== "color-layer");
+  function copySelectedTimelineClips() {
+    if (!timeline) return;
+    const clipboard = copyTimelineSelection(timeline, copyableSelections, (layer, value) => layerAnimationClips(layer, value));
+    if (!clipboard) {
+      onStatus("No copyable timeline clips are selected.");
+      return;
+    }
+    timelineClipboardRef.current = clipboard;
+    setClipboardAvailable(true);
+    onStatus(`Copied ${clipboard.entries.length} timeline clip${clipboard.entries.length === 1 ? "" : "s"}. Paste aligns the first clip to the playhead and preserves spacing.`);
+  }
+  function pasteTimelineClips() {
+    if (!timeline || !timelineClipboardRef.current) return;
+    const result = pasteTimelineSelection(timeline, timelineClipboardRef.current, currentTime, (layer, value) => layerAnimationClips(layer, value));
+    if (result.pastedCount === 0) {
+      onStatus("Paste skipped: the copied tracks are missing or locked.");
+      return;
+    }
+    updateTimeline(() => result.timeline);
+    setSelectedClips(result.selections);
+    const lastSelection = result.selections.at(-1)!;
+    setSelectedAudioId(lastSelection.kind === "audio" ? lastSelection.id : null);
+    setInspector(result.selections.length > 1 ? "multi" : lastSelection.kind === "animation" ? "animation" : lastSelection.kind === "color" ? "color-clip" : lastSelection.kind);
+    onStatus(`Pasted ${result.pastedCount} clip${result.pastedCount === 1 ? "" : "s"}${result.skippedCount ? `; skipped ${result.skippedCount} locked or unavailable` : ""}${result.adjustedCount ? `; repositioned ${result.adjustedCount} to avoid same-track overlap` : ""}.`);
+  }
   const selectedPlaybackRange: TimelineRange | null = selectedClipDetails.length > 0 ? (() => {
     const start = Math.max(0, Math.min(duration, ...selectedClipDetails.map((item) => item.start)));
     const end = Math.min(duration, Math.max(...selectedClipDetails.map((item) => item.end)));
@@ -2599,6 +2632,8 @@ export function TimelineWorkspace({ source, directory, directories, directoryLab
            <label>Snap <select value={timeline.snap} onChange={(event) => updateTimeline((value) => ({ ...value, snap: Number(event.target.value) }))}><option value="0">Off</option><option value="0.01">10 ms</option><option value="0.1">100 ms</option><option value="0.25">250 ms</option><option value="0.5">500 ms</option></select></label>
            <BoundedSliderField label="Timeline scale" value={zoom} defaultValue={1} min={0.1} max={3} step={0.1} precision={2} unit="×" compact onCommit={setZoom} />
            <button className="editor-button" type="button" disabled={!selectedClipDetails.length} onClick={fitTimelineToSelection} title="Fit the selected clips in the timeline">Fit selection</button>
+           <button className="editor-button" type="button" disabled={!copyableSelections.length} onClick={copySelectedTimelineClips} title="Copy selected clips (Ctrl+C / Cmd+C)">Copy</button>
+           <button className="editor-button" type="button" disabled={!clipboardAvailable} onClick={pasteTimelineClips} title="Paste clips at the playhead (Ctrl+V / Cmd+V)">Paste</button>
            <button className="editor-button" onClick={fitTimeline} title="Fit the full sequence in the timeline (F)"><IconExpand /> Fit timeline (F)</button>
              <details ref={addMenuRef} className="timeline-add-menu">
                <summary className="editor-button"><IconPlus /> Add <IconChevronDown /></summary>
