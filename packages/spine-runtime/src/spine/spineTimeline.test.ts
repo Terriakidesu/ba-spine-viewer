@@ -314,3 +314,24 @@ test("talk animation underlay behavior is shared by both previews", () => {
   expect(timelineAnimationNeedsIdleUnderlay("Talk_01_M")).toBe(true);
   expect(timelineAnimationNeedsIdleUnderlay("Idle")).toBe(false);
 });
+
+test("timeline normalization preserves valid authored camera tracks and clips out-of-range keys", () => {
+  const normalized = normalizeSpineTimeline({
+    sequenceId: "opening",
+    duration: 4,
+    layers: [],
+    camera: {
+      enabled: true,
+      aspectRatio: "4:3",
+      constraint: { mode: "manual", boundId: "room" },
+      safeBounds: [{ id: "room", name: "Room", x: -10, y: -20, width: 200, height: 160, enabled: true }],
+      keyframes: [
+        { id: "start", time: 0, centerX: 0, centerY: 0, frameHeight: 100, easing: "smooth" },
+        { id: "end", time: 5, centerX: 10, centerY: 20, frameHeight: 150 },
+      ],
+    },
+  });
+  expect(normalized?.camera?.aspectRatio).toBe("4:3");
+  expect(normalized?.camera?.constraint).toEqual({ mode: "manual", boundId: "room" });
+  expect(normalized?.camera?.keyframes.map(({ id }) => id)).toEqual(["start"]);
+});

@@ -81,6 +81,10 @@ describe("Viewer saved-handoff state preservation", () => {
     expect(restored.cameraPose).toBeUndefined();
   });
 
+  test("preserves the authored camera mode on same-selection reloads", () => {
+    expect(restoreViewerHandoffState({ ...current, cameraMode: "authored" }, message, true).cameraMode).toBe("authored");
+  });
+
   test("normalizes and persists voice volume without making storage mandatory", () => {
     const values = new Map<string, string>();
     const storage = {

@@ -44,8 +44,14 @@ const MIN_TOUCH_FOLLOW_Y = 35;
 const MAX_TOUCH_FOLLOW_X = 90;
 const MAX_TOUCH_FOLLOW_Y = 65;
 const TOUCH_FOLLOW_SCENE_RATIO = 0.025;
-export type SpineCameraMode = "fit" | "fill" | "game";
+export type SpineCameraMode = "fit" | "fill" | "game" | "authored";
 export type SpineInteractionMode = "free" | "interaction";
+
+export interface SpineCameraFrame {
+  centerX: number;
+  centerY: number;
+  height: number;
+}
 
 export type SpineFiles = Map<string, File>;
 
@@ -547,6 +553,7 @@ export class SpineRenderer {
   private interactionMotionState: SpineInteractionMotionState = createInteractionMotionState();
   private fitCameraPose: CameraPose | null = null;
   private pendingCameraPose: SpineCameraPose | null = null;
+  private authoredCameraFrame: SpineCameraFrame | null = null;
   private pendingFit = false;
   private raf = 0;
   private previousFrame = 0;
@@ -731,8 +738,9 @@ export class SpineRenderer {
   }
 
   setCameraMode(mode: SpineCameraMode) {
-    if (this.interactionMode === "interaction" && mode !== "game") return;
+    if (this.interactionMode === "interaction" && mode !== "game" && mode !== "authored") return;
     if (this.cameraMode === mode) return;
+    this.authoredCameraFrame = null;
     this.cameraMode = mode;
     this.pendingFit = true;
   }
@@ -1472,6 +1480,42 @@ export class SpineRenderer {
     };
   }
 
+  getCameraFrame(): SpineCameraFrame | null {
+    if (!this.bundle || !Number.isFinite(this.renderer.camera.zoom) || this.renderer.camera.viewportHeight <= 0) return null;
+    return {
+      centerX: this.renderer.camera.position.x,
+      centerY: this.renderer.camera.position.y,
+      height: this.renderer.camera.zoom * this.renderer.camera.viewportHeight,
+    };
+  }
+
+  /** Camera frame in world units; unlike a camera pose this survives viewport resizes. */
+  setCameraFrame(frame: SpineCameraFrame | null) {
+    if (!frame) {
+      this.authoredCameraFrame = null;
+      if (this.cameraMode === "authored") this.pendingFit = true;
+      return;
+    }
+    if (![frame.centerX, frame.centerY, frame.height].every(Number.isFinite) || frame.height <= 0) return;
+    this.authoredCameraFrame = { ...frame };
+    this.cameraMode = "authored";
+    if (this.bundle && this.renderer.camera.viewportHeight > 0) this.applyCameraFrame(this.authoredCameraFrame);
+  }
+
+  /** Project world coordinates into CSS pixels relative to this renderer's canvas. */
+  worldToCanvas(x: number, y: number): { x: number; y: number } | null {
+    if (!this.bundle || ![x, y].every(Number.isFinite) || this.canvas.clientWidth <= 0 || this.canvas.clientHeight <= 0) return null;
+    const projected = this.renderer.camera.worldToScreen(new Vector3(x, y, 0), this.canvas.width, this.canvas.height);
+    const scaleX = this.canvas.clientWidth / this.canvas.width;
+    const scaleY = this.canvas.clientHeight / this.canvas.height;
+    return { x: projected.x * scaleX, y: (this.canvas.height - projected.y) * scaleY };
+  }
+
+  canvasClientSize(): { width: number; height: number } | null {
+    if (this.canvas.clientWidth <= 0 || this.canvas.clientHeight <= 0) return null;
+    return { width: this.canvas.clientWidth, height: this.canvas.clientHeight };
+  }
+
   /** Reapply a saved pose after the next initial-fit pass has completed. */
   setCameraPose(pose: SpineCameraPose | null) {
     if (!pose || ![pose.x, pose.y, pose.zoom].every(Number.isFinite) || pose.zoom <= 0) return;
@@ -1487,6 +1531,15 @@ export class SpineRenderer {
     camera.position.x = pose.x;
     camera.position.y = pose.y;
     camera.zoom = pose.zoom;
+    camera.update();
+  }
+
+  private applyCameraFrame(frame: SpineCameraFrame) {
+    const camera = this.renderer.camera;
+    if (camera.viewportHeight <= 0) return;
+    camera.position.x = frame.centerX;
+    camera.position.y = frame.centerY;
+    camera.zoom = frame.height / camera.viewportHeight;
     camera.update();
   }
 
@@ -1543,6 +1596,7 @@ export class SpineRenderer {
         this.pendingCameraPose = null;
         this.applyCameraPose(pose);
       }
+      if (this.authoredCameraFrame) this.applyCameraFrame(this.authoredCameraFrame);
     }
   }
 

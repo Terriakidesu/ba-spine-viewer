@@ -2,8 +2,9 @@ import { normalizeSpineColorLayers, type SpineTimelineAnimationClip, type SpineT
 import type { SpineEditorBone } from "@ba-spine/spine-runtime/spine/spineRuntime";
 import { DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_INTERACTION_RETURN_DURATION, DEFAULT_INTERACTION_RETURN_EASING, DEFAULT_TALK_MIX_DURATION, findInteractionProfile, type SpineInteractionReturnEasing } from "@ba-spine/spine-runtime/spine/spineInteraction";
 import { cheekControlNames } from "@ba-spine/spine-runtime/spine/spinePinch";
+import { normalizeSpineCameraTrack, type SpineCameraTrack } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 
-export const EDITOR_SCHEMA_VERSION = 4;
+export const EDITOR_SCHEMA_VERSION = 5;
 export const LEGACY_EDITOR_SCHEMA_VERSION = 1;
 
 export type EditorTrigger = "press" | "hold" | "drag";
@@ -131,6 +132,7 @@ export interface EditorTimeline {
   selectedColorClipId: string | null;
   language: TimelineLanguage;
   snap: number;
+  camera?: SpineCameraTrack;
 }
 
 export interface EditorProject {
@@ -643,6 +645,7 @@ export function normalizeTimeline(value: unknown, directory: string): EditorTime
     selectedColorClipId: selectedColorClipLayer && typeof raw.selectedColorClipId === "string" ? raw.selectedColorClipId : null,
     language: timelineLanguage(raw.language),
     snap: Math.max(0, finiteNumber(raw.snap, 0.1, 0)),
+    ...(raw.camera ? { camera: normalizeSpineCameraTrack(raw.camera, duration) ?? undefined } : {}),
   };
 }
 

@@ -1,4 +1,5 @@
 import type { SpineMeta } from "./spineRuntime";
+import { normalizeSpineCameraTrack, type SpineCameraTrack } from "./spineCameraMotion";
 
 export type SpineTimelineLayerRole = "character" | "scene" | "background" | "overlay";
 export type SpineTimelineLanguage = "en" | "ja" | "ko";
@@ -137,6 +138,7 @@ export interface SpineTimeline {
   subtitles: SpineTimelineSubtitle[];
   audio: SpineTimelineAudio[];
   language: SpineTimelineLanguage;
+  camera?: SpineCameraTrack;
 }
 
 export type SpineTimelineVisualLayer =
@@ -653,5 +655,6 @@ export function normalizeSpineTimeline(value: unknown): SpineTimeline | null {
       .map((clip, index) => normalizeAudio(clip, index, duration))
       .filter((clip): clip is SpineTimelineAudio => clip !== null),
     language: timelineLanguage(timeline.language),
+    ...(timeline.camera ? { camera: normalizeSpineCameraTrack(timeline.camera, duration) ?? undefined } : {}),
   };
 }

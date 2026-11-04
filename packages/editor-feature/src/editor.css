@@ -616,3 +616,32 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--editor-cy
   .editor-test-controls { grid-area: 1 / 2; }
   .editor-testbar > label { grid-area: 2 / 2; }
 }
+
+/* Authored camera track and the scene-space viewport gizmo. */
+.timeline-camera-overlay { position: absolute; z-index: 6; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.timeline-camera-bound { fill: #ffcc3310; stroke: #ffd36f99; stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+.timeline-camera-bound.is-active { fill: #ffd36f20; stroke: #ffd36f; stroke-width: 2; }
+.timeline-camera-frame { fill: #ff33440c; stroke: #ff4559; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.timeline-camera-center { fill: #ff4559; stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.timeline-camera-center line { stroke: #ff4559; stroke-width: 2.5; }
+.timeline-camera-track { min-height: 31px; cursor: ew-resize; }
+.camera-track-label { position: relative; gap: 5px; }
+.camera-track-label b { color: #ff6576; font-size: 9px; letter-spacing: .06em; }
+.camera-track-label span { flex: 1; color: var(--editor-muted); font-size: 9px; }
+.timeline-camera-add-key { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid #ff455966; border-radius: 3px; background: #40232d; color: #ff8b98; font-size: 16px; line-height: 1; }
+.timeline-camera-key { position: absolute; z-index: 3; top: 50%; width: 12px; height: 12px; padding: 0; transform: translate(-50%, -50%) rotate(45deg); border: 1px solid #fff; border-radius: 2px; background: #ff4559; cursor: pointer; }
+.timeline-camera-key:hover, .timeline-camera-key.is-selected { z-index: 4; width: 15px; height: 15px; background: #ff8792; box-shadow: 0 0 0 3px #ff455955; }
+.timeline-camera-key:focus-visible, .timeline-camera-add-key:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.timeline-camera-bounds > summary { margin-bottom: 6px; color: var(--editor-text); font-size: 10px; font-weight: 750; cursor: pointer; }
+.timeline-camera-bound-editor { display: grid; gap: 6px; min-width: 0; margin: 7px 0; padding: 7px; border: 1px solid var(--editor-line); border-radius: 4px; }
+.timeline-camera-bound-editor.is-active { border-color: #ffd36f; box-shadow: inset 2px 0 #ffd36f; }
+.timeline-camera-bound-editor legend { padding: 0 4px; color: #ffd36f; font-size: 9px; }
+.timeline-camera-bound-heading { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.timeline-camera-bound-heading > input { flex: 1; min-width: 0; }
+.timeline-camera-bound-heading label { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.timeline-camera-bound-heading input[type="checkbox"] { width: 13px; min-height: 13px; }
+.timeline-camera-bound-heading button { flex: none; padding: 4px 6px; border: 1px solid #ff657666; border-radius: 3px; background: #351b24; color: #ff8b98; font-size: 9px; }
+.timeline-camera-bound-editor .editor-two-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.timeline-camera-bound-editor label { min-width: 0; }
+.timeline-camera-bound-editor input[type="number"] { min-width: 0; width: 100%; }
+.timeline-camera-bound-editor input:focus-visible, .timeline-camera-bound-heading button:focus-visible { outline: 2px solid var(--editor-cyan); outline-offset: 1px; }

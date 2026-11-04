@@ -40,6 +40,7 @@ test("draft preview converts the live project to a Viewer snapshot without invok
   project.name = "Live unsaved draft";
   project.timeline.sequenceId = "opening";
   project.timeline.duration = 12;
+  project.timeline.camera = { enabled: true, aspectRatio: "1:1", constraint: { mode: "none" }, safeBounds: [], keyframes: [{ id: "draft-key", time: 3, centerX: 10, centerY: 20, frameHeight: 300 }] };
   const snapshot = editorProjectDraftValue(project);
   expect(snapshot).toMatchObject({
     schemaVersion: project.schemaVersion,
@@ -47,14 +48,14 @@ test("draft preview converts the live project to a Viewer snapshot without invok
     entrySequence: null,
     name: "Live unsaved draft",
     interactions: [{ id: project.interactions[0]!.id }],
-    timeline: { sequenceId: "opening", duration: 12 },
-    sequences: { opening: { sequenceId: "opening", duration: 12 } },
+    timeline: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "1:1" } },
+    sequences: { opening: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "1:1" } } },
   });
   expect(JSON.parse(JSON.stringify(snapshot))).toEqual(snapshot);
   expect(normalizeSpineInteractionProject(snapshot, "Airi_home")).toMatchObject({
     assetDirectory: "Airi_home",
     interactions: [{ id: project.interactions[0]!.id }],
-    sequences: { opening: { sequenceId: "opening", duration: 12 } },
+    sequences: { opening: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "1:1" } } },
   });
 });
 
@@ -127,9 +128,17 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
   }];
   project.timeline.selectedColorLayerId = "wash";
   project.timeline.selectedColorClipId = "fade";
+  project.timeline.camera = {
+    enabled: true,
+    aspectRatio: "4:3",
+    constraint: { mode: "manual", boundId: "room" },
+    safeBounds: [{ id: "room", name: "Room", x: -100, y: -50, width: 800, height: 600, enabled: true }],
+    keyframes: [{ id: "wide-shot", time: 2, centerX: 40, centerY: 60, frameHeight: 400, easing: "smooth" }],
+  };
 
   const saved = await saveManifestEditorProject(source, project);
   expect(JSON.parse(writes[".editor/Airi_home.workspace.json"]!).projectSchemaVersion).toBe(EDITOR_SCHEMA_VERSION);
+  expect(JSON.parse(writes["lobbies/Airi_home/sequences/talk-1.json"]!).camera).toMatchObject({ aspectRatio: "4:3", constraint: { mode: "manual", boundId: "room" } });
 
   const reopened = await readSavedEditorProject({
     readText: async (path) => writes[path] ?? null,
@@ -139,6 +148,7 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
   expect(reopened?.timeline.colorLayers[0]).toMatchObject({ id: "wash", opacity: 0.65, order: 2, blendMode: "screen" });
   expect(reopened?.timeline.colorLayers[0]?.clips[0]).toMatchObject({ id: "fade", color: "#244466", start: 1, end: 7, fadeIn: 2, fadeOut: 1 });
   expect(reopened?.timeline).toMatchObject({ selectedColorLayerId: "wash", selectedColorClipId: "fade" });
+  expect(reopened?.timeline.camera?.keyframes[0]).toMatchObject({ id: "wide-shot", time: 2, centerX: 40, centerY: 60, frameHeight: 400, easing: "smooth" });
 });
 
 test("prepares manifest project output without writing and captures fixture baselines", async () => {

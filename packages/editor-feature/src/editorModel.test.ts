@@ -3,6 +3,7 @@ import type { SpineEditorBone } from "@ba-spine/spine-runtime/spine/spineRuntime
 import {
   createProject,
   compositionDirectories,
+  EDITOR_SCHEMA_VERSION,
   ensureTimelineLayers,
   isLegacyPinchRegion,
   normalizeProject,
@@ -109,6 +110,41 @@ test("color compositor settings and clips survive project save and reopen", () =
   expect(reopened.timeline).toMatchObject({ selectedColorLayerId: "wash", selectedColorClipId: "fade" });
   expect(reopened.sequences?.["talk-1"]?.colorLayers[0]?.id).toBe("talk-wash");
   expect(reopened.timeline.durationMode).toBe("auto");
+});
+
+test("v4 projects migrate without camera data and authored camera tracks round-trip in v5", () => {
+  const legacy = normalizeProject({
+    schemaVersion: 4,
+    assetDirectory: "Airi_home",
+    interactions: [],
+    timeline: { sequenceId: "opening", duration: 5, layers: [] },
+  }, "Airi_home")!;
+  expect(legacy.schemaVersion).toBe(EDITOR_SCHEMA_VERSION);
+  expect(legacy.timeline.camera).toBeUndefined();
+
+  const project = normalizeProject({
+    schemaVersion: 4,
+    assetDirectory: "Airi_home",
+    interactions: [],
+    timeline: {
+      sequenceId: "opening",
+      duration: 5,
+      layers: [],
+      camera: {
+        enabled: true,
+        aspectRatio: "1:1",
+        constraint: { mode: "manual", boundId: "room" },
+        safeBounds: [{ id: "room", name: "Room", x: 0, y: 0, width: 250, height: 250, enabled: true }],
+        keyframes: [{ id: "shot", time: 2, centerX: 30, centerY: 40, frameHeight: 150, easing: "hold" }],
+      },
+    },
+    sequences: { "talk-1": { sequenceId: "talk-1", duration: 3, layers: [], camera: { enabled: false, aspectRatio: "4:3", safeBounds: [], keyframes: [] } } },
+  }, "Airi_home")!;
+  const reopened = normalizeProject(JSON.parse(JSON.stringify(project)), "Airi_home")!;
+  expect(reopened.schemaVersion).toBe(EDITOR_SCHEMA_VERSION);
+  expect(reopened.timeline.camera).toMatchObject({ aspectRatio: "1:1", constraint: { mode: "manual", boundId: "room" } });
+  expect(reopened.timeline.camera?.keyframes[0]).toMatchObject({ time: 2, centerX: 30, centerY: 40, frameHeight: 150, easing: "hold" });
+  expect(reopened.sequences?.["talk-1"]?.camera).toMatchObject({ enabled: false, aspectRatio: "4:3" });
 });
 
 test("clip-based opening timelines survive editor save and reopen normalization", () => {
