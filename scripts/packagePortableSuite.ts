@@ -4,6 +4,7 @@ import { cp, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/p
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { auditPortableSuiteDirectory } from "./releaseArtifactAudit";
+import { publishPortableSuiteDirectory } from "./portableSuitePublisher";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const packageManifest = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8")) as { version?: unknown };
@@ -52,6 +53,7 @@ const editorExtract = join(temporaryRoot, "editor-extract");
 const viewerExtract = join(temporaryRoot, "viewer-extract");
 const verifyExtract = join(temporaryRoot, "zip-verification");
 const outputArchive = join(outputRoot, `BA-Spine-Suite-${suiteVersion}-win-x64.zip`);
+const outputFolder = join(outputRoot, `BA-Spine-Suite-${suiteVersion}-win-x64`);
 const checksumPath = `${outputArchive}.sha256`;
 
 try {
@@ -118,6 +120,7 @@ try {
       "-o", join(stage, rootName),
       ".",
     ], launcherDirectory, goEnvironment);
+    await run("go", ["run", "./iconembed", join(stage, rootName)], launcherDirectory, goEnvironment);
   }
 
   await mkdir(outputRoot, { recursive: true });
@@ -138,7 +141,13 @@ try {
 
   const digest = await sha256File(outputArchive);
   await writeFile(checksumPath, `${digest}  ${relative(outputRoot, outputArchive).replaceAll(sep, "/")}\n`, "utf8");
+
+  await publishPortableSuiteDirectory(stage, outputFolder);
+  const folderIssues = await auditPortableSuiteDirectory(outputFolder, forbiddenPaths, { allowUserData: true });
+  if (folderIssues.length > 0) throw new Error(`Portable folder audit failed:\n${folderIssues.map((issue) => `- ${issue}`).join("\n")}`);
+
   console.log(`[portable-suite] created ${outputArchive}`);
+  console.log(`[portable-suite] created extracted folder ${outputFolder}`);
   console.log(`[portable-suite] SHA-256 ${digest}`);
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });

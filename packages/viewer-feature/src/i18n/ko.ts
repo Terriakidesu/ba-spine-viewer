@@ -468,6 +468,7 @@ export const ko: Record<keyof typeof en, string> = {
   "spine.camera.overrideHint": "현재 카메라 모드에서는 저장된 샷을 사용하지 않습니다. 편집기 프레이밍을 사용하려면 저장된 카메라를 선택하세요.",
   "spine.camera.game": "게임 카메라",
   "spine.camera.fit": "전체 맞춤",
+  "spine.camera.fitBoundary": "카메라 경계에 맞춤",
   "spine.camera.fill": "화면 채우기",
   "spine.aspectRatio": "출력",
   "spine.aspectRatioAria": "출력 종횡비",

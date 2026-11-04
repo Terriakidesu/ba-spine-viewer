@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { acknowledgeDesktopHandoff, readDesktopDraftSnapshot, receiveDesktopHandoffs, sendDesktopHandoff, sourceFromDesktop } from "./desktopSource";
+import { acknowledgeDesktopHandoff, getDesktopFullscreen, readDesktopDraftSnapshot, receiveDesktopHandoffs, sendDesktopHandoff, setDesktopFullscreen, sourceFromDesktop } from "./desktopSource";
 
 const manifest = JSON.stringify({
   schemaVersion: 1,
@@ -18,6 +18,35 @@ const manifest = JSON.stringify({
 });
 
 describe("viewer desktop asset source", () => {
+  test("reads and changes native fullscreen through the authenticated desktop bridge", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const calls: Array<{ path: string; method: string; token: string | null; body?: string }> = [];
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { __BA_SPINE_HOST_TOKEN__: "fullscreen-token" } });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({
+        path: String(input),
+        method: init?.method ?? "GET",
+        token: new Headers(init?.headers).get("x-ba-spine-token"),
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      });
+      return Response.json({ fullScreen: true });
+    }) as typeof fetch;
+
+    try {
+      expect(await getDesktopFullscreen()).toBe(true);
+      await setDesktopFullscreen(false);
+      expect(calls).toEqual([
+        { path: "/__spine/window/fullscreen", method: "GET", token: "fullscreen-token" },
+        { path: "/__spine/window/fullscreen", method: "POST", token: "fullscreen-token", body: JSON.stringify({ fullScreen: false }) },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
+  });
+
   test("loads indexed files through the authenticated read-only bridge", async () => {
     const originalFetch = globalThis.fetch;
     const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");

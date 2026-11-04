@@ -47,6 +47,23 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
   return response;
 }
 
+/** Read the native desktop window's fullscreen state; null indicates web preview. */
+export async function getDesktopFullscreen(): Promise<boolean | null> {
+  if (!isDesktopHost()) return null;
+  const result = await request("/__spine/window/fullscreen").then((response) => response.json()) as { fullScreen?: unknown };
+  return typeof result.fullScreen === "boolean" ? result.fullScreen : null;
+}
+
+/** Use native fullscreen in the desktop app so the OS title and menu bars are hidden too. */
+export async function setDesktopFullscreen(fullScreen: boolean): Promise<void> {
+  if (!isDesktopHost()) return;
+  await request("/__spine/window/fullscreen", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ fullScreen }),
+  });
+}
+
 export async function loadDesktopSource(): Promise<DesktopAssetSource | null> {
   if (!isDesktopHost()) return null;
   const selected = await request("/__spine/root").then((response) => response.json()) as { rootPath: string | null };

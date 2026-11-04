@@ -1,4 +1,5 @@
-import { findIdleAnimation, type SpineMeta } from "./spineRuntime";
+import { findIdleAnimation } from "./spineAnimation";
+import type { SpineMeta } from "./spineRuntime";
 import { normalizeSpineCameraTrack, type SpineCameraTrack } from "./spineCameraMotion";
 
 export type SpineTimelineLayerRole = "character" | "scene" | "background" | "overlay";
@@ -201,6 +202,14 @@ export interface SpineTimelineProject {
 /** Idle is a runtime animation, not an alias for the opening timeline. */
 export function timelineIdleAnimation(meta: Pick<SpineMeta, "idleAnimation" | "animations">): string {
   return meta.idleAnimation || findIdleAnimation(meta.animations) || "";
+}
+
+/** Resolve a per-clip face animation, preserving an explicit empty override. */
+export function timelineFaceAnimation(
+  layer: Pick<SpineTimelineLayer, "faceAnimation">,
+  clip?: Pick<SpineTimelineAnimationClip, "faceAnimation"> | null,
+): string {
+  return clip?.faceAnimation ?? layer.faceAnimation ?? "";
 }
 
 /** A talk's idle tail stays visible until the sequence, not its clip, ends. */

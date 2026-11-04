@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cameraFrameHeightForBound, cameraKeyframeTimeAvailable, defaultSpineCameraSample, evaluateSpineCameraTrack, moveSpineCameraBound, moveSpineCameraKeyframe, normalizeSpineCameraTrack, resizeSpineCameraBound, resizeSpineCameraKeyframe, retimeSpineCameraKeyframe, sampleSpineCameraTrack, sampleSpineCameraTrackWithFallback, solveSpineCamera, spineCameraBoundFromCanvasDrag, type SpineCameraTrack } from "./spineCameraMotion";
+import { cameraAspectValue, cameraFrameHeightForBound, cameraKeyframeTimeAvailable, changeSpineCameraAspectRatio, defaultSpineCameraSample, evaluateSpineCameraTrack, moveSpineCameraBound, moveSpineCameraKeyframe, normalizeSpineCameraTrack, resizeSpineCameraBound, resizeSpineCameraKeyframe, retimeSpineCameraKeyframe, sampleSpineCameraTrack, sampleSpineCameraTrackWithFallback, solveSpineCamera, spineCameraBoundFromCanvasDrag, type SpineCameraTrack } from "./spineCameraMotion";
 
 const track = (overrides: Partial<SpineCameraTrack> = {}): SpineCameraTrack => ({
   enabled: true,
@@ -112,6 +112,40 @@ describe("authored camera motion", () => {
     expect(constrained.frame.height).toBe(120);
     expect(constrained.frame.centerY - constrained.frame.height / 2).toBeGreaterThanOrEqual(-60);
     expect(constrained.frame.centerY + constrained.frame.height / 2).toBeLessThanOrEqual(60);
+  });
+
+  test("changes authored output ratio by fitting shots to width for the shared Viewer camera path", () => {
+    const original = track({
+      aspectRatio: "16:9",
+      constraint: { mode: "none" },
+      keyframes: [
+        { id: "wide", time: 0, centerX: 18, centerY: 24, frameHeight: 90, easing: "smooth" },
+        { id: "close", time: 2, centerX: -8, centerY: 10, frameHeight: 45, constraint: { mode: "manual", boundId: "room" } },
+      ],
+    });
+
+    const square = changeSpineCameraAspectRatio(original, "1:1");
+    expect(square.aspectRatio).toBe("1:1");
+    expect(square.keyframes.map((keyframe) => keyframe.frameHeight)).toEqual([160, 80]);
+    expect(square.keyframes.map(({ centerX, centerY }) => [centerX, centerY])).toEqual([[18, 24], [-8, 10]]);
+    expect(square.keyframes[1]?.constraint).toEqual({ mode: "manual", boundId: "room" });
+    expect(original.keyframes[0]?.frameHeight).toBe(90);
+
+    const viewerFrame = evaluateSpineCameraTrack(square, 0, 1600, 900, null)!;
+    expect(viewerFrame.frame).toEqual({ centerX: 18, centerY: 24, width: 160, height: 160 });
+
+    const boundedSquare = changeSpineCameraAspectRatio(track({
+      aspectRatio: "16:9",
+      constraint: { mode: "manual", boundId: "room" },
+      safeBounds: [{ id: "room", name: "Room", x: -200, y: -60, width: 400, height: 120, enabled: true }],
+      keyframes: [{ id: "bounded", time: 0, centerX: 0, centerY: 0, frameHeight: 90 }],
+    }), "1:1");
+    const boundedViewerFrame = evaluateSpineCameraTrack(boundedSquare, 0, 1600, 900, null)!;
+    expect(boundedViewerFrame.frame).toMatchObject({ width: 120, height: 120 });
+
+    const wideAgain = changeSpineCameraAspectRatio(square, "4:3");
+    expect(wideAgain.keyframes[0]?.frameHeight).toBeCloseTo(120);
+    expect(wideAgain.keyframes[0]!.frameHeight * cameraAspectValue(wideAgain.aspectRatio)).toBeCloseTo(160);
   });
 
   test("moves and resizes selected boundaries in stable world coordinates", () => {

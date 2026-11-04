@@ -20,6 +20,8 @@ import {
   Vector3,
 } from "@esotericsoftware/spine-webgl";
 import { authoredViewport, fitScene, interactionKindAtPoint, interactionZonesForDisplay, sceneBounds, type InteractionHitKind, type SceneBounds } from "./spineCamera";
+import { findIdleAnimation } from "./spineAnimation";
+import { spineCanvasBackingSize } from "./spineCanvasResolution";
 import { DEFAULT_EFFECTS_STRENGTH, drawWithEffectsStrength } from "./spineEffects";
 import { authoredInteraction, authoredRegions, clearInteractionTrack, DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_TALK_MIX_DURATION, interactionPhaseAfterStart, interactionPressReady, normalizeAnimationMixDuration, profileFromProject, queueInteractionFadeOut, setInteractionTrack, type SpineAnimationPair, type SpineInteractionAction, type SpineInteractionProfile, type SpineInteractionProject, type SpineAuthoredInteraction, type SpineAuthoredRegion } from "./spineInteraction";
 import {
@@ -36,8 +38,11 @@ import {
   type SpineMotionInteraction,
 } from "./spineInteractionMotion";
 
+export { findIdleAnimation };
+
 export const INTRO_ANIMATION = "__intro__";
 export const EYE_FOLLOW_DELAY = 0.3;
+const MAX_CANVAS_RESOLUTION_SCALE = 20;
 const MAX_EYE_FOLLOW_RANGE = 64;
 const MIN_TOUCH_FOLLOW_X = 45;
 const MIN_TOUCH_FOLLOW_Y = 35;
@@ -279,17 +284,6 @@ export function talkEventTimes(animation: Animation | null, number?: number | nu
 /** Pick the authored opening animation without relying on one exact suffix. */
 export function findIntroAnimation(animations: string[]): string | null {
   return animations.find((name) => /^start[_ -]?idle(?:[_ -]?(?:0?1))?$/i.test(name)) ?? null;
-}
-
-/** Prefer the normal idle, then accommodate older/variant lobby exports. */
-export function findIdleAnimation(animations: string[]): string | null {
-  const interactionClip = /(?:^|[_ -])(?:look(?:end)?|talk|pat|pinch|touch|interact(?:ion)?|reaction|react|greet)(?:[_ -]|$)/i;
-  const isIdle = (name: string) => /^idle(?:[_ -].*)?$/i.test(name) && !interactionClip.test(name);
-  for (const preferred of ["Idle_01", "Idle", "Idle_1"]) {
-    const found = animations.find((name) => name.toLocaleLowerCase() === preferred.toLocaleLowerCase() && isIdle(name));
-    if (found) return found;
-  }
-  return animations.find(isIdle) ?? null;
 }
 
 /** Choose a playback default only when a real idle exists; never use animation order as an idle fallback. */
@@ -628,6 +622,8 @@ export class SpineRenderer {
   private dragging = false;
   private lastPointerX = 0;
   private lastPointerY = 0;
+  private resolutionScale = 1;
+  private canvasLimits: { width: number; height: number } | null = null;
   private readonly resizeObserver: ResizeObserver;
 
   constructor(canvas: HTMLCanvasElement, callbacks: SpineRendererCallbacks, options: { preserveDrawingBuffer?: boolean } = {}) {
@@ -788,6 +784,14 @@ export class SpineRenderer {
     this.effectsStrength = Number.isFinite(strength) ? Math.max(0, Math.min(1, strength)) : DEFAULT_EFFECTS_STRENGTH;
   }
 
+  /** Render at additional backing resolution when the Editor magnifies this canvas with CSS. */
+  setResolutionScale(scale: number) {
+    const next = Number.isFinite(scale) ? Math.max(1, Math.min(MAX_CANVAS_RESOLUTION_SCALE, scale)) : 1;
+    if (next === this.resolutionScale) return;
+    this.resolutionScale = next;
+    this.resize();
+  }
+
   setShowInteractionPoints(show: boolean) {
     this.showInteractionPoints = show;
     if (!show) this.callbacks.onInteractionPoints?.({ canvasWidth: 0, canvasHeight: 0, points: [] });
@@ -803,7 +807,7 @@ export class SpineRenderer {
   }
 
   setCameraMode(mode: SpineCameraMode) {
-    if (this.interactionMode === "interaction" && mode !== "game" && mode !== "authored") return;
+    if (this.interactionMode === "interaction" && mode !== "fit" && mode !== "game" && mode !== "authored") return;
     if (this.cameraMode === mode) return;
     this.authoredCameraFrame = null;
     this.cameraMode = mode;
@@ -812,10 +816,10 @@ export class SpineRenderer {
 
   setInteractionMode(mode: SpineInteractionMode) {
     if (this.interactionMode === mode) {
-      if (mode === "interaction" && this.cameraMode !== "game") {
-        this.cameraMode = "game";
+      if (mode === "interaction" && this.cameraMode !== "fit" && this.cameraMode !== "game" && this.cameraMode !== "authored") {
+        this.cameraMode = "fit";
         this.pendingFit = true;
-        this.callbacks.onCameraMode?.("game");
+        this.callbacks.onCameraMode?.("fit");
       }
       return;
     }
@@ -843,9 +847,9 @@ export class SpineRenderer {
     if (mode === "interaction") {
       this.freeAnimationSelection = this.animationSelection;
       this.freeCameraMode = this.cameraMode;
-      this.cameraMode = "game";
+      this.cameraMode = "fit";
       this.pendingFit = true;
-      this.callbacks.onCameraMode?.("game");
+      this.callbacks.onCameraMode?.("fit");
       this.enterInteraction();
     } else {
       this.activeTalkIndex = -1;
@@ -1658,7 +1662,9 @@ export class SpineRenderer {
     const oldZoom = camera.zoom;
     const offsetX = oldFit ? camera.position.x - oldFit.x : 0;
     const offsetY = oldFit ? camera.position.y - oldFit.y : 0;
-    this.renderer.resize(ResizeMode.Expand);
+    // SceneRenderer.resize clamps to device DPR and would reset oversampling on every frame.
+    if (this.resolutionScale > 1) this.resizeCanvasBacking();
+    else this.renderer.resize(ResizeMode.Expand);
     const resized = oldWidth !== camera.viewportWidth || oldHeight !== camera.viewportHeight;
     if (this.bundle && (this.pendingFit || resized) && this.canvas.width > 0 && this.canvas.height > 0) {
       const preserveManual = resized && !this.pendingFit && oldFit && this.cameraMode !== "game";
@@ -1680,13 +1686,57 @@ export class SpineRenderer {
     }
   }
 
+  private resizeCanvasBacking() {
+    const canvas = this.canvas;
+    const gl = this.context.gl;
+    const camera = this.renderer.camera;
+    const cssWidth = canvas.clientWidth;
+    const cssHeight = canvas.clientHeight;
+    if (cssWidth <= 0 || cssHeight <= 0) {
+      if (canvas.width !== 0 || canvas.height !== 0) {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+      gl.viewport(0, 0, 0, 0);
+      camera.setViewport(0, 0);
+      camera.update();
+      return;
+    }
+
+    if (!this.canvasLimits) {
+      const renderbufferLimit = Number(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)) || 4096;
+      const viewportLimits = gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array;
+      this.canvasLimits = {
+        width: Math.max(1, Math.min(renderbufferLimit, Number(viewportLimits[0]) || renderbufferLimit)),
+        height: Math.max(1, Math.min(renderbufferLimit, Number(viewportLimits[1]) || renderbufferLimit)),
+      };
+    }
+
+    const { width, height } = spineCanvasBackingSize(
+      cssWidth,
+      cssHeight,
+      window.devicePixelRatio || 1,
+      this.resolutionScale,
+      this.canvasLimits.width,
+      this.canvasLimits.height,
+    );
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    gl.viewport(0, 0, width, height);
+    camera.setViewport(width, height);
+    camera.update();
+  }
+
   private fitCamera() {
     const bundle = this.bundle;
     if (!bundle || this.renderer.camera.viewportWidth <= 0 || this.renderer.camera.viewportHeight <= 0) return;
     const camera = this.renderer.camera;
+    const fitInteractionBoundary = this.cameraMode === "fit" && this.interactionMode === "interaction";
     const bounds = this.cameraMode === "artwork"
       ? bundle.artworkBounds
-      : this.cameraMode === "game" && bundle.meta.hasGameCamera ? bundle.viewport : bundle.bounds;
+      : (this.cameraMode === "game" && bundle.meta.hasGameCamera) || fitInteractionBoundary ? bundle.viewport : bundle.bounds;
     const fill = this.cameraMode !== "fit" && this.cameraMode !== "artwork";
     const fit = fitScene(bounds, camera.viewportWidth, camera.viewportHeight, fill);
     this.fitCameraPose = {

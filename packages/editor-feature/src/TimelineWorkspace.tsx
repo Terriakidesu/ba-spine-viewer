@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type SetStateAction, type WheelEvent as ReactWheelEvent } from "react";
 import { type SpineCameraPose, type SpineFiles, type SpineMeta, type SpineRenderer } from "@ba-spine/spine-runtime/spine/spineRuntime";
-import { cameraAspectValue, cameraFrameHeightForBound, cameraKeyframeTimeAvailable, evaluateSpineCameraTrack, moveSpineCameraBound, moveSpineCameraKeyframe, resizeSpineCameraBound, resizeSpineCameraKeyframe, retimeSpineCameraKeyframe, sampleSpineCameraTrackWithFallback, spineCameraBoundFromCanvasDrag, type CameraCanvasPoint, type SpineCameraAspectRatio, type SpineCameraBoundResizeHandle, type SpineCameraSafeBound, type SpineCameraTrack } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
+import { cameraAspectValue, cameraFrameHeightForBound, cameraKeyframeTimeAvailable, changeSpineCameraAspectRatio, evaluateSpineCameraTrack, moveSpineCameraBound, moveSpineCameraKeyframe, resizeSpineCameraBound, resizeSpineCameraKeyframe, retimeSpineCameraKeyframe, sampleSpineCameraTrackWithFallback, spineCameraBoundFromCanvasDrag, type CameraCanvasPoint, type SpineCameraAspectRatio, type SpineCameraBoundResizeHandle, type SpineCameraSafeBound, type SpineCameraTrack } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration } from "@ba-spine/spine-runtime/spine/spineInteraction";
 import {
   compositionDirectories,
@@ -32,7 +32,7 @@ import { adjustColorClipFade, colorClipPreset, duplicateColorClip, moveColorClip
 import { characterDirectoryLabel, type CharacterDirectoryInfo, type CharacterDirectoryLabels } from "./characterCatalog";
 import { isTextEditingTarget } from "./editorKeyboard";
 import type { EditorMcpCommand, EditorMcpPreviewCaptureMode, EditorMcpTimelineBridge, EditorMcpTimelineSnapshot } from "./editorMcp";
-import { clampStageScale, fitStageView, panStageView, resetStageView, zoomStageView, type StageView } from "./stageView";
+import { clampStageScale, fitStageView, panStageView, resetStageView, stageViewSvgTransform, stageViewToContentPoint, STAGE_VIEW_MAX_SCALE, zoomStageView, type StageView } from "./stageView";
 import { SubtitleTextEditor } from "./SubtitleTextEditor";
 import { AnimationPicker } from "./AnimationPicker";
 import { CameraContextMenu } from "./CameraContextMenu";
@@ -41,7 +41,7 @@ import { TimelinePanelResizer } from "./TimelinePanelResizer";
 import { TimelineSplitHandle } from "./TimelineSplitHandle";
 import { DEFAULT_TIMELINE_LAYOUT_PREFERENCES, normalizeTimelineLayoutPreferences, TIMELINE_LAYOUT_PREFERENCES_KEY, type TimelineLayoutPreferences } from "./timelineLayout";
 import { advanceTimelineRangeLoop, fitTimelineToRange, zoomTimelineAtCursor, type TimelineRange } from "./timelineView";
-import { AudioWaveform } from "./AudioWaveform";
+import { AudioWaveform, type AudioWaveformMeasurement } from "./AudioWaveform";
 import { missingManifestAssetFiles, validateTimeline, type TimelineDiagnostic } from "./timelineDiagnostics";
 import { copyTimelineSelection, pasteTimelineSelection, type TimelineClipboard, type TimelineClipboardSelection } from "./timelineClipboard";
 import { searchSubtitleCues, type SubtitleSearchLanguage } from "./subtitleCueSearch";
@@ -51,6 +51,7 @@ import "./timelineSnapFeedback.css";
 const TIMELINE_SCALE = 96;
 const MIN_TIMELINE_DURATION = 1;
 const TRACK_HEADER_WIDTH = 190;
+const LAYER_DEFAULT_FACE_ANIMATION = "__layer_default__";
 
 function emptyCameraTrack(): SpineCameraTrack {
   return { enabled: true, aspectRatio: "16:9", constraint: { mode: "automatic" }, safeBounds: [], keyframes: [] };
@@ -172,6 +173,8 @@ interface TimelineWorkspaceProps {
   onError: (value: string | null) => void;
   onRegisterMcp: (bridge: EditorMcpTimelineBridge | null) => void;
   onMcpSnapshot: (snapshot: EditorMcpTimelineSnapshot | null) => void;
+  /** Optional in-memory diagnostics for explicit development waveform profiling builds. */
+  onAudioWaveformProfile?: (clipId: string, measurement: AudioWaveformMeasurement) => void;
 }
 
 function seconds(value: number): string {
@@ -358,7 +361,7 @@ function canvasHasVisiblePixels(source: HTMLCanvasElement): boolean {
   return false;
 }
 
-export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () => undefined, source, directory, directories, directoryLabels = {}, directoryInfo = {}, project, initialHandoff, initialSubtitlePath, onSubtitleOpened, initialAudioPaths, onAudioOpened, onRecentFile, onMutate, onLive, onBeginEdit, onBeginCameraEdit = () => undefined, onEndCameraEdit = () => undefined, onCancelCameraEdit = () => undefined, onSave, onRegisterSave, onStatus, onError, onRegisterMcp, onMcpSnapshot }: TimelineWorkspaceProps) {
+export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () => undefined, source, directory, directories, directoryLabels = {}, directoryInfo = {}, project, initialHandoff, initialSubtitlePath, onSubtitleOpened, initialAudioPaths, onAudioOpened, onRecentFile, onMutate, onLive, onBeginEdit, onBeginCameraEdit = () => undefined, onEndCameraEdit = () => undefined, onCancelCameraEdit = () => undefined, onSave, onRegisterSave, onStatus, onError, onRegisterMcp, onMcpSnapshot, onAudioWaveformProfile }: TimelineWorkspaceProps) {
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -775,6 +778,10 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         ...(referenceLayerId ? { referenceLayerId } : {}),
       }),
     }), history);
+  }
+
+  function changeCameraAspectRatio(aspectRatio: SpineCameraAspectRatio) {
+    updateCameraTrack((value) => changeSpineCameraAspectRatio(value, aspectRatio));
   }
 
   function selectCameraKeyframe(id: string) {
@@ -1244,9 +1251,14 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     const svg = event.currentTarget instanceof SVGSVGElement ? event.currentTarget : event.currentTarget.ownerSVGElement;
     const rect = svg?.getBoundingClientRect();
     if (!size || !rect || rect.width <= 0 || rect.height <= 0) return null;
+    const visiblePoint = {
+      x: (event.clientX - rect.left) * size.width / rect.width,
+      y: (event.clientY - rect.top) * size.height / rect.height,
+    };
+    const contentPoint = stageViewToContentPoint(stageView, visiblePoint, size);
     return {
-      x: Math.max(0, Math.min(size.width, (event.clientX - rect.left) * size.width / rect.width)),
-      y: Math.max(0, Math.min(size.height, (event.clientY - rect.top) * size.height / rect.height)),
+      x: Math.max(0, Math.min(size.width, contentPoint.x)),
+      y: Math.max(0, Math.min(size.height, contentPoint.y)),
     };
   }
 
@@ -3697,7 +3709,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                 <span className="camera-scene-zoom" role="group" aria-label="Scene canvas zoom">
                   <button type="button" className="editor-icon-button" aria-label="Zoom out scene" title="Zoom out" disabled={stageView.scale <= 0.5} onClick={() => zoomStageBy(0.8)}><IconMinus /></button>
                   <input className="camera-zoom-percent" type="text" inputMode="numeric" value={cameraZoomDraft ?? String(Math.round(stageView.scale * 100))} aria-label="Scene zoom percentage" onFocus={() => setCameraZoomDraft(String(Math.round(stageView.scale * 100)))} onChange={(event) => setCameraZoomDraft(event.target.value.replace(/[^0-9]/g, ""))} onBlur={() => { if (cameraZoomDraft !== null && cameraZoomDraft.trim()) setStageView((value) => ({ ...value, scale: clampStageScale(Number(cameraZoomDraft) / 100) })); setCameraZoomDraft(null); }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); else if (event.key === "Escape") { setCameraZoomDraft(null); event.currentTarget.blur(); } }} />
-                  <button type="button" className="editor-icon-button" aria-label="Zoom in scene" title="Zoom in" disabled={stageView.scale >= 3} onClick={() => zoomStageBy(1.25)}><IconPlus /></button>
+                  <button type="button" className="editor-icon-button" aria-label="Zoom in scene" title="Zoom in" disabled={stageView.scale >= STAGE_VIEW_MAX_SCALE} onClick={() => zoomStageBy(1.25)}><IconPlus /></button>
                 </span>
                 <button type="button" className="editor-button camera-shortcut-help" title="V Select · H Pan · B Draw boundary · F Fit scene · Space-drag or middle-drag to pan · Escape cancels or deselects" aria-label="Camera workspace shortcuts">?</button>
               </div>
@@ -3707,9 +3719,10 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                 <div className="timeline-stage-content" style={{ transform: `translate3d(${stageView.x}px, ${stageView.y}px, 0) scale(${stageView.scale})` }}>
                   <div className="timeline-visual-composition">
                     {displayVisualTracks.map((track) => track.kind === "spine"
-                      ? <SpineTimelineLayerCanvas key={`camera-scene-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} currentTime={currentTime} mainAnimation={mainAnimation} mainAnimationTime={mainAnimationTime} mainAnimationLoop={mainAnimationLoop} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} characterHidden={characterHidden} cameraMode="artwork" sharedCameraPose={sharedCameraPose} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={setSharedCameraPose} onAnimationDuration={onAnimationDuration} onRenderer={(id, renderer) => { if (renderer) spineRenderersRef.current.set(id, renderer); else spineRenderersRef.current.delete(id); setCameraProjectionRevision((value) => value + 1); }} onError={onError} />
+                      ? <SpineTimelineLayerCanvas key={`camera-scene-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} currentTime={currentTime} mainAnimation={mainAnimation} mainAnimationTime={mainAnimationTime} mainAnimationLoop={mainAnimationLoop} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} characterHidden={characterHidden} cameraMode="artwork" resolutionScale={stageView.scale} sharedCameraPose={sharedCameraPose} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={setSharedCameraPose} onAnimationDuration={onAnimationDuration} onRenderer={(id, renderer) => { if (renderer) spineRenderersRef.current.set(id, renderer); else spineRenderersRef.current.delete(id); setCameraProjectionRevision((value) => value + 1); }} onError={onError} />
                       : <TimelineColorLayerPreview key={`camera-scene-color-${track.layer.id}`} layer={track.layer} time={currentTime} />)}
                     {!displayVisualTracks.length && <div className="timeline-empty"><strong>No layers</strong><span>Add a Spine layer in Timeline to preview this scene.</span></div>}
+                  </div>
                   </div>
                   {cameraProjectionSize && (cameraGuidesVisible || cameraShotGuidesVisible && (cameraOutputRect || selectedCameraKeyframe) || cameraBoundDrawing || cameraBoundDraft) && <svg className={`timeline-camera-overlay camera-scene-overlay${cameraBoundDrawing ? " is-drawing" : ""}`} viewBox={`0 0 ${cameraProjectionSize.width} ${cameraProjectionSize.height}`} preserveAspectRatio="none" role="application" aria-label={cameraBoundDrawing ? "Drag over the full scene to draw a camera boundary" : "Full-scene camera boundaries and selected camera shot"} style={cameraBoundDrawing ? { pointerEvents: "all", touchAction: "none" } : undefined} onPointerDown={beginCameraBoundDraw} onPointerMove={moveCameraBoundDraw} onPointerUp={endCameraBoundDraw} onPointerCancel={(event) => {
                     event.stopPropagation();
@@ -3721,12 +3734,13 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
                     } else if (cameraShotTransformRef.current?.pointerId === event.pointerId) cancelCameraShotTransform(event);
                     else if (cameraBoundDrawRef.current?.pointerId === event.pointerId) cancelCameraBoundDraw();
-                  }} onLostPointerCapture={handleCameraOverlayLostPointerCapture}>
+                   }} onLostPointerCapture={handleCameraOverlayLostPointerCapture}>
+                    <g transform={stageViewSvgTransform(stageView, cameraProjectionSize)}>
                     {cameraBoundDrawing && <rect className="timeline-camera-draw-surface" x="0" y="0" width={cameraProjectionSize.width} height={cameraProjectionSize.height} />}
                     {cameraShotGuidesVisible && cameraOutputRect && <rect className="timeline-camera-shot-frame is-output" x={cameraOutputRect.x} y={cameraOutputRect.y} width={cameraOutputRect.width} height={cameraOutputRect.height} />}
                     {cameraShotGuidesVisible && selectedCameraShotRect && selectedCameraKeyframe && <g onContextMenu={(event) => openCameraContextMenu(event, { kind: "shot", id: selectedCameraKeyframe.id })}>
                       <rect className="timeline-camera-shot-frame is-selected" x={selectedCameraShotRect.x} y={selectedCameraShotRect.y} width={selectedCameraShotRect.width} height={selectedCameraShotRect.height} role="button" tabIndex={cameraTool === "select" ? 0 : -1} aria-label={`Move selected camera shot at ${seconds(selectedCameraKeyframe.time)}`} onPointerDown={(event) => beginCameraShotTransform(event, "move")} onClick={(event) => event.stopPropagation()} />
-                      {cameraCenterGuidesVisible && <circle className="timeline-camera-center-guide" cx={selectedCameraShotRect.x + selectedCameraShotRect.width / 2} cy={selectedCameraShotRect.y + selectedCameraShotRect.height / 2} r="4" />}
+                      {cameraCenterGuidesVisible && <circle className="timeline-camera-center-guide" cx={selectedCameraShotRect.x + selectedCameraShotRect.width / 2} cy={selectedCameraShotRect.y + selectedCameraShotRect.height / 2} r={4 / stageView.scale} />}
                       {cameraCompositionGuidesVisible && <g className="timeline-camera-composition-guides">
                         <line x1={selectedCameraShotRect.x + selectedCameraShotRect.width / 3} y1={selectedCameraShotRect.y} x2={selectedCameraShotRect.x + selectedCameraShotRect.width / 3} y2={selectedCameraShotRect.y + selectedCameraShotRect.height} />
                         <line x1={selectedCameraShotRect.x + selectedCameraShotRect.width * 2 / 3} y1={selectedCameraShotRect.y} x2={selectedCameraShotRect.x + selectedCameraShotRect.width * 2 / 3} y2={selectedCameraShotRect.y + selectedCameraShotRect.height} />
@@ -3768,8 +3782,8 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                       })()}
                     </g>)}
                     {cameraBoundDraft && <rect className="timeline-camera-bound-draft" x={Math.min(cameraBoundDraft.start.x, cameraBoundDraft.end.x)} y={Math.min(cameraBoundDraft.start.y, cameraBoundDraft.end.y)} width={Math.abs(cameraBoundDraft.end.x - cameraBoundDraft.start.x)} height={Math.abs(cameraBoundDraft.end.y - cameraBoundDraft.start.y)} />}
+                    </g>
                   </svg>}
-                </div>
                 <span className="timeline-stage-hint">{cameraBoundDrawing ? "Drag a rectangle to create a boundary · middle-drag or Space-drag to pan" : cameraTool === "pan" ? "Pan tool · drag to move the full-scene canvas" : cameraTool === "draw" ? "Draw tool · drag a boundary · middle-drag or Space-drag to pan" : "Select a boundary · middle-drag or Space-drag to pan"}</span>
               </div>
             </div>
@@ -3796,7 +3810,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
           />
 
           <section className="camera-preview-panel camera-output-panel" aria-label="Constrained camera output preview">
-            <header className="camera-preview-heading"><span><strong>Output preview</strong><small>{cameraTrack?.enabled && sampledCamera?.constraint.mode === "none" ? "Unconstrained camera output" : cameraTrack?.enabled && solvedCamera?.activeBoundId ? `Constrained by ${cameraTrack.safeBounds.find((bound) => bound.id === solvedCamera.activeBoundId)?.name ?? "active boundary"}` : cameraTrack?.enabled ? orderedCameraKeyframes.length ? "Authored camera framing" : "No shots · full-artwork fit" : "Camera disabled · fit view"}</small></span><label className="camera-aspect-control">Aspect ratio<select aria-label="Output aspect ratio" value={editableCameraTrack.aspectRatio} onChange={(event) => updateCameraTrack((value) => ({ ...value, aspectRatio: event.target.value as SpineCameraAspectRatio }))}><option value="16:9">16:9</option><option value="4:3">4:3</option><option value="1:1">1:1</option></select></label></header>
+            <header className="camera-preview-heading"><span><strong>Output preview</strong><small>{cameraTrack?.enabled && sampledCamera?.constraint.mode === "none" ? "Unconstrained camera output" : cameraTrack?.enabled && solvedCamera?.activeBoundId ? `Constrained by ${cameraTrack.safeBounds.find((bound) => bound.id === solvedCamera.activeBoundId)?.name ?? "active boundary"}` : cameraTrack?.enabled ? orderedCameraKeyframes.length ? "Authored camera framing" : "No shots · full-artwork fit" : "Camera disabled · fit view"}</small></span><label className="camera-aspect-control">Aspect ratio<select aria-label="Output aspect ratio" value={editableCameraTrack.aspectRatio} onChange={(event) => changeCameraAspectRatio(event.target.value as SpineCameraAspectRatio)}><option value="16:9">16:9</option><option value="4:3">4:3</option><option value="1:1">1:1</option></select></label></header>
             <div className="camera-output-wrap">
               <div className="camera-output-stage" style={{ "--camera-aspect": cameraAspectValue(editableCameraTrack.aspectRatio) } as CSSProperties}>
                 <div className="timeline-visual-composition camera-output-composition">
@@ -3874,7 +3888,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         </section> : <section className="editor-section editor-inspector camera-property-section">
           <div className="editor-section-title"><strong>Camera settings</strong><span>{cameraTrack?.enabled ? "Enabled" : "Disabled"}</span></div>
           <label><span className="timeline-inline-check"><input type="checkbox" checked={cameraTrack?.enabled === true} onChange={(event) => updateCameraTrack((value) => ({ ...value, enabled: event.target.checked }))} /> Enable authored camera</span></label>
-          <label>Output aspect ratio<select value={editableCameraTrack.aspectRatio} onChange={(event) => updateCameraTrack((value) => ({ ...value, aspectRatio: event.target.value as SpineCameraAspectRatio }))}><option value="16:9">16:9</option><option value="4:3">4:3</option><option value="1:1">1:1</option></select><small className="editor-field-hint">This ratio applies to the output camera only. The scene editor remains full-frame.</small></label>
+          <label>Output aspect ratio<select value={editableCameraTrack.aspectRatio} onChange={(event) => changeCameraAspectRatio(event.target.value as SpineCameraAspectRatio)}><option value="16:9">16:9</option><option value="4:3">4:3</option><option value="1:1">1:1</option></select><small className="editor-field-hint">This ratio applies to the output camera only. The scene editor remains full-frame.</small></label>
            <label>Reference scene<select value={editableCameraTrack.referenceLayerId && timeline.layers.some((layer) => layer.id === editableCameraTrack.referenceLayerId) ? editableCameraTrack.referenceLayerId : referenceLayerId} onChange={(event) => updateCameraTrack((value) => ({ ...value, referenceLayerId: event.target.value }))}>
             {displayLayers.map((layer) => <option key={layer.id} value={layer.id}>{layer.name} · {layer.role}</option>)}
            </select><small className="editor-field-hint">Shot coordinates and boundaries use this scene’s stable world coordinates.</small></label>
@@ -4048,7 +4062,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
              <div className="timeline-row audio-row" style={{ gridTemplateColumns: `${trackLabelWidth}px minmax(0, 1fr)` }}>
               <div className="timeline-track-label"><b>AUDIO</b><span>{timeline.audio.length} clip{timeline.audio.length === 1 ? "" : "s"}</span></div>
               <div className="timeline-track timeline-audio-track" onPointerDown={seekFromEvent}>
-                    {timeline.audio.map((clip) => <div key={clip.id} className={`timeline-audio-clip${isClipSelected("audio", clip.id) || clip.id === selectedAudio?.id ? " is-selected" : ""}${clip.enabled ? "" : " is-disabled"}`} title="Drag to move the audio; drag an edge to change its timing. Shift/Ctrl-click to select multiple." style={{ left: clip.start * TIMELINE_SCALE * zoom, width: Math.max(12, (clip.end - clip.start) * TIMELINE_SCALE * zoom) }} onPointerDown={(event) => { const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio", clip.id, clip.start, clip.end, selection); }}><button type="button" className="timeline-clip-start-handle" aria-label={`Move ${clip.name} start`} title="Drag to change start time" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio-start", clip.id, clip.start, clip.end, selection); }} /><button type="button" className="timeline-clip-end-handle" aria-label={`Move ${clip.name} end`} title="Drag to change end time" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio-end", clip.id, clip.start, clip.end, selection); }} /><AudioWaveform url={audioUrls[clip.id]} onDuration={(value) => applyDecodedAudioDuration(clip.id, value)} /><span><IconSound /> {clip.name}</span></div>)}
+                    {timeline.audio.map((clip) => <div key={clip.id} className={`timeline-audio-clip${isClipSelected("audio", clip.id) || clip.id === selectedAudio?.id ? " is-selected" : ""}${clip.enabled ? "" : " is-disabled"}`} title="Drag to move the audio; drag an edge to change its timing. Shift/Ctrl-click to select multiple." style={{ left: clip.start * TIMELINE_SCALE * zoom, width: Math.max(12, (clip.end - clip.start) * TIMELINE_SCALE * zoom) }} onPointerDown={(event) => { const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio", clip.id, clip.start, clip.end, selection); }}><button type="button" className="timeline-clip-start-handle" aria-label={`Move ${clip.name} start`} title="Drag to change start time" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio-start", clip.id, clip.start, clip.end, selection); }} /><button type="button" className="timeline-clip-end-handle" aria-label={`Move ${clip.name} end`} title="Drag to change end time" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio-end", clip.id, clip.start, clip.end, selection); }} /><AudioWaveform url={audioUrls[clip.id]} onDuration={(value) => applyDecodedAudioDuration(clip.id, value)} onProfile={onAudioWaveformProfile ? (measurement) => onAudioWaveformProfile(clip.id, measurement) : undefined} /><span><IconSound /> {clip.name}</span></div>)}
                 <i className="timeline-playhead" style={{ left: currentTime * TIMELINE_SCALE * zoom }} />
                 </div>
               </div>
@@ -4183,7 +4197,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                   : {}),
               });
             }} /></div>
-            <div className="editor-animation-field"><span>Face / secondary animation</span><AnimationPicker ariaLabel="Face or secondary animation" value={selectedAnimationClip.clip.faceAnimation ?? ""} options={[{ value: "", label: "Layer default / none" }, ...(metas[selectedAnimationClip.layer.id]?.animations ?? []).map((animation) => ({ value: animation, label: animation }))]} onChange={(faceAnimation) => updateAnimationClip(selectedAnimationClip.layer.id, selectedAnimationClip.clip.id, { faceAnimation })} /></div>
+            <div className="editor-animation-field"><span>Face / secondary animation</span><AnimationPicker ariaLabel="Face or secondary animation" value={selectedAnimationClip.clip.faceAnimation === undefined ? LAYER_DEFAULT_FACE_ANIMATION : selectedAnimationClip.clip.faceAnimation} options={[{ value: LAYER_DEFAULT_FACE_ANIMATION, label: "Layer default" }, { value: "", label: "None" }, ...(metas[selectedAnimationClip.layer.id]?.animations ?? []).map((animation) => ({ value: animation, label: animation }))]} onChange={(value) => updateAnimationClip(selectedAnimationClip.layer.id, selectedAnimationClip.clip.id, { faceAnimation: value === LAYER_DEFAULT_FACE_ANIMATION ? undefined : value })} /></div>
             <div className="editor-two-fields"><NumberField label="Start" value={Number(selectedAnimationClip.clip.start.toFixed(3))} min={0} step={0.001} precision={3} unit="s" onCommit={(value) => moveAnimationClipTo(selectedAnimationClip.layer.id, selectedAnimationClip.clip.id, value)} /><NumberField label="End" value={Number(animationClipEnd(selectedAnimationClip.clip, animationDurations[`${selectedAnimationClip.layer.id}:${selectedAnimationClip.clip.animation}`] ?? 0).toFixed(3))} min={selectedAnimationClip.clip.start + 0.01} step={0.001} precision={3} unit="s" onCommit={(value) => updateAnimationClip(selectedAnimationClip.layer.id, selectedAnimationClip.clip.id, { endMode: "manual", end: Math.max(selectedAnimationClip.clip.start + 0.01, value) })} /></div>
             <label><span className="timeline-inline-check"><input type="checkbox" checked={selectedAnimationClip.clip.endMode !== "manual"} onChange={(event) => {
               const duration = animationDurations[`${selectedAnimationClip.layer.id}:${selectedAnimationClip.clip.animation}`] ?? 0;

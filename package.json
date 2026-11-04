@@ -21,7 +21,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "profile:wasm-candidates": "bun scripts/profile-wasm-candidates.ts",
-    "profile:timeline-waveforms": "bun --cwd=apps/editor run dev -- --host 127.0.0.1"
+    "profile:timeline-waveforms": "bun --cwd=apps/editor run dev -- --host 127.0.0.1",
+    "profile:editor-waveforms": "bun --cwd=apps/editor/desktop run dev -- --mcp --profile-waveforms"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",

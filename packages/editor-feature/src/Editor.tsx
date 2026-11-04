@@ -53,8 +53,12 @@ import { confirmProjectReplacement } from "./projectReplacement";
 import { isCommandPaletteShortcut, isTextEditingTarget } from "./editorKeyboard";
 import "./validationIssues.css";
 import type { EditorMcpCommand, EditorMcpState, EditorMcpTimelineBridge, EditorMcpTimelineSnapshot } from "./editorMcp";
+import { WaveformProfileRecorder } from "./waveformProfileDiagnostics";
+import type { AudioWaveformMeasurement } from "./AudioWaveform";
 import { DEFAULT_EDITOR_LAYOUT_PREFERENCES, EDITOR_LAYOUT_PREFERENCES_KEY, normalizeEditorLayoutPreferences, type WorkspaceLayoutPreset } from "./editorLayout";
 import { IconAlert, IconCheck, IconChevronDown, IconClose, IconEye, IconExpand, IconFile, IconFolder, IconHand, IconHelp, IconMenu, IconMessage, IconMore, IconPause, IconPlay, IconPlus, IconSave, IconSearch, IconSliders, IconSound, IconTarget } from "@ba-spine/app-ui/icons";
+
+declare const __EDITOR_WAVEFORM_PROFILE__: boolean;
 
 function displayName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
@@ -449,6 +453,8 @@ export function Editor() {
   const [pendingAudioPaths, setPendingAudioPaths] = useState<string[] | null>(null);
   const recentFilesRef = useRef<RecentFile[]>(recentFiles);
   const [mcpEnabled, setMcpEnabled] = useState(false);
+  const [waveformProfileRecording, setWaveformProfileRecording] = useState(false);
+  const waveformProfileRef = useRef<WaveformProfileRecorder | null>(null);
   const mcpEnabledRef = useRef(false);
   const mcpCommandRef = useRef<(command: EditorMcpCommand) => Promise<unknown>>(async () => { throw new Error("The editor MCP bridge is not ready."); });
   const mcpTimelineRef = useRef<EditorMcpTimelineBridge | null>(null);
@@ -485,13 +491,18 @@ export function Editor() {
     viewport: { width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio || 1 },
     runtimeErrors: [...mcpRuntimeErrorsRef.current],
     timeline: mcpTimelineSnapshotRef.current,
+    waveformProfile: __EDITOR_WAVEFORM_PROFILE__ ? waveformProfileRef.current?.snapshot(performance.now()) ?? null : null,
   };
 
   function refreshMcpSnapshot(): EditorMcpState | null {
     const current = mcpSnapshotRef.current;
     if (!current) return null;
     const timeline = mcpTimelineRef.current?.snapshot() ?? mcpTimelineSnapshotRef.current;
-    const next = { ...current, timeline };
+    const next = {
+      ...current,
+      timeline,
+      waveformProfile: __EDITOR_WAVEFORM_PROFILE__ ? waveformProfileRef.current?.snapshot(performance.now()) ?? null : null,
+    };
     mcpTimelineSnapshotRef.current = timeline;
     mcpSnapshotRef.current = next;
     return next;
@@ -551,6 +562,41 @@ export function Editor() {
     const heartbeat = window.setInterval(publishMcpSnapshot, 1000);
     return () => window.clearInterval(heartbeat);
   }, [mcpEnabled]);
+
+  useEffect(() => {
+    if (!__EDITOR_WAVEFORM_PROFILE__ || !waveformProfileRecording) return;
+    const recorder = waveformProfileRef.current;
+    if (!recorder?.recording) return;
+    let previousFrame: number | null = null;
+    let frameRequest = 0;
+    let observer: PerformanceObserver | null = null;
+    const onVisibilityChange = () => recorder.recordVisibility(document.visibilityState === "visible");
+    const sampleFrame = (timestamp: number) => {
+      if (!recorder.recording) return;
+      if (previousFrame !== null) recorder.recordFrameGap(timestamp - previousFrame);
+      previousFrame = timestamp;
+      frameRequest = window.requestAnimationFrame(sampleFrame);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    if (typeof PerformanceObserver !== "undefined") {
+      try {
+        const longTaskObserver = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) recorder.recordLongTask(entry.duration);
+        });
+        observer = longTaskObserver;
+        longTaskObserver.observe({ entryTypes: ["longtask"] });
+      } catch {
+        observer?.disconnect();
+        observer = null;
+      }
+    }
+    frameRequest = window.requestAnimationFrame(sampleFrame);
+    return () => {
+      window.cancelAnimationFrame(frameRequest);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      observer?.disconnect();
+    };
+  }, [waveformProfileRecording]);
 
   useEffect(() => {
     publishMcpSnapshot();
@@ -1381,6 +1427,22 @@ export function Editor() {
 
   mcpCommandRef.current = async (command) => {
     switch (command.name) {
+      case "start_waveform_profile": {
+        if (!__EDITOR_WAVEFORM_PROFILE__) throw new Error("Waveform profiling is not enabled in this Editor build.");
+        if (waveformProfileRef.current?.recording) throw new Error("A waveform profile is already recording; stop it before starting another.");
+        const recorder = new WaveformProfileRecorder(performance.now(), new Date().toISOString(), document.visibilityState === "visible");
+        waveformProfileRef.current = recorder;
+        setWaveformProfileRecording(true);
+        return { startedAt: recorder.startedAt, visibleAtStart: recorder.visibleAtStart };
+      }
+      case "stop_waveform_profile": {
+        if (!__EDITOR_WAVEFORM_PROFILE__) throw new Error("Waveform profiling is not enabled in this Editor build.");
+        const recorder = waveformProfileRef.current;
+        if (!recorder) throw new Error("Start a waveform profile before stopping it.");
+        recorder.stop(performance.now());
+        setWaveformProfileRecording(false);
+        return recorder.snapshot(performance.now());
+      }
       case "open_asset_root": {
         if (saveStateRef.current === "dirty" || saveStateRef.current === "saving" || saveStateRef.current === "error") throw new Error("Save the current project before opening another asset root.");
         const next = await chooseDesktopSourceAt(command.rootPath);
@@ -2116,7 +2178,7 @@ export function Editor() {
           </section>}
         </aside>
       </main>
-      {workspace !== "interaction" && assetLoaded && <TimelineWorkspace mode={workspace} onWorkspaceChange={setWorkspace} source={source} directory={directory} directories={directories} directoryLabels={directoryLabels} directoryInfo={directoryInfo} project={project} initialHandoff={initialTimelineHandoff} initialSubtitlePath={pendingSubtitlePath} onSubtitleOpened={() => setPendingSubtitlePath(null)} initialAudioPaths={pendingAudioPaths} onAudioOpened={() => setPendingAudioPaths(null)} onRecentFile={recordRecentFile} onMutate={mutate} onLive={live} onBeginEdit={beginTimelineEdit} onBeginCameraEdit={beginCameraEdit} onEndCameraEdit={endCameraEdit} onCancelCameraEdit={cancelCameraEdit} onSave={() => saveProject()} onRegisterSave={(callback) => { timelineSaveRef.current = callback; }} onStatus={setStatus} onError={setError} onRegisterMcp={registerMcpTimeline} onMcpSnapshot={publishTimelineMcpSnapshot} />}
+      {workspace !== "interaction" && assetLoaded && <TimelineWorkspace mode={workspace} onWorkspaceChange={setWorkspace} source={source} directory={directory} directories={directories} directoryLabels={directoryLabels} directoryInfo={directoryInfo} project={project} initialHandoff={initialTimelineHandoff} initialSubtitlePath={pendingSubtitlePath} onSubtitleOpened={() => setPendingSubtitlePath(null)} initialAudioPaths={pendingAudioPaths} onAudioOpened={() => setPendingAudioPaths(null)} onRecentFile={recordRecentFile} onMutate={mutate} onLive={live} onBeginEdit={beginTimelineEdit} onBeginCameraEdit={beginCameraEdit} onEndCameraEdit={endCameraEdit} onCancelCameraEdit={cancelCameraEdit} onSave={() => saveProject()} onRegisterSave={(callback) => { timelineSaveRef.current = callback; }} onStatus={setStatus} onError={setError} onRegisterMcp={registerMcpTimeline} onMcpSnapshot={publishTimelineMcpSnapshot} onAudioWaveformProfile={__EDITOR_WAVEFORM_PROFILE__ ? (clipId: string, measurement: AudioWaveformMeasurement) => waveformProfileRef.current?.recordStage(clipId, measurement) : undefined} />}
       <footer className="editor-statusbar">
         <span className={error ? "editor-error" : ""}>{error ?? status}</span>
         <span>{directory ? `${displayName(directory)} · ${files?.size ?? 0} files` : "No asset loaded"} · {testing ? "TEST MODE" : workspace === "camera" ? "CAMERA" : workspace === "timeline" ? "TIMELINE" : "EDIT MODE"}</span>

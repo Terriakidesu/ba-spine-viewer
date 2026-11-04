@@ -312,8 +312,12 @@ async function auditPortableRootLauncher(path: string): Promise<string[]> {
   return [];
 }
 
-/** Audit the relocatable two-app Windows suite without accepting authored assets in its data placeholder. */
-export async function auditPortableSuiteDirectory(root: string, forbiddenPaths: readonly string[] = []): Promise<string[]> {
+/** Audit the relocatable Windows suite, requiring a clean data placeholder unless existing user data is allowed. */
+export async function auditPortableSuiteDirectory(
+  root: string,
+  forbiddenPaths: readonly string[] = [],
+  options: { allowUserData?: boolean } = {},
+): Promise<string[]> {
   const absoluteRoot = resolve(root);
   const issues: string[] = [];
   let suite;
@@ -327,7 +331,7 @@ export async function auditPortableSuiteDirectory(root: string, forbiddenPaths: 
     const dataInfo = await lstat(dataRoot);
     if (!dataInfo.isDirectory() || dataInfo.isSymbolicLink()) {
       issues.push("data/: portable data placeholder must be a regular directory.");
-    } else {
+    } else if (!options.allowUserData) {
       const entries = await readdir(dataRoot, { withFileTypes: true });
       if (entries.length !== 1 || entries[0]?.name !== "README.txt" || !entries[0].isFile()) {
         issues.push("data/: portable package must contain only its README placeholder, not user assets.");

@@ -50,7 +50,9 @@ declare module "electrobun/main" {
     activate(): void;
     isMinimized(): boolean;
     isMaximized(): boolean;
+    isFullScreen(): boolean;
     maximize(): void;
+    setFullScreen(fullScreen: boolean): void;
     getFrame(): WindowFrame;
     setSize(width: number, height: number): void;
     on(name: string, handler: (event: { data: unknown }) => void): void;

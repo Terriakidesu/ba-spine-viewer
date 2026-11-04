@@ -201,6 +201,24 @@ server.registerTool("editor_state", {
   catch (value) { return failed(value); }
 });
 
+server.registerTool("editor_start_waveform_profile", {
+  title: "Start Editor waveform profile",
+  description: "Start bounded in-memory waveform stage, animation-frame, and long-task diagnostics. Available only in a development Editor explicitly built with --profile-waveforms. No project files are written and measurements stay on the authenticated loopback MCP state.",
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+}, async () => {
+  try { return result(await sendCommand({ name: "start_waveform_profile" })); }
+  catch (value) { return failed(value); }
+});
+
+server.registerTool("editor_stop_waveform_profile", {
+  title: "Stop Editor waveform profile",
+  description: "Stop the active in-memory waveform profile and return its current measurements through Editor MCP state. Does not save project files.",
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+}, async () => {
+  try { return result(await sendCommand({ name: "stop_waveform_profile" })); }
+  catch (value) { return failed(value); }
+});
+
 server.registerTool("editor_open_asset_root", {
   title: "Open asset root",
   description: "Load a local Spine asset root by its absolute path. Refuses to switch away from an unsaved project. Does not write to the root.",

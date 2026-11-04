@@ -15,7 +15,7 @@ export function AudioWaveform({
 }: {
   url?: string;
   onDuration?: (duration: number) => void;
-  /** Optional in-memory diagnostics used by the development-only waveform fixture. */
+  /** Optional in-memory diagnostics; wired only into explicit development profiling builds. */
   onProfile?: (measurement: AudioWaveformMeasurement) => void;
 }) {
   const [peaks, setPeaks] = useState<number[]>([]);

@@ -9,6 +9,7 @@ artifacts/
 **/.hutch/
 coverage/
 .cache/
+**/.cottontail-tmp/
 .recovery/
 .playwright-mcp/
 *.log

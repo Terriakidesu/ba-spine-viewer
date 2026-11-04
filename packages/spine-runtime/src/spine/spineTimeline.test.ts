@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { timelineIdleAnimation, timelineTalkIdleStart, timelineTalkInProgress } from "./spineTimeline";
+import { timelineFaceAnimation, timelineIdleAnimation, timelineTalkIdleStart, timelineTalkInProgress } from "./spineTimeline";
 
 test("idle playback selects Idle_XX, never the opening or talk animation", () => {
   expect(timelineIdleAnimation({ idleAnimation: "Idle_01", animations: ["Start_Idle_01", "Idle_01", "Talk_01_M"] })).toBe("Idle_01");
@@ -13,6 +13,14 @@ test("a missing idle never falls through to the first interaction animation", ()
   expect(timelineLayerAnimation(layer({ animation: "" }), metaWithoutIdle, undefined, 0, "opening", "direct", 0)).toBe("");
   expect(timelineMainAnimation(layer({ animation: "" }), metaWithoutIdle, 0, "opening", "direct", 0, 0).animation).toBe("");
   expect(timelineLayerAnimation(layer({ animation: "LookEnd_01_M" }), metaWithoutIdle, undefined, 0, "opening", "direct", 0)).toBe("LookEnd_01_M");
+});
+
+test("a clip can inherit the layer face animation or explicitly disable it", () => {
+  const configuredLayer = layer({ faceAnimation: "LookEnd_01_M" });
+  expect(timelineFaceAnimation(configuredLayer)).toBe("LookEnd_01_M");
+  expect(timelineFaceAnimation(configuredLayer, {})).toBe("LookEnd_01_M");
+  expect(timelineFaceAnimation(configuredLayer, { faceAnimation: "" })).toBe("");
+  expect(timelineFaceAnimation(configuredLayer, { faceAnimation: "LookEnd_01_A" })).toBe("LookEnd_01_A");
 });
 import { advanceSpineTimeline, normalizeSpineTimeline, timelineActiveAnimationClip, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAnimationNeedsIdleUnderlay, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineForSequence, timelineLayerAnimation, timelineLayerPlaybackEnd, timelineLayerSampleTime, timelineMainAnimation, timelineOpeningDuration, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineSequenceIds, timelineTalkSequenceIds, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer } from "./spineTimeline";
 

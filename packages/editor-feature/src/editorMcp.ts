@@ -1,4 +1,5 @@
 import { STAGE_VIEW_MAX_SCALE, STAGE_VIEW_MIN_SCALE } from "./stageView";
+import type { EditorWaveformProfileSnapshot } from "./waveformProfileDiagnostics";
 
 export type EditorMcpBlendMode = "normal" | "multiply" | "screen" | "additive";
 export type EditorMcpPreviewCaptureMode = "composition" | "viewport";
@@ -91,6 +92,7 @@ export interface EditorMcpState {
   viewport: { width: number; height: number; devicePixelRatio: number };
   runtimeErrors: Array<{ time: string; message: string }>;
   timeline: EditorMcpTimelineSnapshot | null;
+  waveformProfile?: EditorWaveformProfileSnapshot | null;
 }
 
 export type EditorMcpColorClipPreset = "solid" | "fade-from-black" | "fade-to-black" | "white-flash";
@@ -114,7 +116,9 @@ export type EditorMcpCommand =
   | { name: "update_color_layer"; layerId: string; patch: { name?: string; enabled?: boolean; locked?: boolean; opacity?: number; blendMode?: EditorMcpBlendMode } }
   | { name: "update_color_clip"; clipId: string; patch: { name?: string; color?: string; start?: number; end?: number; opacity?: number; fadeIn?: number; fadeOut?: number; enabled?: boolean } }
   | { name: "save" }
-  | { name: "capture_preview"; mode?: EditorMcpPreviewCaptureMode };
+  | { name: "capture_preview"; mode?: EditorMcpPreviewCaptureMode }
+  | { name: "start_waveform_profile" }
+  | { name: "stop_waveform_profile" };
 
 export interface EditorMcpTimelineBridge {
   snapshot: () => EditorMcpTimelineSnapshot | null;
@@ -280,6 +284,10 @@ export function normalizeEditorMcpCommand(value: unknown): EditorMcpCommand {
     case "capture_preview":
       if (!onlyKeys(value, ["name", "mode"]) || (value.mode !== undefined && value.mode !== "composition" && value.mode !== "viewport")) throw new Error("mode must be composition or viewport.");
       return { name: value.name, ...(value.mode === undefined ? {} : { mode: value.mode }) };
+    case "start_waveform_profile":
+    case "stop_waveform_profile":
+      if (!onlyKeys(value, ["name"])) throw new Error(`Unexpected ${value.name} fields.`);
+      return { name: value.name };
     default:
       throw new Error(`Unsupported editor MCP command: ${value.name}`);
   }

@@ -93,6 +93,7 @@ describe("release artifact audit", () => {
     expect(await auditPortableSuiteDirectory(root)).toEqual([]);
     await writeFile(join(root, "data", "catalog.json"), "{}");
     expect(await auditPortableSuiteDirectory(root)).toContain("data/: portable package must contain only its README placeholder, not user assets.");
+    expect(await auditPortableSuiteDirectory(root, [], { allowUserData: true })).toEqual([]);
   });
 
   test("accepts a package without library data or workspace markers", async () => {

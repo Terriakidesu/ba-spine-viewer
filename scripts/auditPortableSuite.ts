@@ -14,6 +14,8 @@ const archives = entries
   .sort((left, right) => right.localeCompare(left));
 if (!archives.length) throw new Error(`No portable suite ZIP was found in ${outputRoot}.`);
 const archive = join(outputRoot, archives[0]!);
+const extractedDirectoryName = archives[0]!.slice(0, -".zip".length);
+const extractedDirectory = join(outputRoot, extractedDirectoryName);
 const checksumPath = `${archive}.sha256`;
 const checksum = (await readFile(checksumPath, "utf8")).trim();
 const expected = /^([a-f0-9]{64})  (.+)$/.exec(checksum);
@@ -21,6 +23,16 @@ if (!expected || expected[2] !== archives[0]) throw new Error("Portable suite ch
 const hash = createHash("sha256");
 for await (const chunk of createReadStream(archive)) hash.update(chunk);
 if (hash.digest("hex") !== expected[1]) throw new Error("Portable suite ZIP does not match its SHA-256 checksum.");
+
+const packageManifest = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8")) as { version?: unknown };
+const extractedManifest = JSON.parse(await readFile(join(extractedDirectory, "suite.json"), "utf8")) as { suiteVersion?: unknown };
+if (extractedManifest.suiteVersion !== packageManifest.version) throw new Error("Extracted portable suite version is incompatible with the current source version.");
+const forbiddenPaths = [repositoryRoot, join(repositoryRoot, "data", "catalog.json")];
+const extractedIssues = await auditPortableSuiteDirectory(extractedDirectory, forbiddenPaths, { allowUserData: true });
+if (extractedIssues.length) {
+  for (const issue of extractedIssues) console.error(`[portable-audit] extracted folder: ${issue}`);
+  process.exitCode = 1;
+}
 
 const temporaryRoot = await mkdtemp(join(tmpdir(), "ba-spine-portable-audit-"));
 try {
@@ -40,16 +52,14 @@ try {
 
   const extract = Bun.spawn(["tar", "-xf", archive, "-C", temporaryRoot], { stdout: "inherit", stderr: "inherit" });
   if (await extract.exited !== 0) throw new Error("Portable suite ZIP extraction failed.");
-  const packageManifest = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8")) as { version?: unknown };
   const manifest = JSON.parse(await readFile(join(temporaryRoot, "suite.json"), "utf8")) as { suiteVersion?: unknown };
   if (manifest.suiteVersion !== packageManifest.version) throw new Error("Portable suite version is incompatible with the current source version.");
-  const forbiddenPaths = [repositoryRoot, join(repositoryRoot, "data", "catalog.json")];
   const issues = await auditPortableSuiteDirectory(temporaryRoot, forbiddenPaths);
   if (issues.length) {
     for (const issue of issues) console.error(`[portable-audit] ${issue}`);
     process.exitCode = 1;
-  } else {
-    console.log(`[portable-audit] ${archives[0]} passed manifest, bundle, asset-separation, and path audits.`);
+  } else if (!extractedIssues.length) {
+    console.log(`[portable-audit] ${archives[0]} and ${extractedDirectoryName} passed manifest, bundle, asset-separation, and path audits.`);
   }
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });

@@ -71,6 +71,20 @@ export function cameraAspectValue(value: SpineCameraAspectRatio): number {
   return ASPECTS[value];
 }
 
+/** Change output ratio while retaining each authored shot's world-space width and center. */
+export function changeSpineCameraAspectRatio(track: SpineCameraTrack, aspectRatio: SpineCameraAspectRatio): SpineCameraTrack {
+  if (track.aspectRatio === aspectRatio) return track;
+  const widthScale = cameraAspectValue(track.aspectRatio) / cameraAspectValue(aspectRatio);
+  return {
+    ...track,
+    aspectRatio,
+    keyframes: track.keyframes.map((keyframe) => ({
+      ...keyframe,
+      frameHeight: keyframe.frameHeight * widthScale,
+    })),
+  };
+}
+
 /** Convert a drag on the preview canvas into a fixed scene-space camera region. */
 export function spineCameraBoundFromCanvasDrag(
   id: string,

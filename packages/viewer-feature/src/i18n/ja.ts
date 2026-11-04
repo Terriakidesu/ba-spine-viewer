@@ -468,6 +468,7 @@ export const ja: Record<keyof typeof en, string> = {
   "spine.camera.overrideHint": "現在のカメラモードでは保存済みショットは使われません。エディターのフレーミングを使うには「編集カメラ」を選択してください。",
   "spine.camera.game": "ゲームカメラ",
   "spine.camera.fit": "全体を表示",
+  "spine.camera.fitBoundary": "カメラ枠に合わせる",
   "spine.camera.fill": "画面いっぱいに表示",
   "spine.aspectRatio": "出力",
   "spine.aspectRatioAria": "出力アスペクト比",

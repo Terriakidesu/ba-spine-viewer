@@ -455,7 +455,57 @@ describe("Spine scene framing", () => {
     expect(camera.position.y).toBeCloseTo(expected.y);
   });
 
-  test("only interaction mode locks the camera to the authored game view", () => {
+  test("interaction mode can fit the authored camera boundary without cropping", () => {
+    const bounds = { x: -120, y: 20, width: 240, height: 420 };
+    const viewport = { x: -500, y: -300, width: 1000, height: 562.5 };
+    const camera = { viewportWidth: 800, viewportHeight: 600, position: { x: 0, y: 0 }, zoom: 1, update() {} };
+    const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
+      destroyed: false,
+      pendingFit: true,
+      pendingCameraPose: null,
+      cameraMode: "fit",
+      interactionMode: "interaction",
+      fitCameraPose: null,
+      authoredCameraFrame: null,
+      bundle: { bounds, viewport, artworkBounds: bounds, meta: { hasGameCamera: true } },
+      canvas: { width: 800, height: 600 },
+      renderer: { camera, resize() {} },
+    });
+
+    renderer.resize();
+
+    const expected = fitScene(viewport, 800, 600);
+    expect(camera.position.x).toBeCloseTo(expected.x);
+    expect(camera.position.y).toBeCloseTo(expected.y);
+    expect(camera.zoom).toBeCloseTo(expected.zoom);
+  });
+
+  test("the same fit mode uses skeleton bounds instead of the boundary in playback", () => {
+    const bounds = { x: -120, y: 20, width: 240, height: 420 };
+    const viewport = { x: -500, y: -300, width: 1000, height: 562.5 };
+    const camera = { viewportWidth: 800, viewportHeight: 600, position: { x: 0, y: 0 }, zoom: 1, update() {} };
+    const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
+      destroyed: false,
+      pendingFit: true,
+      pendingCameraPose: null,
+      cameraMode: "fit",
+      interactionMode: "free",
+      fitCameraPose: null,
+      authoredCameraFrame: null,
+      bundle: { bounds, viewport, artworkBounds: bounds, meta: { hasGameCamera: true } },
+      canvas: { width: 800, height: 600 },
+      renderer: { camera, resize() {} },
+    });
+
+    renderer.resize();
+
+    const expected = fitScene(bounds, 800, 600);
+    expect(camera.position.x).toBeCloseTo(expected.x);
+    expect(camera.position.y).toBeCloseTo(expected.y);
+    expect(camera.zoom).toBeCloseTo(expected.zoom);
+  });
+
+  test("playback fit remains the free skeleton fit and interaction-only fill is rejected", () => {
     const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
       cameraMode: "game",
       interactionMode: "free",
@@ -465,6 +515,9 @@ describe("Spine scene framing", () => {
     renderer.setCameraMode("fit");
     expect(state.cameraMode).toBe("fit");
     state.interactionMode = "interaction";
+    state.cameraMode = "game";
+    renderer.setCameraMode("fit");
+    expect(state.cameraMode).toBe("fit");
     renderer.setCameraMode("fill");
     expect(state.cameraMode).toBe("fit");
   });

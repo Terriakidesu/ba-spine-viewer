@@ -57,6 +57,17 @@ function launchPlanFor(app: "viewer" | "editor") {
   });
 }
 let window: BrowserWindow | null = null;
+let viewerMenuFullscreen: boolean | null = null;
+
+function syncViewerApplicationMenu(fullScreen: boolean) {
+  if (viewerMenuFullscreen === fullScreen) return;
+  viewerMenuFullscreen = fullScreen;
+  ApplicationMenu.setApplicationMenu(fullScreen ? [] : [
+    { label: "BA Spine Viewer", submenu: [{ role: "quit" }] },
+    { label: "Edit", submenu: [{ role: "copy" }, { role: "paste" }, { role: "selectAll" }] },
+  ]);
+}
+
 const companionInbox = new CompanionInbox("viewer", undefined, () => {
   const current = window;
   if (!current) return;
@@ -308,6 +319,18 @@ function contentType(path: string): string {
 async function api(request: Request, url: URL): Promise<Response> {
   try {
     if (url.pathname === "/__spine/root") return json({ rootPath: assetRoot });
+    if (url.pathname === "/__spine/window/fullscreen" && request.method === "GET") {
+      return json({ fullScreen: window?.isFullScreen() ?? false });
+    }
+    if (url.pathname === "/__spine/window/fullscreen" && request.method === "POST") {
+      const body = await request.json() as { fullScreen?: unknown };
+      if (typeof body.fullScreen !== "boolean") return errorResponse("A fullscreen state is required.");
+      const nativeWindow = window;
+      if (!nativeWindow) return errorResponse("The Viewer window is unavailable.", 503);
+      nativeWindow.setFullScreen(body.fullScreen);
+      syncViewerApplicationMenu(body.fullScreen);
+      return json({ fullScreen: body.fullScreen });
+    }
     if (url.pathname === "/__spine/companion/pending" && request.method === "GET") return json({ messages: companionInbox.pending() });
     if (url.pathname === "/__spine/companion/ack" && request.method === "POST") {
       const body = await request.json() as { requestIds?: unknown };
@@ -512,12 +535,9 @@ const applyNativeMinimum = () => {
 applyNativeMinimum();
 nativeWindow.on("move", applyNativeMinimum);
 nativeWindow.on("resize", applyNativeMinimum);
+nativeWindow.on("resize", () => syncViewerApplicationMenu(nativeWindow.isFullScreen()));
 if (restoredWindowState?.maximized) nativeWindow.maximize();
+syncViewerApplicationMenu(nativeWindow.isFullScreen());
 startDesktopWindowStatePersistence(nativeWindow, viewerWindowStatePath, connectedDisplays, (error) => console.warn("[ba-spine-viewer] could not save window state", error));
-
-ApplicationMenu.setApplicationMenu([
-  { label: "BA Spine Viewer", submenu: [{ role: "quit" }] },
-  { label: "Edit", submenu: [{ role: "copy" }, { role: "paste" }, { role: "selectAll" }] },
-]);
 
 void window;

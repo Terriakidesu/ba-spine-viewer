@@ -484,6 +484,7 @@ export const en = {
   "spine.camera.overrideHint": "This camera mode overrides saved shots. Choose Authored camera to use Editor framing.",
   "spine.camera.game": "Game camera",
   "spine.camera.fit": "Fit skeleton",
+  "spine.camera.fitBoundary": "Fit camera boundary",
   "spine.camera.fill": "Fill viewport",
   "spine.aspectRatio": "Output",
   "spine.aspectRatioAria": "Output aspect ratio",
