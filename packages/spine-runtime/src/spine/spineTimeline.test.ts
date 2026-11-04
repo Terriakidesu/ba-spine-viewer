@@ -265,6 +265,8 @@ test("visual reordering never changes the original Spine reference camera layer"
   };
   expect(timelineVisualLayers(timeline).map(({ layer }) => layer.id)).toEqual(["character", "background"]);
   expect(timelineReferenceLayerId(timeline)).toBe("character");
+  expect(timelineReferenceLayerId({ ...timeline, camera: { referenceLayerId: "background" } as SpineTimeline["camera"] })).toBe("background");
+  expect(timelineReferenceLayerId({ ...timeline, camera: { referenceLayerId: "missing" } as SpineTimeline["camera"] })).toBe("character");
   const reordered = { layers: timeline.layers.map((layer) => layer.id === "character" ? { ...layer, order: 5 } : { ...layer, order: 0 }) };
   expect(timelineVisualLayers(reordered).map(({ layer }) => layer.id)).toEqual(["background", "character"]);
   expect(timelineReferenceLayerId(reordered)).toBe("character");

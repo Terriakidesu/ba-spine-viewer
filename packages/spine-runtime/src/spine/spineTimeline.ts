@@ -153,7 +153,9 @@ export function timelineVisualLayers(timeline: Pick<SpineTimeline, "layers"> & {
 }
 
 /** Keep camera-reference choice independent of compositing order changes. */
-export function timelineReferenceLayerId(timeline: Pick<SpineTimeline, "layers">): string {
+export function timelineReferenceLayerId(timeline: Pick<SpineTimeline, "layers"> & { camera?: SpineTimeline["camera"] }): string {
+  const authoredReference = timeline.camera?.referenceLayerId;
+  if (authoredReference && timeline.layers.some((layer) => layer.id === authoredReference)) return authoredReference;
   return timeline.layers.find((layer) => layer.role === "character")?.id ?? timeline.layers[0]?.id ?? "";
 }
 

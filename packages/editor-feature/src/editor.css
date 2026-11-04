@@ -553,6 +553,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--editor-cy
 .timeline-visual-composition { position: absolute; inset: 0; overflow: hidden; isolation: isolate; pointer-events: none; }
 .timeline-color-layer { position: absolute; inset: 0; pointer-events: none; }
 .timeline-stage-controls { position: absolute; top: 8px; right: 8px; z-index: 30; display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid #ffffff2e; border-radius: 5px; background: #08121bcc; box-shadow: 0 4px 14px #0006; pointer-events: auto; }
+.timeline-camera-view-toggle { display: flex; align-items: center; gap: 2px; padding: 2px; border-radius: 4px; background: #ffffff0d; }
 .timeline-stage-controls .editor-icon-button { width: 27px; height: 27px; min-height: 27px; padding: 0; font-size: 15px; line-height: 1; }
 .timeline-stage-controls .editor-button { min-height: 27px; padding: 4px 7px; font-size: 9px; }
 .timeline-stage-scale { min-width: 40px; color: var(--editor-text); font: 10px ui-monospace, monospace; text-align: center; }
@@ -621,9 +622,18 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--editor-cy
 /* Authored camera track and the scene-space viewport gizmo. */
 .timeline-camera-overlay { position: absolute; z-index: 6; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .timeline-camera-overlay.is-drawing { cursor: crosshair; }
+.timeline-camera-overlay.is-output-preview .timeline-camera-bound { pointer-events: none; }
 .timeline-camera-draw-surface { fill: transparent; pointer-events: all; }
-.timeline-camera-bound { fill: #ffcc3310; stroke: #ffd36f99; stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+.timeline-camera-bound { fill: #ffcc3310; stroke: #ffd36f99; stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; pointer-events: all; cursor: move; }
 .timeline-camera-bound.is-active { fill: #ffd36f20; stroke: #ffd36f; stroke-width: 2; }
+.timeline-camera-bound.is-selected { fill: #39d6ff24; stroke: #60e2ff; stroke-width: 2.5; stroke-dasharray: none; }
+.timeline-camera-bound.is-disabled { fill: #a0aab00b; stroke: #a0aab077; stroke-dasharray: 3 5; }
+.timeline-camera-bound.is-disabled.is-selected { fill: #39d6ff20; stroke: #60e2ff; stroke-dasharray: none; }
+.timeline-camera-bound-handle { fill: #071723; stroke: #72e5ff; stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: all; cursor: nwse-resize; }
+.timeline-camera-bound-handle.is-n, .timeline-camera-bound-handle.is-s { cursor: ns-resize; }
+.timeline-camera-bound-handle.is-e, .timeline-camera-bound-handle.is-w { cursor: ew-resize; }
+.timeline-camera-bound-handle.is-ne, .timeline-camera-bound-handle.is-sw { cursor: nesw-resize; }
+.timeline-camera-preview-mask { fill: #07101d99; pointer-events: none; }
 .timeline-camera-bound-draft { fill: #46d9ff1a; stroke: #46d9ff; stroke-width: 2; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; pointer-events: none; }
 .timeline-camera-frame { fill: #ff33440c; stroke: #ff4559; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .timeline-camera-center { fill: #ff4559; stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
@@ -639,7 +649,9 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--editor-cy
 .timeline-camera-bounds > summary { margin-bottom: 6px; color: var(--editor-text); font-size: 10px; font-weight: 750; cursor: pointer; }
 .timeline-camera-bound-editor { display: grid; gap: 6px; min-width: 0; margin: 7px 0; padding: 7px; border: 1px solid var(--editor-line); border-radius: 4px; }
 .timeline-camera-bound-editor.is-active { border-color: #ffd36f; box-shadow: inset 2px 0 #ffd36f; }
+.timeline-camera-bound-editor.is-selected { border-color: #60e2ff; box-shadow: inset 2px 0 #60e2ff; }
 .timeline-camera-bound-editor legend { padding: 0 4px; color: #ffd36f; font-size: 9px; }
+.timeline-camera-bound-editor legend button { padding: 0; border: 0; color: inherit; background: transparent; font: inherit; font-weight: 750; cursor: pointer; }
 .timeline-camera-bound-heading { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .timeline-camera-bound-heading > input { flex: 1; min-width: 0; }
 .timeline-camera-bound-heading label { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }

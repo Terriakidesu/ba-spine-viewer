@@ -14,6 +14,7 @@ export interface SpineCameraSafeBound {
   width: number;
   height: number;
   enabled: boolean;
+  visible?: boolean;
   priority?: number;
 }
 
@@ -31,6 +32,8 @@ export interface SpineCameraTrack {
   enabled: boolean;
   aspectRatio: SpineCameraAspectRatio;
   constraint: SpineCameraConstraint;
+  /** Spine set whose stable world coordinates author this track's bounds and keys. */
+  referenceLayerId?: string;
   safeBounds: SpineCameraSafeBound[];
   keyframes: SpineCameraKeyframe[];
 }
@@ -46,6 +49,8 @@ export interface CameraCanvasPoint {
   x: number;
   y: number;
 }
+
+export type SpineCameraBoundResizeHandle = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
 
 export interface SolvedSpineCamera {
   pose: SpineCameraPose;
@@ -150,6 +155,7 @@ export function normalizeSpineCameraTrack(value: unknown, duration = Number.POSI
       width,
       height,
       enabled: bound.enabled !== false,
+      visible: bound.visible !== false,
       ...(typeof bound.priority === "number" && Number.isFinite(bound.priority) ? { priority: bound.priority } : {}),
     });
   }
@@ -183,6 +189,7 @@ export function normalizeSpineCameraTrack(value: unknown, duration = Number.POSI
     enabled: raw.enabled !== false,
     aspectRatio,
     constraint,
+    ...(typeof raw.referenceLayerId === "string" && raw.referenceLayerId.trim() ? { referenceLayerId: raw.referenceLayerId.trim() } : {}),
     safeBounds: bounds,
     keyframes: uniqueKeyframes,
   };
@@ -192,19 +199,27 @@ export interface SampledSpineCamera {
   centerX: number;
   centerY: number;
   frameHeight: number;
+  /** Authored world-space width, retained when the requested output ratio changes. */
+  frameWidth?: number;
   constraint: SpineCameraConstraint;
 }
 
 export function sampleSpineCameraTrack(track: SpineCameraTrack, time: number): SampledSpineCamera | null {
   if (!track.enabled || track.keyframes.length === 0 || !Number.isFinite(time)) return null;
+  const sampledKey = (keyframe: SpineCameraKeyframe): SampledSpineCamera => ({
+    centerX: keyframe.centerX,
+    centerY: keyframe.centerY,
+    frameHeight: keyframe.frameHeight,
+    frameWidth: keyframe.frameHeight * cameraAspectValue(track.aspectRatio),
+    constraint: keyframe.constraint ?? track.constraint,
+  });
   const keys = track.keyframes;
   if (time <= keys[0]!.time) {
-    const first = keys[0]!;
-    return { centerX: first.centerX, centerY: first.centerY, frameHeight: first.frameHeight, constraint: first.constraint ?? track.constraint };
+    return sampledKey(keys[0]!);
   }
   const last = keys.at(-1)!;
-  if (time >= last.time) return { centerX: last.centerX, centerY: last.centerY, frameHeight: last.frameHeight, constraint: last.constraint ?? track.constraint };
-  const index = keys.findIndex((key, keyIndex) => keyIndex < keys.length - 1 && time >= key.time && time <= keys[keyIndex + 1]!.time);
+  if (time >= last.time) return sampledKey(last);
+  const index = keys.findIndex((key, keyIndex) => keyIndex < keys.length - 1 && time >= key.time && time < keys[keyIndex + 1]!.time);
   const left = keys[Math.max(0, index)]!;
   const right = keys[Math.max(0, index) + 1]!;
   const span = Math.max(Number.EPSILON, right.time - left.time);
@@ -212,12 +227,42 @@ export function sampleSpineCameraTrack(track: SpineCameraTrack, time: number): S
   if (left.easing === "hold") amount = 0;
   else if (left.easing === "smooth") amount = amount * amount * (3 - 2 * amount);
   const lerp = (start: number, end: number) => start + (end - start) * amount;
+  const frameHeight = lerp(left.frameHeight, right.frameHeight);
   return {
     centerX: lerp(left.centerX, right.centerX),
     centerY: lerp(left.centerY, right.centerY),
-    frameHeight: lerp(left.frameHeight, right.frameHeight),
+    frameHeight,
+    frameWidth: frameHeight * cameraAspectValue(track.aspectRatio),
     constraint: left.constraint ?? track.constraint,
   };
+}
+
+/** Maximum output frame height that stays inside a world-space boundary. */
+export function cameraFrameHeightForBound(bound: Pick<SpineCameraSafeBound, "width" | "height">, aspectRatio: SpineCameraAspectRatio): number {
+  if (![bound.width, bound.height].every(Number.isFinite) || bound.width <= 0 || bound.height <= 0) return 0;
+  return Math.min(bound.height, bound.width / cameraAspectValue(aspectRatio));
+}
+
+export function moveSpineCameraBound(bound: SpineCameraSafeBound, deltaX: number, deltaY: number): SpineCameraSafeBound {
+  return { ...bound, x: bound.x + deltaX, y: bound.y + deltaY };
+}
+
+export function resizeSpineCameraBound(
+  bound: SpineCameraSafeBound,
+  handle: SpineCameraBoundResizeHandle,
+  point: CameraCanvasPoint,
+  minimumSize = 0.01,
+): SpineCameraSafeBound {
+  const min = Math.max(Number.EPSILON, Number.isFinite(minimumSize) ? minimumSize : 0.01);
+  let left = bound.x;
+  let right = bound.x + bound.width;
+  let bottom = bound.y;
+  let top = bound.y + bound.height;
+  if (handle.includes("w")) left = Math.min(point.x, right - min);
+  if (handle.includes("e")) right = Math.max(point.x, left + min);
+  if (handle.includes("n")) top = Math.max(point.y, bottom + min);
+  if (handle.includes("s")) bottom = Math.min(point.y, top - min);
+  return { ...bound, x: left, y: bottom, width: right - left, height: top - bottom };
 }
 
 function containsCenter(bound: SpineCameraSafeBound, x: number, y: number): boolean {
@@ -252,10 +297,11 @@ export function solveSpineCamera(
   currentBoundId: string | null = null,
 ): SolvedSpineCamera | null {
   if (![sampled.centerX, sampled.centerY, sampled.frameHeight, viewportWidth, viewportHeight].every(Number.isFinite)
+    || (sampled.frameWidth !== undefined && (!Number.isFinite(sampled.frameWidth) || sampled.frameWidth <= 0))
     || sampled.frameHeight <= 0 || viewportWidth <= 0 || viewportHeight <= 0) return null;
   const ratio = cameraAspectValue(track.aspectRatio);
-  const requestedHeight = sampled.frameHeight;
-  const requestedWidth = requestedHeight * ratio;
+  const requestedWidth = sampled.frameWidth ?? sampled.frameHeight * ratio;
+  const requestedHeight = requestedWidth / ratio;
   const frame: EvaluatedCameraFrame = { centerX: sampled.centerX, centerY: sampled.centerY, width: requestedWidth, height: requestedHeight };
   if (sampled.constraint.mode === "none") {
     return { pose: { x: frame.centerX, y: frame.centerY, zoom: frame.height / viewportHeight }, frame, activeBoundId: null, constrained: false, diagnostic: null };
