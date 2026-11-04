@@ -38,6 +38,8 @@
 .waveform-profile .waveform-profile-cancel { background: #3b3030; border-color: #9a7070; }
 
 .waveform-profile-fixture { max-width: 860px; margin: 24px 0; }
+.waveform-profile-fixture.is-timeline { width: min(1400px, 96vw); max-width: 1400px; height: min(78vh, 900px); min-height: 600px; overflow: hidden; border: 1px solid #36464d; }
+.waveform-profile-fixture.is-timeline .timeline-workspace { height: 100%; min-height: 0; padding: 0; }
 .waveform-profile-rows { display: grid; gap: 8px; }
 .waveform-profile-row {
   position: relative;

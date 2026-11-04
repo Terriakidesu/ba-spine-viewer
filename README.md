@@ -22,7 +22,7 @@ bun run dev:editor
 
 `bun run build` builds both native applications (Viewer, then Editor) and audits the packaged outputs—including compressed `.tar.zst` resources—for bundled `data/` directories, catalog paths, source-workspace references, and Windows launcher files/signatures. Archives are streamed and inspected without extraction. `bun run audit:release` reruns that audit; optionally provide OS-delimited `BA_SPINE_FORBIDDEN_PATHS` and `BA_SPINE_BUILD_LOGS` lists to check additional source paths and captured build logs.
 
-To profile the Editor's timeline waveform path with generated, in-memory audio, run `bun run profile:timeline-waveforms` and open `http://127.0.0.1:5173/?profile=waveforms`. The development-only fixture exercises the production waveform component without loading `data/` or using the desktop API; its synthetic WAV results are not a substitute for OGG/full-timeline profiling. Run it in a visible foreground window and do not infer production frame performance from backgrounded or low-sample runs.
+To profile the Editor's timeline waveform path with generated, in-memory audio, run `bun run profile:timeline-waveforms` and open `http://127.0.0.1:5173/?profile=waveforms`. The development-only fixture can mount the production `TimelineWorkspace` audio timeline/inspector (without Spine visual layers) or waveform components alone. It does not load `data/` or use the desktop API; the WAV results do not model OGG decode or the packaged runtime. Run it in a visible foreground window, and treat automation-browser frame/long-task outliers as inconclusive rather than production performance evidence.
 
 ## Packaged builds
 

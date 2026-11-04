@@ -1,5 +1,9 @@
-import { Profiler, useCallback, useRef, useState, type ProfilerOnRenderCallback } from "react";
+import { Profiler, useCallback, useEffect, useRef, useState, type ProfilerOnRenderCallback } from "react";
 import { AudioWaveform, type AudioWaveformMeasurement, type AudioWaveformStage } from "@ba-spine/editor-feature/AudioWaveform";
+import { TimelineWorkspace } from "@ba-spine/editor-feature/TimelineWorkspace";
+import { createProject, type EditorAudioClip, type EditorProject } from "@ba-spine/editor-feature/editorModel";
+import type { DesktopAssetSource } from "@ba-spine/editor-feature/desktopSource";
+import "@ba-spine/editor-feature/editor.css";
 import "./waveformProfile.css";
 
 const SAMPLE_RATE = 48_000;
@@ -42,11 +46,14 @@ interface Trial {
 
 interface Session {
   id: string;
+  surface: "component" | "timeline";
   clipCount: number;
   durationSeconds: number;
   repeatCount: number;
   fixtureBuildMs: number;
-  audioUrl: string;
+  audioUrl: string | null;
+  source: DesktopAssetSource;
+  project: EditorProject;
   trials: Array<Record<string, unknown>>;
   stageSamples: Array<{ trial: number; stage: AudioWaveformStage; durationMs: number }>;
   reactSamples: number[];
@@ -54,6 +61,17 @@ interface Session {
   longTaskDurationsMs: number[];
   elapsedMs: number[];
   frameAdequacy: boolean[];
+}
+
+interface ActiveRun {
+  id: string;
+  index: number;
+  sessionId: string;
+  surface: Session["surface"];
+  clipCount: number;
+  audioUrl: string | null;
+  source: DesktopAssetSource;
+  project: EditorProject;
 }
 
 function percentile(values: number[], fraction: number): number | null {
@@ -98,6 +116,46 @@ function syntheticPcmWav(durationSeconds: number): Blob {
   return new Blob([bytes], { type: "audio/wav" });
 }
 
+function syntheticTimelineProject(clipCount: number, durationSeconds: number): EditorProject {
+  const project = createProject("waveform-profile", [], []);
+  const audio: EditorAudioClip[] = Array.from({ length: clipCount }, (_, index) => ({
+    id: `profile-audio-${index + 1}`,
+    name: `Synthetic clip ${index + 1}.wav`,
+    path: "audio-profile.wav",
+    start: index * 0.05,
+    end: durationSeconds + index * 0.05,
+    enabled: true,
+    volume: 1,
+    autoEnd: false,
+  }));
+  project.timeline = {
+    ...project.timeline,
+    duration: durationSeconds + 1,
+    layers: [],
+    layersInitialized: true,
+    selectedLayerId: null,
+    audio,
+  };
+  return project;
+}
+
+function syntheticDesktopSource(file: File): DesktopAssetSource {
+  return {
+    desktop: true,
+    rootPath: "memory://waveform-profile",
+    getSetFiles: async () => new Map<string, File>(),
+    getDirectories: async () => [],
+    getFile: async (path) => path === "audio-profile.wav" ? file : null,
+    getManifest: async () => null,
+    openText: async () => null,
+    openProject: async () => null,
+    readText: async () => null,
+    openAudio: async () => [],
+    saveText: async () => undefined,
+    saveBatch: async () => ({ backupPath: null }),
+  };
+}
+
 function summarizeTrial(trial: Trial, finishedAt: number) {
   const stages = Object.fromEntries(PROFILE_STAGES.map((stage) => [
     stage,
@@ -121,7 +179,7 @@ function summarizeTrial(trial: Trial, finishedAt: number) {
       ...distribution(trial.frameGapsMs),
       over16_67ms: trial.frameGapsMs.filter((gap) => gap > 16.67).length,
       over33_33ms: trial.frameGapsMs.filter((gap) => gap > 33.33).length,
-      adequateSamples: trial.pageVisible && trial.frameGapsMs.length >= MIN_FRAME_SAMPLES_PER_TRIAL,
+      samplingAdequate: trial.pageVisible && trial.frameGapsMs.length >= MIN_FRAME_SAMPLES_PER_TRIAL,
     },
     mainThreadLongTasks: {
       ...distribution(longTaskDurations),
@@ -135,10 +193,11 @@ function summarizeTrial(trial: Trial, finishedAt: number) {
 }
 
 export function WaveformProfile() {
+  const [surface, setSurface] = useState<Session["surface"]>("timeline");
   const [clipCount, setClipCount] = useState(4);
   const [durationSeconds, setDurationSeconds] = useState(8);
   const [repeatCount, setRepeatCount] = useState(5);
-  const [run, setRun] = useState<{ id: string; index: number; sessionId: string; clipCount: number; audioUrl: string } | null>(null);
+  const [run, setRun] = useState<ActiveRun | null>(null);
   const [report, setReport] = useState<Record<string, unknown> | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -195,7 +254,16 @@ export function WaveformProfile() {
       trial.readyCount = session.clipCount;
       completeWhenPainted(trial);
     }, 45_000);
-    setRun({ id: trial.id, index, sessionId: session.id, clipCount: session.clipCount, audioUrl: session.audioUrl });
+    setRun({
+      id: trial.id,
+      index,
+      sessionId: session.id,
+      surface: session.surface,
+      clipCount: session.clipCount,
+      audioUrl: session.audioUrl,
+      source: session.source,
+      project: session.project,
+    });
   }, []);
 
   const finishTrial = useCallback((trial: Trial) => {
@@ -223,7 +291,9 @@ export function WaveformProfile() {
       return;
     }
     const result = {
-      profile: "development-only production AudioWaveform component with synthetic PCM WAV input",
+      profile: session.surface === "timeline"
+        ? "development-only production TimelineWorkspace and AudioWaveform with synthetic PCM WAV input"
+        : "development-only production AudioWaveform component with synthetic PCM WAV input",
       generatedAt: new Date().toISOString(),
       environment: {
         userAgent: navigator.userAgent,
@@ -233,9 +303,11 @@ export function WaveformProfile() {
       },
       fixture: {
         codec: "uncompressed mono PCM WAV; synthetic deterministic tone; generated in memory",
+        surface: session.surface === "timeline" ? "TimelineWorkspace audio timeline and inspector; no Spine visual layers; in-memory DesktopAssetSource" : "AudioWaveform component rows",
         durationSeconds: session.durationSeconds,
         clipsPerTrial: session.clipCount,
         repetitions: session.repeatCount,
+        spineVisualLayers: 0,
         audioContexts: "one per AudioWaveform, matching production component lifecycle",
         fixtureGenerationMs: Number(session.fixtureBuildMs.toFixed(3)),
         filesystemReads: 0,
@@ -252,14 +324,14 @@ export function WaveformProfile() {
           ...distribution(session.frameGapsMs),
           over16_67ms: session.frameGapsMs.filter((gap) => gap > 16.67).length,
           over33_33ms: session.frameGapsMs.filter((gap) => gap > 33.33).length,
-          adequateInEveryTrial: session.frameAdequacy.every(Boolean),
-          adequateTrials: session.frameAdequacy.filter(Boolean).length,
+          samplingAdequateInEveryTrial: session.frameAdequacy.every(Boolean),
+          samplingAdequateTrials: session.frameAdequacy.filter(Boolean).length,
           totalTrials: session.frameAdequacy.length,
         },
         mainThreadLongTasksMs: distribution(session.longTaskDurationsMs),
       },
       trials: session.trials,
-      interpretation: "Synthetic WAV results isolate the component pipeline but are not OGG decoder or full Editor/timeline evidence. Prefer visible foreground runs; frame-gap and React Profiler samples are reported separately from fetch/decode/envelope timings.",
+      interpretation: "Timeline mode exercises the production TimelineWorkspace audio track, inspector, and AudioWaveform children, but contains no Spine visual layers or library project. Synthetic WAV results do not model OGG decoding or the optimized packaged runtime. Sampling adequacy only confirms visible frame count; large frame gaps/long tasks in automation are not representative production evidence. Separate async fetch/decode timings from synchronous JS envelope CPU before considering workers or WASM.",
     };
     setReport(result);
     setRun(null);
@@ -267,7 +339,7 @@ export function WaveformProfile() {
     setError(null);
     sessionRef.current = null;
     trialRef.current = null;
-    URL.revokeObjectURL(session.audioUrl);
+    if (session.audioUrl) URL.revokeObjectURL(session.audioUrl);
   }, [beginTrial]);
 
   const completeWhenPainted = useCallback((trial: Trial) => {
@@ -311,9 +383,11 @@ export function WaveformProfile() {
     setError(null);
     setRunning(true);
     const fixtureStarted = performance.now();
-    let audioUrl: string;
+    let file: File;
+    let audioUrl: string | null = null;
     try {
-      audioUrl = URL.createObjectURL(syntheticPcmWav(durationSeconds));
+      file = new File([syntheticPcmWav(durationSeconds)], "audio-profile.wav", { type: "audio/wav" });
+      if (surface === "component") audioUrl = URL.createObjectURL(file);
     } catch (value) {
       setRunning(false);
       setError(value instanceof Error ? value.message : String(value));
@@ -321,11 +395,14 @@ export function WaveformProfile() {
     }
     const session: Session = {
       id: crypto.randomUUID(),
+      surface,
       clipCount,
       durationSeconds,
       repeatCount,
       fixtureBuildMs: performance.now() - fixtureStarted,
       audioUrl,
+      source: syntheticDesktopSource(file),
+      project: syntheticTimelineProject(clipCount, durationSeconds),
       trials: [],
       stageSamples: [],
       reactSamples: [],
@@ -350,22 +427,27 @@ export function WaveformProfile() {
       trial.longTaskObserver?.disconnect();
       if (trial.visibilityHandler) document.removeEventListener("visibilitychange", trial.visibilityHandler);
     }
-    if (session) URL.revokeObjectURL(session.audioUrl);
+    if (session?.audioUrl) URL.revokeObjectURL(session.audioUrl);
     trialRef.current = null;
     sessionRef.current = null;
     setRun(null);
     setRunning(false);
   }
 
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("autostart") === "1") startProfile();
+  }, []);
+
   return <main className="waveform-profile">
     <header>
       <p className="waveform-profile-eyebrow">LOCAL DEVELOPMENT FIXTURE</p>
       <h1>Timeline waveform profile</h1>
-      <p>This page mounts the production <code>AudioWaveform</code> React component with generated audio. It does not open the asset library, read files, call the desktop API, or send telemetry.</p>
+      <p>This page can mount the production <code>TimelineWorkspace</code> audio timeline and inspector (without Spine visual layers), or waveform components alone. It uses generated audio and an in-memory source mock; it does not open the asset library, read library files, call the desktop API, or send telemetry.</p>
       <p>Runs measure AudioContext creation, Blob fetch/read, decode, the production JS envelope, context close, React commits, animation-frame gaps, and browser long tasks separately.</p>
     </header>
 
     <section className="waveform-profile-controls" aria-label="Profile settings">
+      <label>UI surface<select value={surface} disabled={running} onChange={(event) => setSurface(event.target.value as Session["surface"])}><option value="timeline">TimelineWorkspace (no Spine layers)</option><option value="component">AudioWaveform only</option></select></label>
       <label>Clips per trial<select value={clipCount} disabled={running} onChange={(event) => setClipCount(Number(event.target.value))}><option value={1}>1</option><option value={2}>2</option><option value={4}>4 (observed project maximum)</option></select></label>
       <label>Seconds per clip<select value={durationSeconds} disabled={running} onChange={(event) => setDurationSeconds(Number(event.target.value))}><option value={8}>8 (observed p95 interval)</option><option value={14}>14 (observed maximum interval)</option></select></label>
       <label>Repetitions<select value={repeatCount} disabled={running} onChange={(event) => setRepeatCount(Number(event.target.value))}><option value={3}>3</option><option value={5}>5</option><option value={10}>10</option></select></label>
@@ -376,20 +458,41 @@ export function WaveformProfile() {
     {error && <p role="alert">{error}</p>}
     {running && <p role="status">Trial {(run?.index ?? 0) + 1} of {repeatCount}; decoding {clipCount} × {durationSeconds}s synthetic clips…</p>}
 
-    {run && <section className="waveform-profile-fixture" aria-label="Live waveform fixture">
+    {run && <section className={`waveform-profile-fixture${run.surface === "timeline" ? " is-timeline" : ""}`} aria-label="Live waveform fixture">
       <Profiler id="production-audio-waveforms" onRender={recordReactCommit}>
-        <div className="waveform-profile-rows">
-          {Array.from({ length: run.clipCount }, (_, index) => <div className="waveform-profile-row" key={`${run.id}-${index}`}>
-            <AudioWaveform url={run.audioUrl} onProfile={(measurement) => recordMeasurement(run.id, measurement)} />
-            <span>Clip {index + 1}</span>
-          </div>)}
-        </div>
+        {run.surface === "timeline"
+          ? <TimelineWorkspace
+            key={run.id}
+            source={run.source}
+            directory="waveform-profile"
+            directories={[]}
+            project={run.project}
+            onSubtitleOpened={() => undefined}
+            onAudioOpened={() => undefined}
+            onRecentFile={() => undefined}
+            onMutate={() => undefined}
+            onLive={() => undefined}
+            onBeginEdit={() => undefined}
+            onSave={() => undefined}
+            onRegisterSave={() => undefined}
+            onStatus={() => undefined}
+            onError={() => undefined}
+            onRegisterMcp={() => undefined}
+            onMcpSnapshot={() => undefined}
+            onAudioWaveformProfile={(_clipId, measurement) => recordMeasurement(run.id, measurement)}
+          />
+          : <div className="waveform-profile-rows">
+            {Array.from({ length: run.clipCount }, (_, index) => <div className="waveform-profile-row" key={`${run.id}-${index}`}>
+              <AudioWaveform url={run.audioUrl ?? undefined} onProfile={(measurement) => recordMeasurement(run.id, measurement)} />
+              <span>Clip {index + 1}</span>
+            </div>)}
+          </div>}
       </Profiler>
     </section>}
 
     {report && <section className="waveform-profile-report" aria-label="Waveform profile results">
       <h2>Profile results</h2>
-      <p>Use the medians and p95s across trials. Each trial observes at least 60 frames or waits 1.5 seconds after decoding; a low sample count means the page was backgrounded or throttled, so rerun visibly in the foreground.</p>
+      <p>Use medians and p95s across trials. Each trial targets 60 frames or waits 1.5 seconds after decoding. Sampling adequacy does not mean frame quality passed; large frame gaps and long tasks remain visible in the report.</p>
       <pre>{JSON.stringify(report, null, 2)}</pre>
       <button type="button" onClick={() => void navigator.clipboard?.writeText(JSON.stringify(report, null, 2))}>Copy JSON report</button>
     </section>}
