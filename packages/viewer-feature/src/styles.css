@@ -538,6 +538,7 @@ a { color: var(--cyan); }
 .spine-settings-heading svg { width: 14px; height: 14px; }
 .spine-settings-grid { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 10px; }
 .spine-setting-field { flex: 1 1 150px; }
+.spine-setting-hint { display: block; flex: 1 0 100%; color: var(--muted); font-size: 9px; line-height: 1.35; }
 .spine-animation-field { flex-basis: 230px; }
 .spine-setting-field select { flex: 1; }
 .spine-effects-field { flex: 1 1 190px; }

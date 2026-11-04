@@ -72,6 +72,45 @@ test("viewer local project loading prefers .editor and falls back to the legacy 
   expect(legacy?.name).toBe("Local project");
 });
 
+test("Viewer project reload restores the saved camera track and reads refreshed shot data", async () => {
+  const path = editorProjectPath("Airi_home");
+  const files: Record<string, string> = {
+    [path]: JSON.stringify({
+      ...editorProject(),
+      timeline: {
+        sequenceId: "opening",
+        duration: 5,
+        layers: [],
+        subtitles: [],
+        audio: [],
+        camera: {
+          enabled: true,
+          aspectRatio: "4:3",
+          referenceLayerId: "character",
+          constraint: { mode: "manual", boundId: "room" },
+          safeBounds: [{ id: "room", name: "Room", x: -40, y: -20, width: 80, height: 60, enabled: true, visible: false, locked: true, priority: 3 }],
+          keyframes: [{ id: "shot", time: 2, centerX: 10, centerY: 20, frameHeight: 30, easing: "smooth", constraint: { mode: "manual", boundId: "room" } }],
+        },
+      },
+    }),
+  };
+  const firstLoad = await readLocalInteractionProject(sourceFromFiles(files), "Airi_home");
+  expect(firstLoad?.timeline?.camera).toMatchObject({
+    enabled: true,
+    aspectRatio: "4:3",
+    referenceLayerId: "character",
+    constraint: { mode: "manual", boundId: "room" },
+    safeBounds: [{ id: "room", visible: false, locked: true, priority: 3 }],
+    keyframes: [{ id: "shot", time: 2, centerX: 10, centerY: 20, frameHeight: 30, easing: "smooth" }],
+  });
+
+  const refreshedValue = JSON.parse(files[path]!) as { timeline: { camera: { keyframes: Array<{ centerX: number }> } } };
+  refreshedValue.timeline.camera.keyframes[0]!.centerX = 45;
+  files[path] = JSON.stringify(refreshedValue);
+  const refreshedLoad = await readLocalInteractionProject(sourceFromFiles(files), "Airi_home");
+  expect(refreshedLoad?.timeline?.camera?.keyframes[0]?.centerX).toBe(45);
+});
+
 test("manifest projects restore authored sequences but never promote workspace selection to entry", async () => {
   const opening = { sequenceId: "opening", duration: 12, loop: false, layers: [], subtitles: [], audio: [] };
   const talk = { sequenceId: "talk-5", duration: 5, loop: false, layers: [], subtitles: [], audio: [] };

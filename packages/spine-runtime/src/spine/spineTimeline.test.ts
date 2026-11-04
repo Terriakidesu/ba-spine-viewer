@@ -6,6 +6,14 @@ test("idle playback selects Idle_XX, never the opening or talk animation", () =>
   expect(timelineIdleAnimation({ idleAnimation: null, animations: ["Start_Idle_01", "Idle_02"] })).toBe("Idle_02");
   expect(timelineIdleAnimation({ idleAnimation: null, animations: ["Start_Idle_01"] })).toBe("");
 });
+
+test("a missing idle never falls through to the first interaction animation", () => {
+  const metaWithoutIdle = { idleAnimation: null, introAnimation: null, animations: ["LookEnd_01_M", "Talk_01_M"] };
+  expect(timelineIdleAnimation(metaWithoutIdle)).toBe("");
+  expect(timelineLayerAnimation(layer({ animation: "" }), metaWithoutIdle, undefined, 0, "opening", "direct", 0)).toBe("");
+  expect(timelineMainAnimation(layer({ animation: "" }), metaWithoutIdle, 0, "opening", "direct", 0, 0).animation).toBe("");
+  expect(timelineLayerAnimation(layer({ animation: "LookEnd_01_M" }), metaWithoutIdle, undefined, 0, "opening", "direct", 0)).toBe("LookEnd_01_M");
+});
 import { advanceSpineTimeline, normalizeSpineTimeline, timelineActiveAnimationClip, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAnimationNeedsIdleUnderlay, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineForSequence, timelineLayerAnimation, timelineLayerPlaybackEnd, timelineLayerSampleTime, timelineMainAnimation, timelineOpeningDuration, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineSequenceIds, timelineTalkSequenceIds, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer } from "./spineTimeline";
 
 const character = { start: 1, animationOffset: 0.25, loop: false, role: "character" as const };
@@ -200,6 +208,14 @@ test("scene clips explicitly hide the character only while active", () => {
 test("non-looping layer endpoints use the authored animation offset", () => {
   expect(timelineLayerPlaybackEnd(layer({ loop: false, animationOffset: 0.5 }), 3)).toBe(2.5);
   expect(timelineLayerPlaybackEnd(layer({ loop: true, end: 9 }), 3)).toBe(9);
+});
+
+test("a clip-only composition is blank at its exclusive animation endpoint by design", () => {
+  const clip = { id: "finite", animation: "Talk_01_M", start: 0, end: 4, endMode: "auto" as const, animationOffset: 0, loop: false, enabled: true };
+  const authored = layer({ animationClips: [clip], end: 4, loop: false });
+  expect(timelineActiveAnimationClip(authored, meta, 3.999, "talk-1", "direct", 0)).toEqual(clip);
+  expect(timelineActiveAnimationClip(authored, meta, 4, "talk-1", "direct", 0)).toBeNull();
+  expect(timelinePlaybackDuration({ sequenceId: "talk-1", durationMode: "auto", duration: 9, layers: [authored], subtitles: [], audio: [] })).toBe(4);
 });
 
 test("subtitle fallback returns every simultaneous active cue", () => {

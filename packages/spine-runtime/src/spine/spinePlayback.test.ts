@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Animation, AnimationState, AnimationStateData, BoneData, Event, EventData, EventTimeline, Skeleton, SkeletonData, TranslateTimeline } from "@esotericsoftware/spine-core";
-import { findIdleAnimation, findIntroAnimation, INTRO_ANIMATION, SpineRenderer, talkEventTimes } from "./spineRuntime";
+import { defaultSpineAnimation, findIdleAnimation, findIntroAnimation, INTRO_ANIMATION, SpineRenderer, talkEventTimes } from "./spineRuntime";
 
 test("authored talks sample both moving body and face while preserving interaction tracks", () => {
   const data = new SkeletonData();
@@ -73,6 +73,14 @@ describe("Spine restart playback", () => {
     expect(findIntroAnimation(["Start_Idle_1", "Idle_01", "Idle_01_R"])).toBe("Start_Idle_1");
     expect(findIdleAnimation(["Start_Idle_1", "Idle_01", "Idle_01_R"])).toBe("Idle_01");
     expect(findIntroAnimation(["Dev/Dev_Start_Idle_01", "Idle_01"])).toBeNull();
+  });
+
+  test("never promotes LookEnd or other interaction clips to the default idle", () => {
+    const animations = ["LookEnd_01_M", "Talk_01_M", "Pat_01"];
+    expect(findIdleAnimation(animations)).toBeNull();
+    expect(defaultSpineAnimation(animations)).toBe("");
+    expect(defaultSpineAnimation(["Start_Idle_01", "LookEnd_01_M", "Idle_02"])).toBe(INTRO_ANIMATION);
+    expect(findIdleAnimation(["Idle_LookEnd_01", "Idle_01_M"])).toBe("Idle_01_M");
   });
 
   test("restarts the intro after the queued idle has already begun", () => {

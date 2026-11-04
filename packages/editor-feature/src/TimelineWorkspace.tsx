@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type SetStateAction, type WheelEvent as ReactWheelEvent } from "react";
 import { type SpineCameraPose, type SpineFiles, type SpineMeta, type SpineRenderer } from "@ba-spine/spine-runtime/spine/spineRuntime";
-import { cameraAspectValue, cameraFrameHeightForBound, moveSpineCameraBound, resizeSpineCameraBound, sampleSpineCameraTrack, solveSpineCamera, spineCameraBoundFromCanvasDrag, type CameraCanvasPoint, type SpineCameraAspectRatio, type SpineCameraBoundResizeHandle, type SpineCameraSafeBound, type SpineCameraTrack } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
+import { cameraAspectValue, cameraFrameHeightForBound, cameraKeyframeTimeAvailable, evaluateSpineCameraTrack, moveSpineCameraBound, moveSpineCameraKeyframe, resizeSpineCameraBound, resizeSpineCameraKeyframe, retimeSpineCameraKeyframe, sampleSpineCameraTrackWithFallback, spineCameraBoundFromCanvasDrag, type CameraCanvasPoint, type SpineCameraAspectRatio, type SpineCameraBoundResizeHandle, type SpineCameraSafeBound, type SpineCameraTrack } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration } from "@ba-spine/spine-runtime/spine/spineInteraction";
 import {
   compositionDirectories,
@@ -32,14 +32,16 @@ import { adjustColorClipFade, colorClipPreset, duplicateColorClip, moveColorClip
 import { characterDirectoryLabel, type CharacterDirectoryInfo, type CharacterDirectoryLabels } from "./characterCatalog";
 import { isTextEditingTarget } from "./editorKeyboard";
 import type { EditorMcpCommand, EditorMcpPreviewCaptureMode, EditorMcpTimelineBridge, EditorMcpTimelineSnapshot } from "./editorMcp";
-import { clampStageScale, panStageView, resetStageView, zoomStageView, type StageView } from "./stageView";
+import { clampStageScale, fitStageView, panStageView, resetStageView, zoomStageView, type StageView } from "./stageView";
 import { SubtitleTextEditor } from "./SubtitleTextEditor";
 import { AnimationPicker } from "./AnimationPicker";
+import { CameraContextMenu } from "./CameraContextMenu";
+import { CameraKeyframeStrip } from "./CameraKeyframeStrip";
 import { TimelinePanelResizer } from "./TimelinePanelResizer";
 import { TimelineSplitHandle } from "./TimelineSplitHandle";
 import { DEFAULT_TIMELINE_LAYOUT_PREFERENCES, normalizeTimelineLayoutPreferences, TIMELINE_LAYOUT_PREFERENCES_KEY, type TimelineLayoutPreferences } from "./timelineLayout";
 import { advanceTimelineRangeLoop, fitTimelineToRange, zoomTimelineAtCursor, type TimelineRange } from "./timelineView";
-import { AudioWaveform, type AudioWaveformMeasurement } from "./AudioWaveform";
+import { AudioWaveform } from "./AudioWaveform";
 import { missingManifestAssetFiles, validateTimeline, type TimelineDiagnostic } from "./timelineDiagnostics";
 import { copyTimelineSelection, pasteTimelineSelection, type TimelineClipboard, type TimelineClipboardSelection } from "./timelineClipboard";
 import { searchSubtitleCues, type SubtitleSearchLanguage } from "./subtitleCueSearch";
@@ -54,6 +56,40 @@ function emptyCameraTrack(): SpineCameraTrack {
   return { enabled: true, aspectRatio: "16:9", constraint: { mode: "automatic" }, safeBounds: [], keyframes: [] };
 }
 
+const CAMERA_STUDIO_PREFERENCES_KEY = "ba-spine-editor:camera-studio-preferences:v1";
+
+interface CameraStudioPreferences {
+  sceneShare: number;
+  bounds: boolean;
+  shots: boolean;
+  centers: boolean;
+  composition: boolean;
+  aspectLocked: boolean;
+}
+
+function readCameraStudioPreferences(): CameraStudioPreferences {
+  const fallback: CameraStudioPreferences = { sceneShare: 0.63, bounds: true, shots: true, centers: true, composition: false, aspectLocked: false };
+  if (typeof window === "undefined") return fallback;
+  try {
+    const value = JSON.parse(window.localStorage.getItem(CAMERA_STUDIO_PREFERENCES_KEY) ?? "null") as Partial<CameraStudioPreferences> | null;
+    return {
+      sceneShare: typeof value?.sceneShare === "number" && Number.isFinite(value.sceneShare) ? Math.max(0.35, Math.min(0.8, value.sceneShare)) : fallback.sceneShare,
+      bounds: typeof value?.bounds === "boolean" ? value.bounds : fallback.bounds,
+      shots: typeof value?.shots === "boolean" ? value.shots : fallback.shots,
+      centers: typeof value?.centers === "boolean" ? value.centers : fallback.centers,
+      composition: typeof value?.composition === "boolean" ? value.composition : fallback.composition,
+      aspectLocked: typeof value?.aspectLocked === "boolean" ? value.aspectLocked : fallback.aspectLocked,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function writeCameraStudioPreferences(value: CameraStudioPreferences) {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(CAMERA_STUDIO_PREFERENCES_KEY, JSON.stringify(value)); } catch { /* Preferences are optional. */ }
+}
+
 function cameraItemId(prefix: string): string {
   return `${prefix}-${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 }
@@ -65,6 +101,41 @@ interface CameraBoundTransform {
   handle?: SpineCameraBoundResizeHandle;
   start: CameraCanvasPoint;
   original: SpineCameraSafeBound;
+  latest: SpineCameraSafeBound;
+  edited: boolean;
+}
+
+interface CameraShotTransform {
+  pointerId: number;
+  keyframeId: string;
+  mode: "move" | "resize";
+  handle?: SpineCameraBoundResizeHandle;
+  start: CameraCanvasPoint;
+  original: SpineCameraTrack["keyframes"][number];
+  latest: SpineCameraTrack["keyframes"][number];
+  edited: boolean;
+}
+
+interface CameraKeyframeDrag {
+  pointerId: number;
+  keyframeId: string;
+  original: SpineCameraTrack["keyframes"][number];
+  element: HTMLButtonElement;
+  playhead: number;
+  latestTime: number;
+  edited: boolean;
+}
+
+type CameraContextTarget =
+  | { kind: "empty" }
+  | { kind: "timeline"; time: number }
+  | { kind: "shot"; id: string }
+  | { kind: "boundary"; id: string };
+
+interface CameraContextMenuState {
+  x: number;
+  y: number;
+  target: CameraContextTarget;
 }
 
 interface ImportedSubtitleEntry {
@@ -92,14 +163,15 @@ interface TimelineWorkspaceProps {
   onMutate: (mutator: (current: EditorProject) => EditorProject) => void;
   onLive: (mutator: (current: EditorProject) => EditorProject) => void;
   onBeginEdit: () => void;
+  onBeginCameraEdit?: () => void;
+  onEndCameraEdit?: () => void;
+  onCancelCameraEdit?: () => void;
   onSave: () => void | Promise<void>;
   onRegisterSave: (callback: ((getProject: () => EditorProject | null) => Promise<EditorSaveFile[]>) | null) => void;
   onStatus: (value: string) => void;
   onError: (value: string | null) => void;
   onRegisterMcp: (bridge: EditorMcpTimelineBridge | null) => void;
   onMcpSnapshot: (snapshot: EditorMcpTimelineSnapshot | null) => void;
-  /** Optional diagnostics for the development-only waveform profiling fixture. */
-  onAudioWaveformProfile?: (clipId: string, measurement: AudioWaveformMeasurement) => void;
 }
 
 function seconds(value: number): string {
@@ -286,7 +358,7 @@ function canvasHasVisiblePixels(source: HTMLCanvasElement): boolean {
   return false;
 }
 
-export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () => undefined, source, directory, directories, directoryLabels = {}, directoryInfo = {}, project, initialHandoff, initialSubtitlePath, onSubtitleOpened, initialAudioPaths, onAudioOpened, onRecentFile, onMutate, onLive, onBeginEdit, onSave, onRegisterSave, onStatus, onError, onRegisterMcp, onMcpSnapshot, onAudioWaveformProfile }: TimelineWorkspaceProps) {
+export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () => undefined, source, directory, directories, directoryLabels = {}, directoryInfo = {}, project, initialHandoff, initialSubtitlePath, onSubtitleOpened, initialAudioPaths, onAudioOpened, onRecentFile, onMutate, onLive, onBeginEdit, onBeginCameraEdit = () => undefined, onEndCameraEdit = () => undefined, onCancelCameraEdit = () => undefined, onSave, onRegisterSave, onStatus, onError, onRegisterMcp, onMcpSnapshot }: TimelineWorkspaceProps) {
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -305,8 +377,14 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const [metas, setMetas] = useState<Record<string, SpineMeta | null>>({});
   const [sharedCameraPose, setSharedCameraPose] = useState<SpineCameraPose | null>(null);
   const [selectedCameraKeyframeId, setSelectedCameraKeyframeId] = useState<string | null>(null);
+  const [cameraInspectorTarget, setCameraInspectorTarget] = useState<"settings" | "boundary" | "shot">("settings");
   const [cameraKeyframeTimeIssue, setCameraKeyframeTimeIssue] = useState<string | null>(null);
-  const [cameraGuidesVisible, setCameraGuidesVisible] = useState(true);
+  const [cameraContextMenu, setCameraContextMenu] = useState<CameraContextMenuState | null>(null);
+  const [cameraGuidesVisible, setCameraGuidesVisible] = useState(() => readCameraStudioPreferences().bounds);
+  const [cameraShotGuidesVisible, setCameraShotGuidesVisible] = useState(() => readCameraStudioPreferences().shots);
+  const [cameraCenterGuidesVisible, setCameraCenterGuidesVisible] = useState(() => readCameraStudioPreferences().centers);
+  const [cameraCompositionGuidesVisible, setCameraCompositionGuidesVisible] = useState(() => readCameraStudioPreferences().composition);
+  const [cameraAspectLocked, setCameraAspectLocked] = useState(() => readCameraStudioPreferences().aspectLocked);
   const [cameraTool, setCameraTool] = useState<"select" | "pan" | "draw">("select");
   const [selectedCameraBoundId, setSelectedCameraBoundId] = useState<string | null>(null);
   const [cameraBoundDrawing, setCameraBoundDrawing] = useState(false);
@@ -323,17 +401,29 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const [colorHexDraft, setColorHexDraft] = useState<string | null>(null);
   const [stageView, setStageView] = useState<StageView>(() => resetStageView());
   const [stagePanning, setStagePanning] = useState(false);
+  const [cameraSpacePanning, setCameraSpacePanning] = useState(false);
+  const [cameraSceneShare, setCameraSceneShare] = useState(() => readCameraStudioPreferences().sceneShare);
+  const [cameraZoomDraft, setCameraZoomDraft] = useState<string | null>(null);
+  const [cameraSplitDragging, setCameraSplitDragging] = useState(false);
   const [markers, setMarkers] = useState<number[]>([]);
   const [inspector, setInspector] = useState<"sequence" | "layer" | "color-layer" | "animation" | "color-clip" | "cue" | "audio" | "multi">("sequence");
   const appliedHandoffIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stageWrapRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const cameraPreviewPairRef = useRef<HTMLDivElement>(null);
   const activeCameraBoundIdRef = useRef<{ sequenceId: string; boundId: string | null }>({ sequenceId: "", boundId: null });
   const cameraBoundDrawRef = useRef<{ pointerId: number; start: CameraCanvasPoint; end: CameraCanvasPoint } | null>(null);
   const cameraBoundTransformRef = useRef<CameraBoundTransform | null>(null);
+  const cameraShotTransformRef = useRef<CameraShotTransform | null>(null);
   const spineRenderersRef = useRef(new Map<string, SpineRenderer>());
   const stagePanRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  const cameraSpacePanRef = useRef(false);
+  const cameraSplitPointerRef = useRef<number | null>(null);
+  const stagePanMovedRef = useRef(false);
+  const cameraKeyframeStripRef = useRef<HTMLDivElement>(null);
+  const cameraKeyframeDragRef = useRef<CameraKeyframeDrag | null>(null);
+  const cameraShotClipboardRef = useRef<SpineCameraTrack["keyframes"][number] | null>(null);
   const addMenuRef = useRef<HTMLDetailsElement>(null);
   const scrubRef = useRef<number | null>(null);
   const [selectedClips, setSelectedClipsState] = useState<TimelineSelection[]>([]);
@@ -524,9 +614,11 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const cameraProjectionRenderer = useMemo(() => spineRenderersRef.current.get(referenceLayerId) ?? null, [cameraProjectionRevision, referenceLayerId]);
   const cameraProjectionSize = cameraProjectionRenderer?.canvasClientSize() ?? null;
   const cameraSequenceKey = timeline?.sequenceId ?? "legacy";
-  const sampledCamera = cameraTrack ? sampleSpineCameraTrack(cameraTrack, currentTime) : null;
-  const solvedCamera = cameraTrack && sampledCamera
-    ? solveSpineCamera(sampledCamera, cameraTrack, 1, 1, activeCameraBoundIdRef.current.sequenceId === cameraSequenceKey ? activeCameraBoundIdRef.current.boundId : null)
+  const sampledCamera = cameraTrack
+    ? sampleSpineCameraTrackWithFallback(cameraTrack, currentTime, cameraProjectionRenderer?.getArtworkCameraFrame(cameraAspectValue(cameraTrack.aspectRatio)) ?? null)
+    : null;
+  const solvedCamera = cameraTrack
+    ? evaluateSpineCameraTrack(cameraTrack, currentTime, 1, 1, cameraProjectionRenderer?.getArtworkCameraFrame(cameraAspectValue(cameraTrack.aspectRatio)) ?? null, activeCameraBoundIdRef.current.sequenceId === cameraSequenceKey ? activeCameraBoundIdRef.current.boundId : null)
     : null;
   if (solvedCamera) activeCameraBoundIdRef.current = { sequenceId: cameraSequenceKey, boundId: solvedCamera.activeBoundId };
   const projectCameraPoint = (x: number, y: number) => {
@@ -553,6 +645,28 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       } : null;
     }).filter((bound): bound is NonNullable<typeof bound> => bound !== null)
     : [];
+  const cameraOutputFrame = cameraTrack?.enabled ? solvedCamera?.frame : null;
+  const cameraOutputRect = cameraOutputFrame ? (() => {
+    const topLeft = projectCameraPoint(cameraOutputFrame.centerX - cameraOutputFrame.width / 2, cameraOutputFrame.centerY + cameraOutputFrame.height / 2);
+    const bottomRight = projectCameraPoint(cameraOutputFrame.centerX + cameraOutputFrame.width / 2, cameraOutputFrame.centerY - cameraOutputFrame.height / 2);
+    return topLeft && bottomRight ? {
+      x: Math.min(topLeft.x, bottomRight.x),
+      y: Math.min(topLeft.y, bottomRight.y),
+      width: Math.abs(bottomRight.x - topLeft.x),
+      height: Math.abs(bottomRight.y - topLeft.y),
+    } : null;
+  })() : null;
+  const selectedCameraShotRect = selectedCameraKeyframe && cameraTrack ? (() => {
+    const width = selectedCameraKeyframe.frameHeight * cameraAspectValue(cameraTrack.aspectRatio);
+    const topLeft = projectCameraPoint(selectedCameraKeyframe.centerX - width / 2, selectedCameraKeyframe.centerY + selectedCameraKeyframe.frameHeight / 2);
+    const bottomRight = projectCameraPoint(selectedCameraKeyframe.centerX + width / 2, selectedCameraKeyframe.centerY - selectedCameraKeyframe.frameHeight / 2);
+    return topLeft && bottomRight ? {
+      x: Math.min(topLeft.x, bottomRight.x),
+      y: Math.min(topLeft.y, bottomRight.y),
+      width: Math.abs(bottomRight.x - topLeft.x),
+      height: Math.abs(bottomRight.y - topLeft.y),
+    } : null;
+  })() : null;
   const animations = characterMeta?.animations ?? [];
   const sequenceIds = useMemo(() => [...new Set(["opening", ...animations.filter((name) => /talk[_ -]?\d+/i.test(name)).map(talkSequenceId), ...Object.keys(project?.sequences ?? {}).filter((id) => id !== "legacy")])], [animations, project?.sequences]);
   useEffect(() => {
@@ -581,27 +695,93 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     activeCameraBoundIdRef.current = { sequenceId: cameraSequenceKey, boundId: null };
     setSelectedCameraKeyframeId(null);
     setSelectedCameraBoundId(null);
+    setCameraInspectorTarget("settings");
     setCameraKeyframeTimeIssue(null);
+    setCameraContextMenu(null);
+    cameraKeyframeDragRef.current = null;
     setCameraBoundDrawing(false);
     setCameraBoundDraft(null);
     cameraBoundDrawRef.current = null;
     cameraBoundTransformRef.current = null;
   }, [directory, timeline?.sequenceId]);
 
-  function updateCameraTrack(mutator: (value: SpineCameraTrack) => SpineCameraTrack) {
+  useEffect(() => {
+    if (mode !== "camera") {
+      cameraSpacePanRef.current = false;
+      setCameraSpacePanning(false);
+      return;
+    }
+    const stage = stageRef.current;
+    if (!stage || typeof ResizeObserver === "undefined") return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        setCameraProjectionRevision((value) => value + 1);
+        frame = requestAnimationFrame(() => {
+          const pose = spineRenderersRef.current.get(referenceLayerId)?.getCameraPose();
+          if (pose) setSharedCameraPose((current) => current
+            && Math.abs(current.x - pose.x) < 1e-6
+            && Math.abs(current.y - pose.y) < 1e-6
+            && Math.abs(current.zoom - pose.zoom) < 1e-6
+            ? current
+            : pose);
+        });
+      });
+    });
+    observer.observe(stage);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [mode, referenceLayerId]);
+
+  useEffect(() => {
+    writeCameraStudioPreferences({
+      sceneShare: cameraSceneShare,
+      bounds: cameraGuidesVisible,
+      shots: cameraShotGuidesVisible,
+      centers: cameraCenterGuidesVisible,
+      composition: cameraCompositionGuidesVisible,
+      aspectLocked: cameraAspectLocked,
+    });
+  }, [cameraSceneShare, cameraGuidesVisible, cameraShotGuidesVisible, cameraCenterGuidesVisible, cameraCompositionGuidesVisible, cameraAspectLocked]);
+
+  useEffect(() => {
+    if (mode !== "camera") return;
+    const releaseSpacePan = (event: KeyboardEvent) => {
+      if (event.code !== "Space" && event.key !== " ") return;
+      cameraSpacePanRef.current = false;
+      setCameraSpacePanning(false);
+    };
+    const clearSpacePan = () => {
+      cameraSpacePanRef.current = false;
+      setCameraSpacePanning(false);
+    };
+    window.addEventListener("keyup", releaseSpacePan);
+    window.addEventListener("blur", clearSpacePan);
+    return () => {
+      window.removeEventListener("keyup", releaseSpacePan);
+      window.removeEventListener("blur", clearSpacePan);
+      clearSpacePan();
+    };
+  }, [mode]);
+
+  function updateCameraTrack(mutator: (value: SpineCameraTrack) => SpineCameraTrack, history = true) {
     updateTimeline((value) => ({
       ...value,
       camera: mutator(value.camera ?? {
         ...emptyCameraTrack(),
         ...(referenceLayerId ? { referenceLayerId } : {}),
       }),
-    }));
+    }), history);
   }
 
   function selectCameraKeyframe(id: string) {
     const keyframe = cameraTrack?.keyframes.find((item) => item.id === id);
     if (!keyframe) return;
     setSelectedCameraKeyframeId(id);
+    setCameraInspectorTarget("shot");
     if (keyframe.constraint?.mode === "manual") setSelectedCameraBoundId(keyframe.constraint.boundId);
     setPlaying(false);
     setPreviewUntil(null);
@@ -612,53 +792,149 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   function stepCameraKeyframe(direction: -1 | 1) {
     const keyframes = cameraTrack?.keyframes ?? [];
     if (!keyframes.length) return;
-    const selectedIndex = keyframes.findIndex((item) => item.id === selectedCameraKeyframeId);
-    const previousIndex = keyframes.reduce((index, item, itemIndex) => item.time <= currentTime ? itemIndex : index, -1);
-    const currentIndex = selectedIndex >= 0 ? selectedIndex : previousIndex;
-    const targetIndex = Math.max(0, Math.min(keyframes.length - 1, currentIndex + direction));
-    selectCameraKeyframe(keyframes[targetIndex]!.id);
+    const target = direction < 0
+      ? [...keyframes].reverse().find((item) => item.time < currentTime - 0.001) ?? keyframes[0]
+      : keyframes.find((item) => item.time > currentTime + 0.001) ?? keyframes.at(-1);
+    if (target) selectCameraKeyframe(target.id);
   }
 
-  function addCameraKeyframe() {
+  function addCameraKeyframeAt(requestedTime: number) {
     const existingTrack = cameraTrack ?? emptyCameraTrack();
-    const rendererFrame = spineRenderersRef.current.get(referenceLayerId)?.getCameraFrame();
-    const frame = cameraTrack?.enabled && solvedCamera
-      ? { centerX: solvedCamera.frame.centerX, centerY: solvedCamera.frame.centerY, height: solvedCamera.frame.height }
-      : rendererFrame ?? { centerX: 0, centerY: 0, height: 600 };
-    const time = Math.max(0, Math.min(duration, currentTime));
+    const time = Math.max(0, Math.min(duration, requestedTime));
     const existing = existingTrack.keyframes.find((keyframe) => Math.abs(keyframe.time - time) < 0.001);
+    if (existing) {
+      selectCameraKeyframe(existing.id);
+      onStatus(`A shot already exists at ${seconds(existing.time)}. It is selected; edit it instead of replacing it.`);
+      return;
+    }
+    const renderer = spineRenderersRef.current.get(referenceLayerId);
+    const artworkFrame = renderer?.getArtworkCameraFrame(cameraAspectValue(existingTrack.aspectRatio)) ?? null;
+    const solved = evaluateSpineCameraTrack(existingTrack, time, 1, 1, artworkFrame, activeCameraBoundIdRef.current.boundId);
+    const frame = solved?.frame ?? artworkFrame ?? { centerX: 0, centerY: 0, height: 600 };
     const selectedBound = existingTrack.safeBounds.find((bound) => bound.id === selectedCameraBoundId && bound.enabled);
     const keyframe = {
-      id: existing?.id ?? cameraItemId("camera-key"),
+      id: cameraItemId("camera-key"),
       time,
       centerX: frame.centerX,
       centerY: frame.centerY,
       frameHeight: Math.max(0.01, frame.height),
-      easing: existing?.easing ?? "smooth" as const,
-      ...(existing?.constraint
-        ? { constraint: existing.constraint }
-        : selectedBound ? { constraint: { mode: "manual" as const, boundId: selectedBound.id } } : {}),
+      easing: "smooth" as const,
+      ...(selectedBound ? { constraint: { mode: "manual" as const, boundId: selectedBound.id } } : {}),
     };
     updateCameraTrack((value) => ({
       ...value,
       enabled: true,
-      keyframes: [...value.keyframes.filter((item) => item.id !== keyframe.id), keyframe].sort((a, b) => a.time - b.time),
+      keyframes: [...value.keyframes, keyframe].sort((a, b) => a.time - b.time),
     }));
     setSelectedCameraKeyframeId(keyframe.id);
+    setCameraInspectorTarget("shot");
+    setPlaying(false);
+    setCurrentTime(time);
     setCameraGuidesVisible(true);
   }
 
-  function updateCameraKeyframe(id: string, patch: Partial<NonNullable<SpineCameraTrack["keyframes"]>[number]>) {
-    if (patch.time !== undefined && cameraTrack?.keyframes.some((keyframe) => keyframe.id !== id && Math.abs(keyframe.time - patch.time!) < 0.001)) {
+  function addCameraKeyframe() {
+    addCameraKeyframeAt(currentTime);
+  }
+
+  function updateCameraKeyframe(id: string, patch: Partial<NonNullable<SpineCameraTrack["keyframes"]>[number]>, history = true): boolean {
+    if (patch.time !== undefined && cameraTrack && !cameraKeyframeTimeAvailable(cameraTrack.keyframes, id, patch.time)) {
       setCameraKeyframeTimeIssue("Camera keyframes must have distinct times; choose a time at least 0.001 seconds away from another key.");
-      return;
+      return false;
     }
     setCameraKeyframeTimeIssue(null);
     updateCameraTrack((value) => ({
       ...value,
       keyframes: value.keyframes.map((keyframe) => keyframe.id === id ? { ...keyframe, ...patch } : keyframe)
         .sort((a, b) => a.time - b.time),
-    }));
+    }), history);
+    return true;
+  }
+
+  function cameraTimeFromClientX(clientX: number): number | null {
+    const rect = cameraKeyframeStripRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return null;
+    return Math.max(0, Math.min(duration, (clientX - rect.left) / rect.width * duration));
+  }
+
+  function beginCameraKeyframeRetime(event: ReactPointerEvent<HTMLButtonElement>, id: string) {
+    if (event.button !== 0) return;
+    const keyframe = cameraTrack?.keyframes.find((item) => item.id === id);
+    if (!keyframe) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    cameraKeyframeDragRef.current = { pointerId: event.pointerId, keyframeId: id, original: keyframe, element: event.currentTarget, playhead: currentTime, latestTime: keyframe.time, edited: false };
+    setSelectedCameraKeyframeId(id);
+    setCameraInspectorTarget("shot");
+    setPlaying(false);
+    setPreviewUntil(null);
+    setCurrentTime(keyframe.time);
+  }
+
+  function moveCameraKeyframeRetime(event: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = cameraKeyframeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    let nextTime = cameraTimeFromClientX(event.clientX);
+    const rect = cameraKeyframeStripRef.current?.getBoundingClientRect();
+    if (nextTime === null || !rect) return;
+    const keys = cameraTrack?.keyframes ?? [];
+    if (!event.altKey) {
+      const minimumGap = 0.001;
+      const candidates = [
+        0,
+        duration,
+        drag.playhead,
+        ...keys.filter((item) => item.id !== drag.keyframeId).flatMap((item) => [item.time - minimumGap, item.time + minimumGap]),
+      ].filter((time) => time >= 0 && time <= duration);
+      const threshold = Math.max(0.025, duration * 9 / rect.width);
+      const nearest = candidates.reduce<{ time: number; distance: number } | null>((best, time) => {
+        const distance = Math.abs(time - nextTime!);
+        return distance <= threshold && (!best || distance < best.distance) ? { time, distance } : best;
+      }, null);
+      if (nearest) nextTime = nearest.time;
+    }
+    const next = retimeSpineCameraKeyframe(drag.original, nextTime, duration);
+    if (!next) return;
+    if (!cameraKeyframeTimeAvailable(cameraTrack?.keyframes ?? [], drag.keyframeId, next.time)) {
+      setCameraKeyframeTimeIssue("Camera keyframes must have distinct times; choose a time at least 0.001 seconds away from another key.");
+      return;
+    }
+    if (next.time !== drag.original.time && !drag.edited) {
+      onBeginCameraEdit();
+      drag.edited = true;
+    }
+    if (updateCameraKeyframe(drag.keyframeId, { time: next.time }, false)) {
+      drag.latestTime = next.time;
+      setCurrentTime(next.time);
+      setCameraKeyframeTimeIssue(null);
+    }
+  }
+
+  function endCameraKeyframeRetime(event: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = cameraKeyframeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    cameraKeyframeDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (drag.edited) {
+      if (drag.latestTime === drag.original.time) onCancelCameraEdit();
+      else onEndCameraEdit();
+    }
+  }
+
+  function cancelCameraKeyframeRetime(event: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = cameraKeyframeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    cameraKeyframeDragRef.current = null;
+    updateCameraKeyframe(drag.keyframeId, drag.original, false);
+    setCurrentTime(drag.original.time);
+    setCameraKeyframeTimeIssue(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (drag.edited) onCancelCameraEdit();
   }
 
   function assignCameraKeyframeBound(id: string, assignment: string) {
@@ -680,9 +956,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   function addCameraBound() {
     const value = cameraTrack ?? emptyCameraTrack();
     const rendererFrame = spineRenderersRef.current.get(referenceLayerId)?.getCameraFrame();
-    const frame = cameraTrack?.enabled && solvedCamera
-      ? { centerX: solvedCamera.frame.centerX, centerY: solvedCamera.frame.centerY, height: solvedCamera.frame.height }
-      : rendererFrame ?? { centerX: 0, centerY: 0, height: 600 };
+    const frame = rendererFrame ?? { centerX: 0, centerY: 0, height: 600 };
     const width = Math.max(1, frame.height * (value.aspectRatio === "16:9" ? 16 / 9 : value.aspectRatio === "4:3" ? 4 / 3 : 1) * 1.5);
     const height = Math.max(1, frame.height * 1.5);
     const bound: SpineCameraSafeBound = {
@@ -697,6 +971,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     };
     updateCameraTrack((track) => ({ ...track, enabled: true, safeBounds: [...track.safeBounds, bound] }));
     setSelectedCameraBoundId(bound.id);
+    setCameraInspectorTarget("boundary");
     setCameraTool("select");
     setCameraGuidesVisible(true);
   }
@@ -724,31 +999,244 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     };
     updateCameraTrack((value) => ({ ...value, safeBounds: [...value.safeBounds, copy] }));
     setSelectedCameraBoundId(copy.id);
+    setCameraInspectorTarget("boundary");
   }
 
-  function fitCameraToBound(id: string) {
-    const bound = cameraTrack?.safeBounds.find((item) => item.id === id && item.enabled);
-    if (!bound) return;
+  function duplicateCameraKeyframeAtTime(id: string, requestedTime: number) {
+    const sourceKey = cameraTrack?.keyframes.find((item) => item.id === id);
+    if (!sourceKey) return;
+    const time = Math.max(0, Math.min(duration, requestedTime));
+    const collision = cameraTrack?.keyframes.find((item) => Math.abs(item.time - time) < 0.001);
+    if (collision) {
+      selectCameraKeyframe(collision.id);
+      onStatus(`Cannot duplicate here: a shot already exists at ${seconds(collision.time)}.`);
+      return;
+    }
+    const duplicate = { ...sourceKey, id: cameraItemId("camera-key"), time };
+    updateCameraTrack((value) => ({ ...value, keyframes: [...value.keyframes, duplicate].sort((a, b) => a.time - b.time) }));
+    setSelectedCameraKeyframeId(duplicate.id);
+    setCameraInspectorTarget("shot");
+    setPlaying(false);
+    setCurrentTime(time);
+    onStatus(`Duplicated shot to ${seconds(time)}.`);
+  }
+
+  function pasteCameraShotAtTime(requestedTime: number) {
+    const copied = cameraShotClipboardRef.current;
+    if (!copied) return;
     const track = cameraTrack ?? emptyCameraTrack();
-    const time = Math.max(0, Math.min(duration, currentTime));
-    const existing = track.keyframes.find((keyframe) => Math.abs(keyframe.time - time) < 0.001);
-    const keyframe = {
-      id: existing?.id ?? cameraItemId("camera-key"),
-      time,
-      centerX: bound.x + bound.width / 2,
-      centerY: bound.y + bound.height / 2,
-      frameHeight: Math.max(0.01, cameraFrameHeightForBound(bound, track.aspectRatio)),
-      easing: existing?.easing ?? "smooth" as const,
-      constraint: { mode: "manual" as const, boundId: bound.id },
-    };
+    const time = Math.max(0, Math.min(duration, requestedTime));
+    const collision = track.keyframes.find((item) => Math.abs(item.time - time) < 0.001);
+    if (collision) {
+      selectCameraKeyframe(collision.id);
+      onStatus(`Cannot paste here: a shot already exists at ${seconds(collision.time)}.`);
+      return;
+    }
+    const pasted = { ...copied, id: cameraItemId("camera-key"), time };
+    updateCameraTrack((value) => ({ ...value, enabled: true, keyframes: [...value.keyframes, pasted].sort((a, b) => a.time - b.time) }));
+    setSelectedCameraKeyframeId(pasted.id);
+    setCameraInspectorTarget("shot");
+    setPlaying(false);
+    setCurrentTime(time);
+  }
+
+  function deleteCameraKeyframe(id: string) {
+    const keyframes = cameraTrack?.keyframes ?? [];
+    if (!keyframes.some((item) => item.id === id)) return;
+    const next = keyframes.filter((item) => item.id !== id);
+    updateCameraTrack((value) => ({ ...value, keyframes: next }));
+    if (selectedCameraKeyframeId === id) {
+      const replacement = next[0] ?? null;
+      setSelectedCameraKeyframeId(replacement?.id ?? null);
+      setCameraInspectorTarget(replacement ? "shot" : "settings");
+      if (replacement) setCurrentTime(replacement.time);
+    }
+  }
+
+  function frameCameraShotInScene(id: string) {
+    const shot = cameraTrack?.keyframes.find((item) => item.id === id);
+    const stage = stageRef.current;
+    if (!shot || !stage) return;
+    const aspect = cameraAspectValue(cameraTrack?.aspectRatio ?? "16:9");
+    const worldWidth = shot.frameHeight * aspect;
+    const topLeft = projectCameraPoint(shot.centerX - worldWidth / 2, shot.centerY + shot.frameHeight / 2);
+    const bottomRight = projectCameraPoint(shot.centerX + worldWidth / 2, shot.centerY - shot.frameHeight / 2);
+    const viewport = stage.getBoundingClientRect();
+    if (!topLeft || !bottomRight) return;
+    setStageView(fitStageView({ width: viewport.width, height: viewport.height }, {
+      x: Math.min(topLeft.x, bottomRight.x),
+      y: Math.min(topLeft.y, bottomRight.y),
+      width: Math.abs(bottomRight.x - topLeft.x),
+      height: Math.abs(bottomRight.y - topLeft.y),
+    }));
+  }
+
+  function cameraBoundaryForShot(shot: SpineCameraTrack["keyframes"][number]): string | null {
+    const constraint = shot.constraint ?? cameraTrack?.constraint;
+    if (constraint?.mode === "manual") return constraint.boundId;
+    return selectedCameraBoundId ?? solvedCamera?.activeBoundId ?? null;
+  }
+
+  function openCameraContextMenu(event: React.MouseEvent<Element>, target: CameraContextTarget) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (target.kind === "shot") {
+      setSelectedCameraKeyframeId(target.id);
+      setCameraInspectorTarget("shot");
+    }
+    if (target.kind === "boundary") {
+      setSelectedCameraBoundId(target.id);
+      setCameraInspectorTarget("boundary");
+    }
+    const approximateHeight = target.kind === "empty" ? 180 : target.kind === "timeline" ? 200 : 360;
+    setCameraContextMenu({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 248)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - approximateHeight - 8)),
+      target,
+    });
+  }
+
+  function cameraContextActions(target: CameraContextTarget) {
+    type Action = { label: string; disabled?: boolean; reason?: string; run: () => void };
+    const shot = target.kind === "shot" ? cameraTrack?.keyframes.find((item) => item.id === target.id) ?? null : null;
+    const bound = target.kind === "boundary" ? cameraTrack?.safeBounds.find((item) => item.id === target.id) ?? null : null;
+    const selectedShot = cameraTrack?.keyframes.find((item) => item.id === selectedCameraKeyframeId) ?? null;
+    const selectedAt = target.kind === "timeline" ? target.time : currentTime;
+    const occupiedAtSelected = cameraTrack?.keyframes.some((item) => Math.abs(item.time - selectedAt) < 0.001) ?? false;
+    if (target.kind === "empty") return [
+      { label: "Deselect", run: () => { setSelectedCameraBoundId(null); setSelectedCameraKeyframeId(null); setCameraInspectorTarget("settings"); } },
+      { label: "Camera settings", run: () => setCameraInspectorTarget("settings") },
+      { label: "Add shot at playhead", run: addCameraKeyframe },
+      { label: "Draw boundary", run: () => { setCameraTool("draw"); setCameraBoundDrawing(true); setCameraGuidesVisible(true); } },
+      { label: "Fit scene", run: () => { setStageView(resetStageView()); spineRenderersRef.current.get(referenceLayerId)?.resetCamera(); } },
+    ] satisfies Action[];
+    if (target.kind === "timeline") return [
+      { label: `Add shot at ${seconds(target.time)}`, disabled: occupiedAtSelected, reason: occupiedAtSelected ? "A shot already occupies this time." : undefined, run: () => addCameraKeyframeAt(target.time) },
+      { label: `Duplicate selected shot here · ${seconds(target.time)}`, disabled: !selectedShot || occupiedAtSelected, reason: !selectedShot ? "Select a shot first." : occupiedAtSelected ? "A shot already occupies this time." : undefined, run: () => selectedShot && duplicateCameraKeyframeAtTime(selectedShot.id, target.time) },
+      { label: "Paste copied shot here", disabled: !cameraShotClipboardRef.current || occupiedAtSelected, reason: !cameraShotClipboardRef.current ? "Copy a shot first." : occupiedAtSelected ? "A shot already occupies this time." : undefined, run: () => pasteCameraShotAtTime(target.time) },
+      { label: "Delete selected shot", disabled: !selectedShot, reason: !selectedShot ? "Select a shot first." : undefined, run: () => selectedShot && deleteCameraKeyframe(selectedShot.id) },
+    ] satisfies Action[];
+    if (target.kind === "shot" && shot) {
+      const boundId = cameraBoundaryForShot(shot);
+      const assignedBound = boundId ? cameraTrack?.safeBounds.find((item) => item.id === boundId && item.enabled) : null;
+      const collision = cameraTrack?.keyframes.some((item) => Math.abs(item.time - currentTime) < 0.001) ?? false;
+      return [
+        { label: "Edit properties", run: () => { setCameraInspectorTarget("shot"); setSelectedCameraKeyframeId(shot.id); } },
+        { label: "Seek to shot", run: () => { setPlaying(false); setCurrentTime(shot.time); } },
+        { label: "Frame in scene", run: () => frameCameraShotInScene(shot.id) },
+        { label: "Duplicate at playhead", disabled: collision, reason: collision ? "A shot already occupies the playhead." : undefined, run: () => duplicateCameraKeyframeAtTime(shot.id, currentTime) },
+        { label: assignedBound ? `Fit to ${assignedBound.name}` : "Fit to selected boundary", disabled: !assignedBound, reason: !assignedBound ? "Select or assign an enabled boundary first." : undefined, run: () => assignedBound && fitSelectedCameraShotToBound(assignedBound.id) },
+        { label: "Copy shot", run: () => { cameraShotClipboardRef.current = { ...shot }; onStatus(`Copied shot at ${seconds(shot.time)}.`); } },
+        { label: "Delete shot", run: () => deleteCameraKeyframe(shot.id) },
+      ] satisfies Action[];
+    }
+    if (target.kind === "boundary" && bound) return [
+      { label: "Edit properties", run: () => setCameraInspectorTarget("boundary") },
+      { label: "Frame in scene", run: () => frameCameraBoundInScene(bound.id) },
+      { label: "Fit selected shot to boundary", disabled: !selectedShot || !bound.enabled, reason: !selectedShot ? "Select a shot first." : !bound.enabled ? "Enable this boundary first." : undefined, run: () => fitSelectedCameraShotToBound(bound.id) },
+      { label: "Create fitted shot here", disabled: !bound.enabled || occupiedAtSelected, reason: !bound.enabled ? "Enable this boundary first." : occupiedAtSelected ? "A shot already occupies this time." : undefined, run: () => createCameraShotFittedToBound(bound.id) },
+      { label: "Duplicate boundary", run: () => duplicateCameraBound(bound.id) },
+      { label: bound.locked ? "Unlock boundary" : "Lock boundary", run: () => updateCameraBound(bound.id, { locked: !bound.locked }) },
+      { label: bound.visible === false ? "Show guide" : "Hide guide", run: () => updateCameraBound(bound.id, { visible: bound.visible === false }) },
+      { label: bound.enabled ? "Disable boundary" : "Enable boundary", run: () => updateCameraBound(bound.id, { enabled: !bound.enabled }) },
+      { label: "Delete boundary", run: () => deleteCameraBound(bound.id) },
+    ] satisfies Action[];
+    return [] satisfies Action[];
+  }
+
+  function renderCameraContextMenu() {
+    if (!cameraContextMenu) return null;
+    const actions = cameraContextActions(cameraContextMenu.target);
+    return <CameraContextMenu
+      x={cameraContextMenu.x}
+      y={cameraContextMenu.y}
+      actions={actions}
+      onClose={() => setCameraContextMenu(null)}
+      onEscape={() => { setCameraContextMenu(null); stageRef.current?.focus(); }}
+    />;
+  }
+
+  function fitSelectedCameraShotToBound(id: string) {
+    const bound = cameraTrack?.safeBounds.find((item) => item.id === id && item.enabled);
+    const selected = cameraTrack?.keyframes.find((item) => item.id === selectedCameraKeyframeId);
+    if (!bound || !selected) {
+      onStatus("Select a camera shot first, then use Fit selected shot to boundary.");
+      return;
+    }
+    const track = cameraTrack ?? emptyCameraTrack();
     updateCameraTrack((value) => ({
       ...value,
       enabled: true,
-      keyframes: [...value.keyframes.filter((item) => item.id !== keyframe.id), keyframe].sort((a, b) => a.time - b.time),
+      keyframes: value.keyframes.map((keyframe) => keyframe.id === selected.id ? {
+        ...keyframe,
+        centerX: bound.x + bound.width / 2,
+        centerY: bound.y + bound.height / 2,
+        frameHeight: Math.max(0.01, cameraFrameHeightForBound(bound, track.aspectRatio)),
+        constraint: { mode: "manual" as const, boundId: bound.id },
+      } : keyframe),
     }));
+    setSelectedCameraBoundId(bound.id);
+    setCameraInspectorTarget("shot");
+    setPlaying(false);
+    setCurrentTime(selected.time);
+    setCameraGuidesVisible(true);
+    onStatus(`Fitted selected shot at ${seconds(selected.time)} to ${bound.name}.`);
+  }
+
+  function createCameraShotFittedToBound(id: string) {
+    const bound = cameraTrack?.safeBounds.find((item) => item.id === id && item.enabled);
+    if (!bound || !cameraTrack) return;
+    const time = Math.max(0, Math.min(duration, currentTime));
+    const existing = cameraTrack.keyframes.find((keyframe) => Math.abs(keyframe.time - time) < 0.001);
+    if (existing) {
+      selectCameraKeyframe(existing.id);
+      onStatus(`A shot already exists at ${seconds(existing.time)}. Select another time or fit the selected shot.`);
+      return;
+    }
+    const keyframe = {
+      id: cameraItemId("camera-key"),
+      time,
+      centerX: bound.x + bound.width / 2,
+      centerY: bound.y + bound.height / 2,
+      frameHeight: Math.max(0.01, cameraFrameHeightForBound(bound, cameraTrack.aspectRatio)),
+      easing: "smooth" as const,
+      constraint: { mode: "manual" as const, boundId: bound.id },
+    };
+    updateCameraTrack((value) => ({ ...value, enabled: true, keyframes: [...value.keyframes, keyframe].sort((a, b) => a.time - b.time) }));
     setSelectedCameraKeyframeId(keyframe.id);
     setSelectedCameraBoundId(bound.id);
+    setCameraInspectorTarget("shot");
+    setPlaying(false);
+    setCurrentTime(time);
     setCameraGuidesVisible(true);
+  }
+
+  function updateSelectedShotFromOutput() {
+    const selected = cameraTrack?.keyframes.find((item) => item.id === selectedCameraKeyframeId);
+    if (!selected || !solvedCamera) return;
+    updateCameraKeyframe(selected.id, {
+      centerX: solvedCamera.frame.centerX,
+      centerY: solvedCamera.frame.centerY,
+      frameHeight: solvedCamera.frame.height,
+    });
+    setCameraInspectorTarget("shot");
+    onStatus(`Updated selected shot at ${seconds(selected.time)} from the current constrained output.`);
+  }
+
+  function frameCameraBoundInScene(id: string) {
+    const bound = cameraTrack?.safeBounds.find((item) => item.id === id);
+    const stage = stageRef.current;
+    if (!bound || !stage) return;
+    const viewport = stage.getBoundingClientRect();
+    const topLeft = projectCameraPoint(bound.x, bound.y + bound.height);
+    const bottomRight = projectCameraPoint(bound.x + bound.width, bound.y);
+    if (!topLeft || !bottomRight) return;
+    setStageView(fitStageView({ width: viewport.width, height: viewport.height }, {
+      x: Math.min(topLeft.x, bottomRight.x),
+      y: Math.min(topLeft.y, bottomRight.y),
+      width: Math.abs(bottomRight.x - topLeft.x),
+      height: Math.abs(bottomRight.y - topLeft.y),
+    }));
   }
 
   function cameraBoundCanvasPoint(event: ReactPointerEvent<SVGElement>): CameraCanvasPoint | null {
@@ -784,8 +1272,9 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     transformMode: CameraBoundTransform["mode"],
     handle?: SpineCameraBoundResizeHandle,
   ) {
-    if (mode !== "camera" || cameraTool !== "select" || cameraBoundDrawing || event.button !== 0) return;
+    if (mode !== "camera" || cameraTool !== "select" || cameraBoundDrawing || cameraSpacePanRef.current || event.button !== 0) return;
     const bound = cameraTrack?.safeBounds.find((item) => item.id === boundId);
+    if (bound?.locked) return;
     const svg = event.currentTarget.ownerSVGElement;
     if (!bound || !svg) return;
     const canvasPoint = cameraBoundCanvasPoint(event);
@@ -795,8 +1284,8 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     event.stopPropagation();
     svg.setPointerCapture(event.pointerId);
     setSelectedCameraBoundId(boundId);
-    cameraBoundTransformRef.current = { pointerId: event.pointerId, boundId, mode: transformMode, ...(handle ? { handle } : {}), start: worldPoint, original: bound };
-    onBeginEdit();
+    setCameraInspectorTarget("boundary");
+    cameraBoundTransformRef.current = { pointerId: event.pointerId, boundId, mode: transformMode, ...(handle ? { handle } : {}), start: worldPoint, original: bound, latest: bound, edited: false };
   }
 
   function moveCameraBoundTransform(event: ReactPointerEvent<SVGSVGElement>) {
@@ -809,7 +1298,12 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     if (!worldPoint) return true;
     const next = active.mode === "move"
       ? moveSpineCameraBound(active.original, worldPoint.x - active.start.x, worldPoint.y - active.start.y)
-      : resizeSpineCameraBound(active.original, active.handle!, worldPoint);
+      : resizeSpineCameraBound(active.original, active.handle!, worldPoint, 0.01, cameraAspectLocked ? cameraAspectValue(cameraTrack?.aspectRatio ?? "16:9") : undefined);
+    active.latest = next;
+    if (!active.edited && (next.x !== active.original.x || next.y !== active.original.y || next.width !== active.original.width || next.height !== active.original.height)) {
+      onBeginCameraEdit();
+      active.edited = true;
+    }
     updateCameraBound(active.boundId, next, false);
     return true;
   }
@@ -821,11 +1315,98 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     event.stopPropagation();
     cameraBoundTransformRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (active.edited) {
+      const current = active.latest;
+      if (current.x === active.original.x && current.y === active.original.y && current.width === active.original.width && current.height === active.original.height) onCancelCameraEdit();
+      else onEndCameraEdit();
+    }
     return true;
   }
 
+  function beginCameraShotTransform(
+    event: ReactPointerEvent<SVGElement>,
+    transformMode: CameraShotTransform["mode"],
+    handle?: SpineCameraBoundResizeHandle,
+  ) {
+    if (mode !== "camera" || cameraTool !== "select" || cameraBoundDrawing || cameraSpacePanRef.current || event.button !== 0) return;
+    const keyframe = cameraTrack?.keyframes.find((item) => item.id === selectedCameraKeyframeId);
+    const svg = event.currentTarget.ownerSVGElement;
+    const canvasPoint = cameraBoundCanvasPoint(event);
+    const worldPoint = canvasPoint ? cameraBoundWorldPoint(canvasPoint) : null;
+    if (!keyframe || !svg || !worldPoint) return;
+    event.preventDefault();
+    event.stopPropagation();
+    svg.setPointerCapture(event.pointerId);
+    cameraShotTransformRef.current = { pointerId: event.pointerId, keyframeId: keyframe.id, mode: transformMode, ...(handle ? { handle } : {}), start: worldPoint, original: keyframe, latest: keyframe, edited: false };
+    setCameraInspectorTarget("shot");
+    setPlaying(false);
+    setCurrentTime(keyframe.time);
+  }
+
+  function moveCameraShotTransform(event: ReactPointerEvent<SVGSVGElement>) {
+    const active = cameraShotTransformRef.current;
+    if (!active || active.pointerId !== event.pointerId) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    const canvasPoint = cameraBoundCanvasPoint(event);
+    const worldPoint = canvasPoint ? cameraBoundWorldPoint(canvasPoint) : null;
+    const track = cameraTrack;
+    if (!worldPoint || !track) return true;
+    const next = active.mode === "move"
+      ? moveSpineCameraKeyframe(active.original, worldPoint.x - active.start.x, worldPoint.y - active.start.y)
+      : resizeSpineCameraKeyframe(active.original, active.handle!, worldPoint, cameraAspectValue(track.aspectRatio));
+    active.latest = next;
+    if (!active.edited && (next.centerX !== active.original.centerX || next.centerY !== active.original.centerY || next.frameHeight !== active.original.frameHeight)) {
+      onBeginCameraEdit();
+      active.edited = true;
+    }
+    updateCameraKeyframe(active.keyframeId, { centerX: next.centerX, centerY: next.centerY, frameHeight: next.frameHeight }, false);
+    return true;
+  }
+
+  function endCameraShotTransform(event: ReactPointerEvent<SVGSVGElement>) {
+    const active = cameraShotTransformRef.current;
+    if (!active || active.pointerId !== event.pointerId) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    cameraShotTransformRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (active.edited) {
+      const current = active.latest;
+      if (current.centerX === active.original.centerX && current.centerY === active.original.centerY && current.frameHeight === active.original.frameHeight) onCancelCameraEdit();
+      else onEndCameraEdit();
+    }
+    return true;
+  }
+
+  function cancelCameraShotTransform(event: ReactPointerEvent<SVGSVGElement>) {
+    const active = cameraShotTransformRef.current;
+    if (!active || active.pointerId !== event.pointerId) return false;
+    cameraShotTransformRef.current = null;
+    updateCameraKeyframe(active.keyframeId, active.original, false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (active.edited) onCancelCameraEdit();
+    return true;
+  }
+
+  function handleCameraOverlayLostPointerCapture(event: ReactPointerEvent<SVGSVGElement>) {
+    const bound = cameraBoundTransformRef.current;
+    if (bound?.pointerId === event.pointerId) {
+      cameraBoundTransformRef.current = null;
+      updateCameraBound(bound.boundId, bound.original, false);
+      if (bound.edited) onCancelCameraEdit();
+    }
+    const shot = cameraShotTransformRef.current;
+    if (shot?.pointerId === event.pointerId) {
+      cameraShotTransformRef.current = null;
+      updateCameraKeyframe(shot.keyframeId, shot.original, false);
+      if (shot.edited) onCancelCameraEdit();
+    }
+    if (cameraBoundDrawRef.current?.pointerId === event.pointerId) cancelCameraBoundDraw();
+  }
+
   function beginCameraBoundDraw(event: ReactPointerEvent<SVGSVGElement>) {
-    if (mode !== "camera" || cameraTool !== "draw" || !cameraBoundDrawing || event.button !== 0) return;
+    if (mode !== "camera" || cameraTool !== "draw" || !cameraBoundDrawing || cameraSpacePanRef.current || event.button !== 0) return;
     const point = cameraBoundCanvasPoint(event);
     if (!point) return;
     event.preventDefault();
@@ -838,6 +1419,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
 
   function moveCameraBoundDraw(event: ReactPointerEvent<SVGSVGElement>) {
     if (moveCameraBoundTransform(event)) return;
+    if (moveCameraShotTransform(event)) return;
     const active = cameraBoundDrawRef.current;
     if (!active || active.pointerId !== event.pointerId) return;
     event.preventDefault();
@@ -851,6 +1433,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
 
   function endCameraBoundDraw(event: ReactPointerEvent<SVGSVGElement>) {
     if (endCameraBoundTransform(event)) return;
+    if (endCameraShotTransform(event)) return;
     const active = cameraBoundDrawRef.current;
     if (!active || active.pointerId !== event.pointerId) return;
     event.preventDefault();
@@ -882,10 +1465,12 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       size.width,
       size.height,
       existingBounds.length,
+      cameraAspectLocked ? cameraAspectValue(cameraTrack?.aspectRatio ?? "16:9") : undefined,
     );
     if (!bound) return;
     updateCameraTrack((value) => ({ ...value, enabled: true, safeBounds: [...value.safeBounds, bound] }));
     setSelectedCameraBoundId(bound.id);
+    setCameraInspectorTarget("boundary");
     setCameraTool("select");
     setCameraGuidesVisible(true);
     onStatus(`Added ${bound.name}. Authored camera output will stay within this scene region.`);
@@ -912,12 +1497,15 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         ? { ...keyframe, constraint: { mode: "automatic" } }
         : keyframe),
     }));
-    if (selectedCameraBoundId === id) setSelectedCameraBoundId(null);
+    if (selectedCameraBoundId === id) {
+      setSelectedCameraBoundId(null);
+      setCameraInspectorTarget("settings");
+    }
   }
 
   function layerAnimation(layer: EditorTimelineLayer): string {
     const meta = metas[layer.id];
-    if (!meta || !timeline) return layer.animation || meta?.idleAnimation || meta?.animations[0] || "";
+    if (!meta || !timeline) return layer.animation || meta?.idleAnimation || "";
     const intro = meta.introAnimation ? animationDurations[`${layer.id}:${meta.introAnimation}`] ?? 0 : 0;
     return timelineLayerAnimation(layer, meta, undefined, currentTime, timeline.sequenceId ?? "legacy", timeline.openingMode ?? "direct", intro);
   }
@@ -1850,6 +2438,23 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     return () => document.removeEventListener("pointerdown", closeOutside);
   }, []);
 
+  useEffect(() => {
+    if (mode !== "camera") setCameraContextMenu(null);
+  }, [mode]);
+
+  useEffect(() => {
+    if (mode !== "camera" || cameraContextMenu) return;
+    const escapeCameraInteraction = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || isTextEditingTarget(event.target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      cancelCameraOperationOrSelection();
+      stageRef.current?.focus();
+    };
+    document.addEventListener("keydown", escapeCameraInteraction);
+    return () => document.removeEventListener("keydown", escapeCameraInteraction);
+  }, [mode, cameraContextMenu, cameraBoundDrawing]);
+
   function updateTimeline(mutator: (timeline: EditorProject["timeline"]) => EditorProject["timeline"], history = true) {
     const callback = history ? onMutate : onLive;
     callback((current) => ({ ...current, timeline: mutator(current.timeline) }));
@@ -1910,7 +2515,11 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       onStatus("Wait for the selected Spine layer to finish loading before adding an animation clip.");
       return;
     }
-    const animation = meta.idleAnimation || meta.animations.find((name) => /^idle(?:_|$)/i.test(name)) || meta.animations[0] || "";
+    const animation = layer.animation || meta.idleAnimation || "";
+    if (!animation) {
+      onStatus("No idle animation detected. Choose an animation explicitly on the layer before adding a clip.");
+      return;
+    }
     const start = snapTime(currentTime, timeline.snap, Number.POSITIVE_INFINITY);
     const duration = Math.max(0.1, animationDurations[`${layer.id}:${animation}`] ?? (timeline.sequenceId === "opening" ? openingIdleDuration || 3 : 2));
     const loop = /^idle(?:_|$)/i.test(animation);
@@ -2659,10 +3268,16 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   }
 
   function beginStagePan(event: ReactPointerEvent<HTMLDivElement>) {
-    if (cameraBoundDrawing || (mode === "camera" && cameraTool !== "pan") || event.button !== 0 || (event.target instanceof Element && event.target.closest(".timeline-stage-controls"))) return;
+    if (event.button === 0 || event.button === 1) stagePanMovedRef.current = false;
+    const middlePan = event.button === 1;
+    const leftPan = event.button === 0 && (mode === "camera"
+      ? cameraSpacePanRef.current || (cameraTool === "pan" && !cameraBoundDrawing)
+      : !cameraBoundDrawing);
+    if ((!middlePan && !leftPan) || (event.target instanceof Element && event.target.closest(".timeline-stage-controls"))) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     stagePanRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+    stagePanMovedRef.current = false;
     setStagePanning(true);
   }
 
@@ -2672,6 +3287,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     const deltaX = event.clientX - pan.x;
     const deltaY = event.clientY - pan.y;
     if (deltaX === 0 && deltaY === 0) return;
+    stagePanMovedRef.current = true;
     stagePanRef.current = { pointerId: pan.pointerId, x: event.clientX, y: event.clientY };
     setStageView((value) => panStageView(value, deltaX, deltaY));
   }
@@ -2682,6 +3298,131 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     stagePanRef.current = null;
     setStagePanning(false);
+  }
+
+  function cancelCameraOperationOrSelection() {
+    const stage = stageRef.current;
+    if (cameraBoundDrawRef.current || cameraBoundDrawing) {
+      const active = cameraBoundDrawRef.current;
+      cameraBoundDrawRef.current = null;
+      const svg = stage?.querySelector("svg.timeline-camera-overlay");
+      if (active && svg instanceof SVGSVGElement && svg.hasPointerCapture(active.pointerId)) svg.releasePointerCapture(active.pointerId);
+      cancelCameraBoundDraw();
+      return;
+    }
+    const transform = cameraBoundTransformRef.current;
+    if (transform) {
+      cameraBoundTransformRef.current = null;
+      updateCameraBound(transform.boundId, transform.original, false);
+      if (transform.edited) onCancelCameraEdit();
+      const svg = stage?.querySelector("svg.timeline-camera-overlay");
+      if (svg instanceof SVGSVGElement && svg.hasPointerCapture(transform.pointerId)) svg.releasePointerCapture(transform.pointerId);
+      return;
+    }
+    const shotTransform = cameraShotTransformRef.current;
+    if (shotTransform) {
+      cameraShotTransformRef.current = null;
+      updateCameraKeyframe(shotTransform.keyframeId, shotTransform.original, false);
+      if (shotTransform.edited) onCancelCameraEdit();
+      const svg = stage?.querySelector("svg.timeline-camera-overlay");
+      if (svg instanceof SVGSVGElement && svg.hasPointerCapture(shotTransform.pointerId)) svg.releasePointerCapture(shotTransform.pointerId);
+      return;
+    }
+    const keyframeDrag = cameraKeyframeDragRef.current;
+    if (keyframeDrag) {
+      cameraKeyframeDragRef.current = null;
+      updateCameraKeyframe(keyframeDrag.keyframeId, keyframeDrag.original, false);
+      setCurrentTime(keyframeDrag.original.time);
+      setCameraKeyframeTimeIssue(null);
+      if (keyframeDrag.element.hasPointerCapture(keyframeDrag.pointerId)) keyframeDrag.element.releasePointerCapture(keyframeDrag.pointerId);
+      if (keyframeDrag.edited) onCancelCameraEdit();
+      return;
+    }
+    if (stagePanRef.current) {
+      const pan = stagePanRef.current;
+      stagePanRef.current = null;
+      if (stage?.hasPointerCapture(pan.pointerId)) stage.releasePointerCapture(pan.pointerId);
+      setStagePanning(false);
+      return;
+    }
+    setSelectedCameraBoundId(null);
+    setSelectedCameraKeyframeId(null);
+    setCameraInspectorTarget("settings");
+  }
+
+  function handleCameraStageKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (isTextEditingTarget(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.code === "Space" || event.key === " ") return;
+    if (event.repeat) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelCameraOperationOrSelection();
+      return;
+    }
+    switch (event.key.toLocaleLowerCase()) {
+      case "v":
+        event.preventDefault(); event.stopPropagation();
+        cancelCameraBoundDraw();
+        break;
+      case "h":
+        event.preventDefault(); event.stopPropagation();
+        cancelCameraBoundDraw(); setCameraTool("pan");
+        break;
+      case "b":
+        event.preventDefault(); event.stopPropagation();
+        setCameraTool("draw"); setCameraBoundDrawing(true); setCameraGuidesVisible(true);
+        break;
+      case "f":
+        event.preventDefault(); event.stopPropagation();
+        setStageView(resetStageView()); spineRenderersRef.current.get(referenceLayerId)?.resetCamera();
+        break;
+    }
+  }
+
+  function clearCameraSceneSelection(event: React.MouseEvent<HTMLDivElement>) {
+    if (event.button !== 0 || cameraBoundDrawing || cameraBoundDrawRef.current || stagePanning || cameraSpacePanRef.current) return;
+    if (stagePanMovedRef.current) {
+      stagePanMovedRef.current = false;
+      return;
+    }
+    if (event.target instanceof Element && event.target.closest(".timeline-camera-bound, .timeline-camera-bound-handle, .timeline-camera-shot-frame, .timeline-camera-shot-handle")) return;
+    setSelectedCameraBoundId(null);
+    setSelectedCameraKeyframeId(null);
+    setCameraInspectorTarget("settings");
+  }
+
+  function handleCameraStageKeyDownCapture(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (isTextEditingTarget(event.target) || event.altKey || event.ctrlKey || event.metaKey || event.repeat) return;
+    if (event.code === "Space" || event.key === " ") {
+      event.preventDefault();
+      cameraSpacePanRef.current = true;
+      setCameraSpacePanning(true);
+    }
+  }
+
+  function beginCameraSplitResize(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    cameraSplitPointerRef.current = event.pointerId;
+    setCameraSplitDragging(true);
+  }
+
+  function moveCameraSplitResize(event: ReactPointerEvent<HTMLDivElement>) {
+    if (cameraSplitPointerRef.current !== event.pointerId) return;
+    const pair = cameraPreviewPairRef.current;
+    const rect = pair?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return;
+    setCameraSceneShare(Math.max(0.35, Math.min(0.8, (event.clientX - rect.left) / rect.width)));
+    event.preventDefault();
+  }
+
+  function endCameraSplitResize(event: ReactPointerEvent<HTMLDivElement>) {
+    if (cameraSplitPointerRef.current !== event.pointerId) return;
+    cameraSplitPointerRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    setCameraSplitDragging(false);
   }
 
   function zoomStageAtCursor(event: ReactWheelEvent<HTMLDivElement>) {
@@ -2739,6 +3480,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   }, [directory, timeline?.sequenceId]);
 
   timelineKeydownRef.current = (event: KeyboardEvent) => {
+    if (mode === "camera") return;
     if (isTextEditingTarget(event.target)) return;
     const key = event.key.toLowerCase();
     if ((event.ctrlKey || event.metaKey) && ["z", "y"].includes(key)) return;
@@ -2888,6 +3630,8 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const editableCameraTrack = cameraTrack ?? emptyCameraTrack();
   const selectedCameraBound = cameraTrack?.safeBounds.find((bound) => bound.id === selectedCameraBoundId) ?? null;
   const orderedCameraKeyframes = [...(cameraTrack?.keyframes ?? [])].sort((a, b) => a.time - b.time);
+  const cameraPlayheadOccupied = cameraTrack?.keyframes.some((keyframe) => Math.abs(keyframe.time - currentTime) < 0.001) ?? false;
+  const cameraReferenceMissing = Boolean(cameraTrack?.referenceLayerId && !(timeline?.layers ?? []).some((layer) => layer.id === cameraTrack.referenceLayerId));
 
   function renderTimelineAudio() {
     return <div className="timeline-audio-host" aria-hidden="true">
@@ -2902,7 +3646,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         <section className="camera-library-section">
           <div className="editor-section-title"><strong>Named boundaries</strong><span>{cameraTrack?.safeBounds.length ?? 0}</span><button type="button" className="editor-button" onClick={addCameraBound} disabled={!cameraProjectionSize} title="Add a boundary around the current full-scene view"><IconPlus /></button></div>
           <div className="camera-item-list">
-            {(cameraTrack?.safeBounds ?? []).map((bound) => <button key={bound.id} type="button" className={`camera-item${selectedCameraBoundId === bound.id ? " is-selected" : ""}${bound.enabled ? "" : " is-disabled"}`} aria-pressed={selectedCameraBoundId === bound.id} onClick={() => { setSelectedCameraBoundId(bound.id); setCameraTool("select"); }}>
+            {(cameraTrack?.safeBounds ?? []).map((bound) => <button key={bound.id} type="button" className={`camera-item${selectedCameraBoundId === bound.id ? " is-selected" : ""}${bound.enabled ? "" : " is-disabled"}`} aria-pressed={selectedCameraBoundId === bound.id} onClick={() => { setSelectedCameraBoundId(bound.id); setCameraInspectorTarget("boundary"); setCameraTool("select"); }} onContextMenu={(event) => openCameraContextMenu(event, { kind: "boundary", id: bound.id })}>
               <span className="camera-item-marker boundary" />
               <span className="camera-item-copy"><strong>{bound.name}</strong><small>{bound.enabled ? "Enabled" : "Disabled"}{bound.id === solvedCamera?.activeBoundId ? " · active" : ""}</small></span>
             </button>)}
@@ -2913,12 +3657,12 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
           </div>
         </section>
         <section className="camera-library-section camera-shot-list-section">
-          <div className="editor-section-title"><strong>Camera shots</strong><span>{orderedCameraKeyframes.length}</span><button type="button" className="editor-button" onClick={addCameraKeyframe} title="Add or replace a shot at the shared playhead"><IconPlus /></button></div>
+          <div className="editor-section-title"><strong>Camera shots</strong><span>{orderedCameraKeyframes.length}</span><button type="button" className="editor-button" onClick={addCameraKeyframe} title="Add a shot at the shared playhead"><IconPlus /></button></div>
           <div className="camera-item-list">
             {orderedCameraKeyframes.map((keyframe, index) => {
               const constraint = keyframe.constraint;
               const bound = constraint?.mode === "manual" ? cameraTrack?.safeBounds.find((item) => item.id === constraint.boundId) : null;
-              return <button key={keyframe.id} type="button" className={`camera-item${selectedCameraKeyframeId === keyframe.id ? " is-selected" : ""}`} aria-pressed={selectedCameraKeyframeId === keyframe.id} onClick={() => selectCameraKeyframe(keyframe.id)}>
+              return <button key={keyframe.id} type="button" className={`camera-item${selectedCameraKeyframeId === keyframe.id ? " is-selected" : ""}`} aria-pressed={selectedCameraKeyframeId === keyframe.id} onClick={() => selectCameraKeyframe(keyframe.id)} onContextMenu={(event) => openCameraContextMenu(event, { kind: "shot", id: keyframe.id })}>
                 <span className="camera-item-marker shot">{index + 1}</span>
                 <span className="camera-item-copy"><strong>{seconds(keyframe.time)}</strong><small>{bound?.name ?? (keyframe.constraint?.mode === "none" ? "Unconstrained" : "Track boundary")}</small></span>
               </button>;
@@ -2933,78 +3677,167 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
           <div><strong>{timeline.sequenceId === "opening" ? "Opening / Intro" : timeline.sequenceId?.startsWith("talk-") ? `Talk ${timeline.sequenceId.replace("talk-", "")}` : "Recovered composition"}</strong><small>Full-scene authoring · {cameraTrack?.aspectRatio ?? "16:9"} constrained output</small></div>
           <label className="camera-sequence-picker">Sequence<select value={timeline.sequenceId ?? "legacy"} onChange={(event) => chooseSequence(event.target.value)}>{sequenceIds.map((id) => <option key={id} value={id}>{id === "opening" ? "Opening / Intro" : id.startsWith("talk-") ? `Talk ${id.slice(5).padStart(2, "0")}` : id}</option>)}{(!timeline.sequenceId || timeline.sequenceId === "legacy") && <option value="legacy">Recovered composition</option>}</select></label>
           <button type="button" className={`editor-button${cameraTrack?.enabled ? " active" : ""}`} onClick={() => updateCameraTrack((value) => ({ ...value, enabled: !value.enabled }))} aria-pressed={cameraTrack?.enabled === true}>{cameraTrack?.enabled ? "Camera enabled" : "Enable camera"}</button>
+          <button type="button" className={`editor-button${cameraInspectorTarget === "settings" ? " active" : ""}`} onClick={() => setCameraInspectorTarget("settings")} aria-pressed={cameraInspectorTarget === "settings"}>Camera settings</button>
           <button type="button" className="editor-button camera-add-shot" onClick={addCameraKeyframe}><IconPlus /> Add shot at playhead</button>
         </header>
 
-        <div className="camera-preview-pair">
+        <div ref={cameraPreviewPairRef} className="camera-preview-pair" style={{ "--camera-scene-share": `${cameraSceneShare}fr`, "--camera-output-share": `${1 - cameraSceneShare}fr` } as CSSProperties}>
           <section className="camera-preview-panel camera-scene-panel" aria-label="Full scene editor">
             <header className="camera-preview-heading"><span><strong>Scene</strong><small>Full artwork · boundary coordinates stay in scene space</small></span>
               <div className="camera-tool-group" role="toolbar" aria-label="Camera scene tools">
-                <button type="button" className={`editor-button${cameraTool === "select" ? " active" : ""}`} aria-pressed={cameraTool === "select"} onClick={() => { cancelCameraBoundDraw(); setCameraTool("select"); }} title="Select and resize boundaries">Select</button>
-                <button type="button" className={`editor-button${cameraTool === "pan" ? " active" : ""}`} aria-pressed={cameraTool === "pan"} onClick={() => { cancelCameraBoundDraw(); setCameraTool("pan"); }} title="Pan the scene canvas">Pan</button>
-                <button type="button" className={`editor-button${cameraTool === "draw" ? " active" : ""}`} aria-pressed={cameraTool === "draw"} onClick={() => { setCameraTool("draw"); setCameraBoundDrawing(true); setCameraGuidesVisible(true); }} title="Draw a named camera boundary">Draw</button>
+                <button type="button" className={`editor-button${cameraTool === "select" ? " active" : ""}`} aria-pressed={cameraTool === "select"} onClick={() => { cancelCameraBoundDraw(); setCameraTool("select"); }} title="Select and resize boundaries (V)">Select</button>
+                <button type="button" className={`editor-button${cameraTool === "pan" ? " active" : ""}`} aria-pressed={cameraTool === "pan"} onClick={() => { cancelCameraBoundDraw(); setCameraTool("pan"); }} title="Pan the scene canvas (H)">Pan</button>
+                <button type="button" className={`editor-button${cameraTool === "draw" ? " active" : ""}`} aria-pressed={cameraTool === "draw"} onClick={() => { setCameraTool("draw"); setCameraBoundDrawing(true); setCameraGuidesVisible(true); }} title="Draw a named camera boundary (B)">Draw</button>
                 <button type="button" className={`editor-button${cameraGuidesVisible ? " active" : ""}`} aria-pressed={cameraGuidesVisible} onClick={() => setCameraGuidesVisible((visible) => !visible)} title="Show or hide scene boundary guides">Guides</button>
-                <button type="button" className="editor-button" onClick={() => { setStageView(resetStageView()); spineRenderersRef.current.get(referenceLayerId)?.resetCamera(); }} title="Fit the entire scene">Fit scene</button>
+                <button type="button" className={`editor-button${cameraShotGuidesVisible ? " active" : ""}`} aria-pressed={cameraShotGuidesVisible} onClick={() => setCameraShotGuidesVisible((visible) => !visible)} title="Show or hide camera shot frames">Shots</button>
+                <button type="button" className={`editor-button${cameraCenterGuidesVisible ? " active" : ""}`} aria-pressed={cameraCenterGuidesVisible} onClick={() => setCameraCenterGuidesVisible((visible) => !visible)} title="Show or hide shot center guides">Centers</button>
+                <button type="button" className={`editor-button${cameraCompositionGuidesVisible ? " active" : ""}`} aria-pressed={cameraCompositionGuidesVisible} onClick={() => setCameraCompositionGuidesVisible((visible) => !visible)} title="Show or hide thirds composition guides">Thirds</button>
+                <button type="button" className={`editor-button${cameraAspectLocked ? " active" : ""}`} aria-pressed={cameraAspectLocked} onClick={() => setCameraAspectLocked((locked) => !locked)} title="Lock boundary drawing and resizing to the output aspect ratio">Lock ratio</button>
+                <button type="button" className="editor-button" onClick={() => { setStageView(resetStageView()); spineRenderersRef.current.get(referenceLayerId)?.resetCamera(); }} title="Fit the entire artwork (F)">Fit scene</button>
+                <span className="camera-scene-zoom" role="group" aria-label="Scene canvas zoom">
+                  <button type="button" className="editor-icon-button" aria-label="Zoom out scene" title="Zoom out" disabled={stageView.scale <= 0.5} onClick={() => zoomStageBy(0.8)}><IconMinus /></button>
+                  <input className="camera-zoom-percent" type="text" inputMode="numeric" value={cameraZoomDraft ?? String(Math.round(stageView.scale * 100))} aria-label="Scene zoom percentage" onFocus={() => setCameraZoomDraft(String(Math.round(stageView.scale * 100)))} onChange={(event) => setCameraZoomDraft(event.target.value.replace(/[^0-9]/g, ""))} onBlur={() => { if (cameraZoomDraft !== null && cameraZoomDraft.trim()) setStageView((value) => ({ ...value, scale: clampStageScale(Number(cameraZoomDraft) / 100) })); setCameraZoomDraft(null); }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); else if (event.key === "Escape") { setCameraZoomDraft(null); event.currentTarget.blur(); } }} />
+                  <button type="button" className="editor-icon-button" aria-label="Zoom in scene" title="Zoom in" disabled={stageView.scale >= 3} onClick={() => zoomStageBy(1.25)}><IconPlus /></button>
+                </span>
+                <button type="button" className="editor-button camera-shortcut-help" title="V Select · H Pan · B Draw boundary · F Fit scene · Space-drag or middle-drag to pan · Escape cancels or deselects" aria-label="Camera workspace shortcuts">?</button>
               </div>
             </header>
             <div className="camera-scene-wrap">
-              <div ref={stageRef} className={`timeline-stage camera-scene-stage tool-${cameraTool}${stagePanning ? " is-panning" : ""}${cameraBoundDrawing ? " is-drawing-camera-bound" : ""}`} role="application" aria-label={cameraBoundDrawing ? "Full scene. Drag to draw a camera boundary." : "Full scene camera editor"} onPointerDown={beginStagePan} onPointerMove={moveStagePan} onPointerUp={endStagePan} onPointerCancel={endStagePan} onWheel={zoomStageAtCursor}>
+              <div ref={stageRef} className={`timeline-stage camera-scene-stage tool-${cameraTool}${stagePanning ? " is-panning" : ""}${cameraSpacePanning ? " is-space-panning" : ""}${cameraBoundDrawing ? " is-drawing-camera-bound" : ""}`} role="application" tabIndex={0} aria-label={cameraBoundDrawing ? "Full scene. Drag to draw a camera boundary. Press V for Select, H for Pan, B for Draw, F to fit, or hold Space and drag to pan." : "Full scene camera editor. Middle-drag to pan; press V for Select, H for Pan, B for Draw, F to fit, or hold Space and drag to pan."} onKeyDownCapture={handleCameraStageKeyDownCapture} onKeyDown={handleCameraStageKeyDown} onClick={clearCameraSceneSelection} onContextMenu={(event) => openCameraContextMenu(event, { kind: "empty" })} onPointerDown={beginStagePan} onPointerMove={moveStagePan} onPointerUp={endStagePan} onPointerCancel={endStagePan} onLostPointerCapture={endStagePan} onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }} onWheel={zoomStageAtCursor}>
                 <div className="timeline-stage-content" style={{ transform: `translate3d(${stageView.x}px, ${stageView.y}px, 0) scale(${stageView.scale})` }}>
                   <div className="timeline-visual-composition">
                     {displayVisualTracks.map((track) => track.kind === "spine"
-                      ? <SpineTimelineLayerCanvas key={`camera-scene-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} currentTime={currentTime} mainAnimation={mainAnimation} mainAnimationTime={mainAnimationTime} mainAnimationLoop={mainAnimationLoop} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} characterHidden={characterHidden} sharedCameraPose={sharedCameraPose} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={setSharedCameraPose} onAnimationDuration={onAnimationDuration} onRenderer={(id, renderer) => { if (renderer) spineRenderersRef.current.set(id, renderer); else spineRenderersRef.current.delete(id); setCameraProjectionRevision((value) => value + 1); }} onError={onError} />
+                      ? <SpineTimelineLayerCanvas key={`camera-scene-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} currentTime={currentTime} mainAnimation={mainAnimation} mainAnimationTime={mainAnimationTime} mainAnimationLoop={mainAnimationLoop} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} characterHidden={characterHidden} cameraMode="artwork" sharedCameraPose={sharedCameraPose} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={setSharedCameraPose} onAnimationDuration={onAnimationDuration} onRenderer={(id, renderer) => { if (renderer) spineRenderersRef.current.set(id, renderer); else spineRenderersRef.current.delete(id); setCameraProjectionRevision((value) => value + 1); }} onError={onError} />
                       : <TimelineColorLayerPreview key={`camera-scene-color-${track.layer.id}`} layer={track.layer} time={currentTime} />)}
                     {!displayVisualTracks.length && <div className="timeline-empty"><strong>No layers</strong><span>Add a Spine layer in Timeline to preview this scene.</span></div>}
                   </div>
-                  {cameraProjectionSize && (cameraGuidesVisible || cameraBoundDrawing || cameraBoundDraft) && <svg className={`timeline-camera-overlay camera-scene-overlay${cameraBoundDrawing ? " is-drawing" : ""}`} viewBox={`0 0 ${cameraProjectionSize.width} ${cameraProjectionSize.height}`} preserveAspectRatio="none" role="application" aria-label={cameraBoundDrawing ? "Drag over the full scene to draw a camera boundary" : "Full-scene camera boundaries"} style={cameraBoundDrawing ? { pointerEvents: "all", touchAction: "none" } : undefined} onPointerDown={beginCameraBoundDraw} onPointerMove={moveCameraBoundDraw} onPointerUp={endCameraBoundDraw} onPointerCancel={(event) => { event.stopPropagation(); if (cameraBoundTransformRef.current?.pointerId === event.pointerId) endCameraBoundTransform(event); else if (cameraBoundDrawRef.current?.pointerId === event.pointerId) cancelCameraBoundDraw(); }}>
+                  {cameraProjectionSize && (cameraGuidesVisible || cameraShotGuidesVisible && (cameraOutputRect || selectedCameraKeyframe) || cameraBoundDrawing || cameraBoundDraft) && <svg className={`timeline-camera-overlay camera-scene-overlay${cameraBoundDrawing ? " is-drawing" : ""}`} viewBox={`0 0 ${cameraProjectionSize.width} ${cameraProjectionSize.height}`} preserveAspectRatio="none" role="application" aria-label={cameraBoundDrawing ? "Drag over the full scene to draw a camera boundary" : "Full-scene camera boundaries and selected camera shot"} style={cameraBoundDrawing ? { pointerEvents: "all", touchAction: "none" } : undefined} onPointerDown={beginCameraBoundDraw} onPointerMove={moveCameraBoundDraw} onPointerUp={endCameraBoundDraw} onPointerCancel={(event) => {
+                    event.stopPropagation();
+                    const boundTransform = cameraBoundTransformRef.current;
+                    if (boundTransform?.pointerId === event.pointerId) {
+                      cameraBoundTransformRef.current = null;
+                      updateCameraBound(boundTransform.boundId, boundTransform.original, false);
+                      if (boundTransform.edited) onCancelCameraEdit();
+                      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+                    } else if (cameraShotTransformRef.current?.pointerId === event.pointerId) cancelCameraShotTransform(event);
+                    else if (cameraBoundDrawRef.current?.pointerId === event.pointerId) cancelCameraBoundDraw();
+                  }} onLostPointerCapture={handleCameraOverlayLostPointerCapture}>
                     {cameraBoundDrawing && <rect className="timeline-camera-draw-surface" x="0" y="0" width={cameraProjectionSize.width} height={cameraProjectionSize.height} />}
-                    {cameraGuidesVisible && cameraBoundFrames.map((bound) => <g key={bound.id}>
-                      <rect className={`timeline-camera-bound${bound.active ? " is-active" : ""}${bound.selected ? " is-selected" : ""}${bound.enabled ? "" : " is-disabled"}`} x={bound.x} y={bound.y} width={bound.width} height={bound.height} role="button" tabIndex={cameraTool === "select" ? 0 : -1} aria-pressed={bound.selected} aria-label={`Select ${cameraTrack?.safeBounds.find((item) => item.id === bound.id)?.name ?? "camera boundary"}`} onPointerDown={(event) => beginCameraBoundTransform(event, bound.id, "move")} onClick={() => { if (cameraTool === "select") setSelectedCameraBoundId(bound.id); }} onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); setSelectedCameraBoundId(bound.id); return; }
+                    {cameraShotGuidesVisible && cameraOutputRect && <rect className="timeline-camera-shot-frame is-output" x={cameraOutputRect.x} y={cameraOutputRect.y} width={cameraOutputRect.width} height={cameraOutputRect.height} />}
+                    {cameraShotGuidesVisible && selectedCameraShotRect && selectedCameraKeyframe && <g onContextMenu={(event) => openCameraContextMenu(event, { kind: "shot", id: selectedCameraKeyframe.id })}>
+                      <rect className="timeline-camera-shot-frame is-selected" x={selectedCameraShotRect.x} y={selectedCameraShotRect.y} width={selectedCameraShotRect.width} height={selectedCameraShotRect.height} role="button" tabIndex={cameraTool === "select" ? 0 : -1} aria-label={`Move selected camera shot at ${seconds(selectedCameraKeyframe.time)}`} onPointerDown={(event) => beginCameraShotTransform(event, "move")} onClick={(event) => event.stopPropagation()} />
+                      {cameraCenterGuidesVisible && <circle className="timeline-camera-center-guide" cx={selectedCameraShotRect.x + selectedCameraShotRect.width / 2} cy={selectedCameraShotRect.y + selectedCameraShotRect.height / 2} r="4" />}
+                      {cameraCompositionGuidesVisible && <g className="timeline-camera-composition-guides">
+                        <line x1={selectedCameraShotRect.x + selectedCameraShotRect.width / 3} y1={selectedCameraShotRect.y} x2={selectedCameraShotRect.x + selectedCameraShotRect.width / 3} y2={selectedCameraShotRect.y + selectedCameraShotRect.height} />
+                        <line x1={selectedCameraShotRect.x + selectedCameraShotRect.width * 2 / 3} y1={selectedCameraShotRect.y} x2={selectedCameraShotRect.x + selectedCameraShotRect.width * 2 / 3} y2={selectedCameraShotRect.y + selectedCameraShotRect.height} />
+                        <line x1={selectedCameraShotRect.x} y1={selectedCameraShotRect.y + selectedCameraShotRect.height / 3} x2={selectedCameraShotRect.x + selectedCameraShotRect.width} y2={selectedCameraShotRect.y + selectedCameraShotRect.height / 3} />
+                        <line x1={selectedCameraShotRect.x} y1={selectedCameraShotRect.y + selectedCameraShotRect.height * 2 / 3} x2={selectedCameraShotRect.x + selectedCameraShotRect.width} y2={selectedCameraShotRect.y + selectedCameraShotRect.height * 2 / 3} />
+                      </g>}
+                      {cameraTool === "select" && cameraInspectorTarget === "shot" && (() => {
+                        const cx = selectedCameraShotRect.x + selectedCameraShotRect.width / 2;
+                        const cy = selectedCameraShotRect.y + selectedCameraShotRect.height / 2;
+                        const handles: { id: SpineCameraBoundResizeHandle; x: number; y: number }[] = [
+                          { id: "nw", x: selectedCameraShotRect.x, y: selectedCameraShotRect.y }, { id: "n", x: cx, y: selectedCameraShotRect.y }, { id: "ne", x: selectedCameraShotRect.x + selectedCameraShotRect.width, y: selectedCameraShotRect.y },
+                          { id: "e", x: selectedCameraShotRect.x + selectedCameraShotRect.width, y: cy }, { id: "se", x: selectedCameraShotRect.x + selectedCameraShotRect.width, y: selectedCameraShotRect.y + selectedCameraShotRect.height },
+                          { id: "s", x: cx, y: selectedCameraShotRect.y + selectedCameraShotRect.height }, { id: "sw", x: selectedCameraShotRect.x, y: selectedCameraShotRect.y + selectedCameraShotRect.height }, { id: "w", x: selectedCameraShotRect.x, y: cy },
+                        ];
+                        const size = 9 / stageView.scale;
+                        return handles.map((handle) => <rect key={handle.id} className={`timeline-camera-shot-handle is-${handle.id}`} x={handle.x - size / 2} y={handle.y - size / 2} width={size} height={size} rx={2 / stageView.scale} aria-hidden="true" onPointerDown={(event) => beginCameraShotTransform(event, "resize", handle.id)} onClick={(event) => event.stopPropagation()} />);
+                      })()}
+                    </g>}
+                    {cameraGuidesVisible && cameraBoundFrames.map((bound) => <g key={bound.id} onContextMenu={(event) => openCameraContextMenu(event, { kind: "boundary", id: bound.id })}>
+                      <rect className={`timeline-camera-bound${bound.active ? " is-active" : ""}${bound.selected ? " is-selected" : ""}${bound.enabled ? "" : " is-disabled"}`} x={bound.x} y={bound.y} width={bound.width} height={bound.height} role="button" tabIndex={cameraTool === "select" ? 0 : -1} aria-pressed={bound.selected} aria-label={`Select ${cameraTrack?.safeBounds.find((item) => item.id === bound.id)?.name ?? "camera boundary"}`} onPointerDown={(event) => beginCameraBoundTransform(event, bound.id, "move")} onClick={(event) => { event.stopPropagation(); if (cameraTool === "select") { setSelectedCameraBoundId(bound.id); setCameraInspectorTarget("boundary"); } }} onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); setSelectedCameraBoundId(bound.id); setCameraInspectorTarget("boundary"); return; }
                         if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); event.stopPropagation(); deleteCameraBound(bound.id); return; }
                         const delta = event.shiftKey ? 10 : 1;
                         const move = event.key === "ArrowLeft" ? [-delta, 0] : event.key === "ArrowRight" ? [delta, 0] : event.key === "ArrowUp" ? [0, delta] : event.key === "ArrowDown" ? [0, -delta] : null;
-                        const original = cameraTrack?.safeBounds.find((item) => item.id === bound.id);
+                         const original = cameraTrack?.safeBounds.find((item) => item.id === bound.id);
+                         if (original?.locked) return;
                         if (!move || !original) return;
                         event.preventDefault(); event.stopPropagation();
                         updateCameraBound(bound.id, moveSpineCameraBound(original, move[0]!, move[1]!));
                       }} />
-                      {cameraTool === "select" && bound.selected && !cameraBoundDrawing && (() => {
+                      {cameraTool === "select" && bound.selected && !cameraBoundDrawing && !cameraTrack?.safeBounds.find((item) => item.id === bound.id)?.locked && (() => {
                         const handles: { id: SpineCameraBoundResizeHandle; x: number; y: number }[] = [
                           { id: "nw", x: bound.x, y: bound.y }, { id: "n", x: bound.x + bound.width / 2, y: bound.y }, { id: "ne", x: bound.x + bound.width, y: bound.y },
                           { id: "e", x: bound.x + bound.width, y: bound.y + bound.height / 2 }, { id: "se", x: bound.x + bound.width, y: bound.y + bound.height },
                           { id: "s", x: bound.x + bound.width / 2, y: bound.y + bound.height }, { id: "sw", x: bound.x, y: bound.y + bound.height }, { id: "w", x: bound.x, y: bound.y + bound.height / 2 },
                         ];
-                        return handles.map((handle) => <rect key={handle.id} className={`timeline-camera-bound-handle is-${handle.id}`} x={handle.x - 5} y={handle.y - 5} width="10" height="10" rx="2" aria-hidden="true" onPointerDown={(event) => beginCameraBoundTransform(event, bound.id, "resize", handle.id)} />);
+                        const size = 8 / stageView.scale;
+                        return handles.map((handle) => <rect key={handle.id} className={`timeline-camera-bound-handle is-${handle.id}`} x={handle.x - size / 2} y={handle.y - size / 2} width={size} height={size} rx={2 / stageView.scale} aria-hidden="true" onPointerDown={(event) => beginCameraBoundTransform(event, bound.id, "resize", handle.id)} onClick={(event) => event.stopPropagation()} />);
                       })()}
                     </g>)}
                     {cameraBoundDraft && <rect className="timeline-camera-bound-draft" x={Math.min(cameraBoundDraft.start.x, cameraBoundDraft.end.x)} y={Math.min(cameraBoundDraft.start.y, cameraBoundDraft.end.y)} width={Math.abs(cameraBoundDraft.end.x - cameraBoundDraft.start.x)} height={Math.abs(cameraBoundDraft.end.y - cameraBoundDraft.start.y)} />}
                   </svg>}
                 </div>
-                <div className="timeline-stage-controls camera-scene-controls" aria-label="Scene canvas zoom" onPointerDown={(event) => event.stopPropagation()}>
-                  <button type="button" className="editor-icon-button" aria-label="Zoom out scene" onClick={() => zoomStageBy(0.8)}><IconMinus /></button><output className="timeline-stage-scale">{Math.round(stageView.scale * 100)}%</output><button type="button" className="editor-icon-button" aria-label="Zoom in scene" onClick={() => zoomStageBy(1.25)}><IconPlus /></button>
-                </div>
-                <span className="timeline-stage-hint">{cameraBoundDrawing ? "Drag a rectangle to create a boundary" : cameraTool === "pan" ? "Pan tool · drag to move the full-scene canvas" : cameraTool === "draw" ? "Draw tool · drag a boundary on the scene" : "Select a boundary to move or resize it"}</span>
+                <span className="timeline-stage-hint">{cameraBoundDrawing ? "Drag a rectangle to create a boundary · middle-drag or Space-drag to pan" : cameraTool === "pan" ? "Pan tool · drag to move the full-scene canvas" : cameraTool === "draw" ? "Draw tool · drag a boundary · middle-drag or Space-drag to pan" : "Select a boundary · middle-drag or Space-drag to pan"}</span>
               </div>
             </div>
           </section>
 
+          <div
+            className={`camera-preview-resizer${cameraSplitDragging ? " is-dragging" : ""}`}
+            role="separator"
+            aria-label="Resize scene and output preview panels"
+            aria-orientation="vertical"
+            aria-valuemin={35}
+            aria-valuemax={80}
+            aria-valuenow={Math.round(cameraSceneShare * 100)}
+            tabIndex={0}
+            onPointerDown={beginCameraSplitResize}
+            onPointerMove={moveCameraSplitResize}
+            onPointerUp={endCameraSplitResize}
+            onPointerCancel={endCameraSplitResize}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              setCameraSceneShare((value) => Math.max(0.35, Math.min(0.8, value + (event.key === "ArrowRight" ? 0.02 : -0.02))));
+            }}
+          />
+
           <section className="camera-preview-panel camera-output-panel" aria-label="Constrained camera output preview">
-            <header className="camera-preview-heading"><span><strong>Output preview</strong><small>{cameraTrack?.enabled && solvedCamera?.activeBoundId ? `Constrained by ${cameraTrack.safeBounds.find((bound) => bound.id === solvedCamera.activeBoundId)?.name ?? "active boundary"}` : cameraTrack?.enabled ? "Authored camera framing" : "Camera disabled · fit view"}</small></span><span className="camera-aspect-badge">{editableCameraTrack.aspectRatio}</span></header>
+            <header className="camera-preview-heading"><span><strong>Output preview</strong><small>{cameraTrack?.enabled && sampledCamera?.constraint.mode === "none" ? "Unconstrained camera output" : cameraTrack?.enabled && solvedCamera?.activeBoundId ? `Constrained by ${cameraTrack.safeBounds.find((bound) => bound.id === solvedCamera.activeBoundId)?.name ?? "active boundary"}` : cameraTrack?.enabled ? orderedCameraKeyframes.length ? "Authored camera framing" : "No shots · full-artwork fit" : "Camera disabled · fit view"}</small></span><label className="camera-aspect-control">Aspect ratio<select aria-label="Output aspect ratio" value={editableCameraTrack.aspectRatio} onChange={(event) => updateCameraTrack((value) => ({ ...value, aspectRatio: event.target.value as SpineCameraAspectRatio }))}><option value="16:9">16:9</option><option value="4:3">4:3</option><option value="1:1">1:1</option></select></label></header>
             <div className="camera-output-wrap">
               <div className="camera-output-stage" style={{ "--camera-aspect": cameraAspectValue(editableCameraTrack.aspectRatio) } as CSSProperties}>
                 <div className="timeline-visual-composition camera-output-composition">
                   {displayVisualTracks.map((track) => track.kind === "spine"
-                    ? <SpineTimelineLayerCanvas key={`camera-output-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} currentTime={currentTime} mainAnimation={mainAnimation} mainAnimationTime={mainAnimationTime} mainAnimationLoop={mainAnimationLoop} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} characterHidden={characterHidden} cameraMode="authored" sharedCameraFrame={cameraTrack?.enabled ? solvedCamera?.frame ?? null : null} sharedCameraPose={null} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={() => undefined} onAnimationDuration={onAnimationDuration} onError={onError} />
+                      ? <SpineTimelineLayerCanvas key={`camera-output-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} currentTime={currentTime} mainAnimation={mainAnimation} mainAnimationTime={mainAnimationTime} mainAnimationLoop={mainAnimationLoop} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} characterHidden={characterHidden} cameraMode={cameraTrack?.enabled ? "authored" : "fit"} sharedCameraFrame={cameraTrack?.enabled ? solvedCamera?.frame ?? null : null} sharedCameraPose={null} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={() => undefined} onAnimationDuration={onAnimationDuration} onError={onError} />
                     : <TimelineColorLayerPreview key={`camera-output-color-${track.layer.id}`} layer={track.layer} time={currentTime} />)}
                 </div>
                 {activeSubtitleTexts.length > 0 && <div className="timeline-subtitle-preview camera-output-subtitles" aria-live="polite">{activeSubtitleTexts.map((text, index) => <div key={`${index}-${text}`}>{text}</div>)}</div>}
               </div>
-              {!cameraTrack?.enabled && <span className="camera-output-note">Enable the authored camera to preview its constrained framing.</span>}
             </div>
+            {!cameraTrack?.enabled && <small className="camera-preview-note">Camera disabled. Enable it to preview boundary-constrained framing.</small>}
+            {cameraTrack?.enabled && !orderedCameraKeyframes.length && <small className="camera-preview-note">Previewing the full-artwork fit. Add a shot to author camera motion.</small>}
+            {cameraReferenceMissing && <small className="camera-preview-note" role="status">Saved reference scene is missing; using {cameraReferenceLayer?.name ?? "the fallback scene"}.</small>}
+            {solvedCamera?.diagnostic === "no-bounds" && <small className="camera-preview-note" role="status">No enabled boundaries; output is currently unconstrained.</small>}
+            {solvedCamera?.diagnostic === "invalid-manual-bound" && <small className="camera-preview-note" role="status">The assigned boundary is missing or disabled; automatic selection is used.</small>}
+            {cameraTrack?.enabled && sampledCamera?.constraint.mode === "none" && <small className="camera-preview-note">This shot explicitly ignores boundary constraints.</small>}
             {solvedCamera?.constrained && <small className="camera-solve-status">Frame clamped to fit {solvedCamera.activeBoundId ? cameraTrack?.safeBounds.find((bound) => bound.id === solvedCamera.activeBoundId)?.name : "the assigned boundary"}.</small>}
           </section>
         </div>
+
+        <CameraKeyframeStrip
+          ref={cameraKeyframeStripRef}
+          keyframes={orderedCameraKeyframes}
+          duration={duration}
+          currentTime={currentTime}
+          selectedId={selectedCameraKeyframeId}
+          draggingId={cameraKeyframeDragRef.current?.keyframeId ?? null}
+          timeIssue={cameraKeyframeTimeIssue}
+          onSeek={(clientX) => {
+            const time = cameraTimeFromClientX(clientX);
+            if (time === null) return;
+            setPlaying(false); setPreviewUntil(null); setCurrentTime(time);
+          }}
+          onSelect={selectCameraKeyframe}
+          onRetimeStart={beginCameraKeyframeRetime}
+          onRetimeMove={moveCameraKeyframeRetime}
+          onRetimeEnd={endCameraKeyframeRetime}
+          onRetimeCancel={cancelCameraKeyframeRetime}
+          onTrackContextMenu={(event, time) => openCameraContextMenu(event, { kind: "timeline", time: time ?? 0 })}
+          onKeyframeContextMenu={(event, id) => openCameraContextMenu(event, { kind: "shot", id })}
+        />
 
         <div className="camera-transport" aria-label="Shared timeline playhead">
           <button className="editor-icon-button" type="button" aria-label={playing ? "Pause sequence" : "Play sequence"} onClick={() => setPlaying((value) => !value)}>{playing ? <IconPause /> : <IconPlay />}</button>
@@ -3018,16 +3851,16 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       </main>
 
       <aside className="editor-panel camera-inspector" aria-label="Camera properties">
-        {selectedCameraBound ? <section className="editor-section editor-inspector camera-property-section">
+        {cameraInspectorTarget === "boundary" && selectedCameraBound ? <section className="editor-section editor-inspector camera-property-section">
           <div className="editor-section-title"><strong>Boundary</strong><span>{selectedCameraBound.id === solvedCamera?.activeBoundId ? "Active" : "Named region"}</span></div>
-          <label>Name<input value={selectedCameraBound.name} onChange={(event) => updateCameraBound(selectedCameraBound.id, { name: event.target.value })} /></label>
-          <div className="camera-check-row"><label><input type="checkbox" checked={selectedCameraBound.enabled} onChange={(event) => updateCameraBound(selectedCameraBound.id, { enabled: event.target.checked })} /> Enabled</label><label><input type="checkbox" checked={selectedCameraBound.visible !== false} onChange={(event) => updateCameraBound(selectedCameraBound.id, { visible: event.target.checked })} /> Show guide</label></div>
-          <div className="editor-two-fields"><NumberField label="X" value={selectedCameraBound.x} step={1} precision={2} unit="units" onCommit={(x) => updateCameraBound(selectedCameraBound.id, { x })} /><NumberField label="Y" value={selectedCameraBound.y} step={1} precision={2} unit="units" onCommit={(y) => updateCameraBound(selectedCameraBound.id, { y })} /></div>
-          <div className="editor-two-fields"><NumberField label="Width" value={selectedCameraBound.width} min={0.01} step={1} precision={2} unit="units" onCommit={(width) => updateCameraBound(selectedCameraBound.id, { width: Math.max(0.01, width) })} /><NumberField label="Height" value={selectedCameraBound.height} min={0.01} step={1} precision={2} unit="units" onCommit={(height) => updateCameraBound(selectedCameraBound.id, { height: Math.max(0.01, height) })} /></div>
+          <label>Name<input value={selectedCameraBound.name} disabled={selectedCameraBound.locked} onChange={(event) => updateCameraBound(selectedCameraBound.id, { name: event.target.value })} /></label>
+          <div className="camera-check-row"><label><input type="checkbox" checked={selectedCameraBound.enabled} onChange={(event) => updateCameraBound(selectedCameraBound.id, { enabled: event.target.checked })} /> Enabled</label><label><input type="checkbox" checked={selectedCameraBound.visible !== false} onChange={(event) => updateCameraBound(selectedCameraBound.id, { visible: event.target.checked })} /> Show guide</label><label><input type="checkbox" checked={selectedCameraBound.locked === true} onChange={(event) => updateCameraBound(selectedCameraBound.id, { locked: event.target.checked })} /> Locked</label></div>
+          <div className="editor-two-fields"><NumberField label="X" value={selectedCameraBound.x} step={1} precision={2} unit="units" disabled={selectedCameraBound.locked} onCommit={(x) => updateCameraBound(selectedCameraBound.id, { x })} /><NumberField label="Y" value={selectedCameraBound.y} step={1} precision={2} unit="units" disabled={selectedCameraBound.locked} onCommit={(y) => updateCameraBound(selectedCameraBound.id, { y })} /></div>
+          <div className="editor-two-fields"><NumberField label="Width" value={selectedCameraBound.width} min={0.01} step={1} precision={2} unit="units" disabled={selectedCameraBound.locked} onCommit={(width) => updateCameraBound(selectedCameraBound.id, { width: Math.max(0.01, width) })} /><NumberField label="Height" value={selectedCameraBound.height} min={0.01} step={1} precision={2} unit="units" disabled={selectedCameraBound.locked} onCommit={(height) => updateCameraBound(selectedCameraBound.id, { height: Math.max(0.01, height) })} /></div>
           <NumberField label="Priority" value={selectedCameraBound.priority ?? 0} step={1} precision={0} onCommit={(priority) => updateCameraBound(selectedCameraBound.id, { priority })} />
-          <div className="camera-property-actions"><button className="editor-button" type="button" onClick={() => duplicateCameraBound(selectedCameraBound.id)}>Duplicate</button><button className="editor-button" type="button" disabled={!selectedCameraBound.enabled} onClick={() => fitCameraToBound(selectedCameraBound.id)}>Fit camera here</button><button className="editor-preview-button danger" type="button" onClick={() => deleteCameraBound(selectedCameraBound.id)}>Delete</button></div>
-          <p className="editor-muted">Bounds are authored in the selected reference scene’s world coordinates. The camera output fits entirely inside this rectangle.</p>
-        </section> : selectedCameraKeyframe ? <section className="editor-section editor-inspector camera-property-section">
+          <div className="camera-property-actions"><button className="editor-button" type="button" onClick={() => duplicateCameraBound(selectedCameraBound.id)}>Duplicate</button><button className="editor-button" type="button" onClick={() => frameCameraBoundInScene(selectedCameraBound.id)}>Frame in scene</button><button className="editor-button" type="button" disabled={!selectedCameraKeyframe || !selectedCameraBound.enabled} onClick={() => fitSelectedCameraShotToBound(selectedCameraBound.id)}>Fit selected shot to boundary</button><button className="editor-button" type="button" disabled={!selectedCameraBound.enabled} onClick={() => createCameraShotFittedToBound(selectedCameraBound.id)}>Create fitted shot here</button><button className="editor-preview-button danger" type="button" onClick={() => deleteCameraBound(selectedCameraBound.id)}>Delete</button></div>
+          <p className="editor-muted">Allowable camera region in the reference scene’s world coordinates. The output frame fits entirely inside this rectangle.</p>
+        </section> : cameraInspectorTarget === "shot" && selectedCameraKeyframe ? <section className="editor-section editor-inspector camera-property-section">
           <div className="editor-section-title"><strong>Camera shot</strong><span>{seconds(selectedCameraKeyframe.time)}</span></div>
           <label>Boundary for this shot<select value={selectedCameraKeyframe.constraint?.mode === "manual" ? selectedCameraKeyframe.constraint.boundId : selectedCameraKeyframe.constraint?.mode ?? "inherit"} onChange={(event) => assignCameraKeyframeBound(selectedCameraKeyframe.id, event.target.value)}>
             <option value="inherit">Use track setting</option><option value="automatic">Automatic boundary</option><option value="none">Unconstrained</option>
@@ -3036,25 +3869,28 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
           <div className="editor-three-fields"><NumberField label="Time" value={Number(selectedCameraKeyframe.time.toFixed(3))} min={0} max={duration} step={0.001} precision={3} unit="s" onCommit={(time) => updateCameraKeyframe(selectedCameraKeyframe.id, { time: Math.max(0, Math.min(duration, time)) })} /><NumberField label="Center X" value={selectedCameraKeyframe.centerX} step={1} precision={2} unit="units" onCommit={(centerX) => updateCameraKeyframe(selectedCameraKeyframe.id, { centerX })} /><NumberField label="Center Y" value={selectedCameraKeyframe.centerY} step={1} precision={2} unit="units" onCommit={(centerY) => updateCameraKeyframe(selectedCameraKeyframe.id, { centerY })} /></div>
           <div className="editor-two-fields"><NumberField label="Frame height" value={selectedCameraKeyframe.frameHeight} min={0.01} step={1} precision={2} unit="units" onCommit={(frameHeight) => updateCameraKeyframe(selectedCameraKeyframe.id, { frameHeight: Math.max(0.01, frameHeight) })} /><label>Interpolation<select value={selectedCameraKeyframe.easing ?? "linear"} onChange={(event) => updateCameraKeyframe(selectedCameraKeyframe.id, { easing: event.target.value as "linear" | "smooth" | "hold" })}><option value="linear">Linear</option><option value="smooth">Smooth</option><option value="hold">Hold</option></select></label></div>
           {cameraKeyframeTimeIssue && <small className="editor-field-hint" role="status">{cameraKeyframeTimeIssue}</small>}
-          <div className="camera-property-actions"><button className="editor-button" type="button" onClick={() => stepCameraKeyframe(-1)} disabled={orderedCameraKeyframes[0]?.id === selectedCameraKeyframe.id}>Previous shot</button><button className="editor-button" type="button" onClick={() => stepCameraKeyframe(1)} disabled={orderedCameraKeyframes.at(-1)?.id === selectedCameraKeyframe.id}>Next shot</button><button className="editor-preview-button danger" type="button" onClick={() => { const next = editableCameraTrack.keyframes.filter((item) => item.id !== selectedCameraKeyframe.id); updateCameraTrack((value) => ({ ...value, keyframes: next })); setSelectedCameraKeyframeId(next[0]?.id ?? null); }}>Delete shot</button></div>
+           <div className="camera-property-actions"><button className="editor-button" type="button" onClick={() => updateSelectedShotFromOutput()} disabled={!solvedCamera}>Update selected shot from output</button><button className="editor-button" type="button" onClick={() => selectedCameraBoundId && fitSelectedCameraShotToBound(selectedCameraBoundId)} disabled={!selectedCameraBoundId || !cameraTrack?.safeBounds.some((bound) => bound.id === selectedCameraBoundId && bound.enabled)}>Fit selected shot to boundary</button><button className="editor-button" type="button" onClick={() => duplicateCameraKeyframeAtTime(selectedCameraKeyframe.id, currentTime)} disabled={cameraPlayheadOccupied} title={cameraPlayheadOccupied ? "A shot already occupies the playhead." : "Duplicate the selected shot at the playhead"}>Duplicate at playhead</button><button className="editor-button" type="button" onClick={() => stepCameraKeyframe(-1)} disabled={orderedCameraKeyframes[0]?.id === selectedCameraKeyframe.id}>Previous shot</button><button className="editor-button" type="button" onClick={() => stepCameraKeyframe(1)} disabled={orderedCameraKeyframes.at(-1)?.id === selectedCameraKeyframe.id}>Next shot</button><button className="editor-preview-button danger" type="button" onClick={() => deleteCameraKeyframe(selectedCameraKeyframe.id)}>Delete shot</button></div>
           <p className="editor-muted">The output preview shows this shot after its assigned boundary has constrained the frame.</p>
         </section> : <section className="editor-section editor-inspector camera-property-section">
           <div className="editor-section-title"><strong>Camera settings</strong><span>{cameraTrack?.enabled ? "Enabled" : "Disabled"}</span></div>
           <label><span className="timeline-inline-check"><input type="checkbox" checked={cameraTrack?.enabled === true} onChange={(event) => updateCameraTrack((value) => ({ ...value, enabled: event.target.checked }))} /> Enable authored camera</span></label>
           <label>Output aspect ratio<select value={editableCameraTrack.aspectRatio} onChange={(event) => updateCameraTrack((value) => ({ ...value, aspectRatio: event.target.value as SpineCameraAspectRatio }))}><option value="16:9">16:9</option><option value="4:3">4:3</option><option value="1:1">1:1</option></select><small className="editor-field-hint">This ratio applies to the output camera only. The scene editor remains full-frame.</small></label>
-          <label>Reference scene<select value={editableCameraTrack.referenceLayerId && timeline.layers.some((layer) => layer.id === editableCameraTrack.referenceLayerId) ? editableCameraTrack.referenceLayerId : referenceLayerId} onChange={(event) => updateCameraTrack((value) => ({ ...value, referenceLayerId: event.target.value }))}>
+           <label>Reference scene<select value={editableCameraTrack.referenceLayerId && timeline.layers.some((layer) => layer.id === editableCameraTrack.referenceLayerId) ? editableCameraTrack.referenceLayerId : referenceLayerId} onChange={(event) => updateCameraTrack((value) => ({ ...value, referenceLayerId: event.target.value }))}>
             {displayLayers.map((layer) => <option key={layer.id} value={layer.id}>{layer.name} · {layer.role}</option>)}
-          </select><small className="editor-field-hint">Shot coordinates and boundaries use this scene’s stable world coordinates.</small></label>
+           </select><small className="editor-field-hint">Shot coordinates and boundaries use this scene’s stable world coordinates.</small></label>
+           {cameraReferenceMissing && <small className="editor-field-hint" role="status">The saved reference layer is missing. Preview and edits currently use {cameraReferenceLayer?.name ?? "the first available layer"}; choose a reference scene to update the track.</small>}
           <label>Default boundary behavior<select value={editableCameraTrack.constraint.mode} onChange={(event) => {
             const next = event.target.value;
             updateCameraTrack((value) => ({ ...value, constraint: next === "none" ? { mode: "none" } : next === "manual" ? { mode: "manual", boundId: value.safeBounds.find((bound) => bound.enabled)?.id ?? "" } : { mode: "automatic" } }));
           }}><option value="automatic">Automatic</option><option value="manual" disabled={!editableCameraTrack.safeBounds.some((bound) => bound.enabled)}>Named boundary</option><option value="none">Unconstrained</option></select></label>
           {editableCameraTrack.constraint.mode === "manual" && <label>Default named boundary<select value={editableCameraTrack.constraint.boundId} onChange={(event) => updateCameraTrack((value) => ({ ...value, constraint: { mode: "manual", boundId: event.target.value } }))}>{editableCameraTrack.safeBounds.filter((bound) => bound.enabled).map((bound) => <option key={bound.id} value={bound.id}>{bound.name}</option>)}</select></label>}
-          {cameraTrack?.constraint.mode !== "none" && cameraTrack?.safeBounds.every((bound) => !bound.enabled) && <small className="editor-field-hint" role="status">No enabled boundaries yet. Automatic mode is unconstrained until a boundary is enabled.</small>}
+           {cameraTrack?.constraint.mode !== "none" && cameraTrack?.safeBounds.every((bound) => !bound.enabled) && <small className="editor-field-hint" role="status">No enabled boundaries yet. Automatic mode is unconstrained until a boundary is enabled.</small>}
+           {cameraTrack?.constraint.mode === "automatic" && <small className="editor-field-hint">Automatic mode keeps the current boundary while it contains the shot; otherwise it chooses a containing boundary by priority, or the nearest boundary if none contains it.</small>}
           {solvedCamera?.diagnostic === "invalid-manual-bound" && <small className="editor-field-hint" role="status">The assigned boundary is missing or disabled; automatic selection is used in the preview.</small>}
         </section>}
       </aside>
     </div>
+    {renderCameraContextMenu()}
     <AssetPickerModal open={layerPickerOpen} title="Add Spine layer" eyebrow="TIMELINE LAYER" description="Search the loaded catalog and add another background, scene, character, or overlay set." directories={availableLayerDirectories} assetRoot={source?.rootPath ?? ""} directoryInfo={directoryInfo} emptyLabel="Every available asset set is already on this timeline." renderLabel={(item) => characterDirectoryLabel(item, directoryLabels)} getSearchText={(item) => characterDirectoryLabel(item, directoryLabels)} onClose={() => setLayerPickerOpen(false)} onSelect={(next) => { setLayerPickerOpen(false); addLayer(next); }} />
   </>;
 
@@ -3212,7 +4048,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
              <div className="timeline-row audio-row" style={{ gridTemplateColumns: `${trackLabelWidth}px minmax(0, 1fr)` }}>
               <div className="timeline-track-label"><b>AUDIO</b><span>{timeline.audio.length} clip{timeline.audio.length === 1 ? "" : "s"}</span></div>
               <div className="timeline-track timeline-audio-track" onPointerDown={seekFromEvent}>
-                    {timeline.audio.map((clip) => <div key={clip.id} className={`timeline-audio-clip${isClipSelected("audio", clip.id) || clip.id === selectedAudio?.id ? " is-selected" : ""}${clip.enabled ? "" : " is-disabled"}`} title="Drag to move the audio; drag an edge to change its timing. Shift/Ctrl-click to select multiple." style={{ left: clip.start * TIMELINE_SCALE * zoom, width: Math.max(12, (clip.end - clip.start) * TIMELINE_SCALE * zoom) }} onPointerDown={(event) => { const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio", clip.id, clip.start, clip.end, selection); }}><button type="button" className="timeline-clip-start-handle" aria-label={`Move ${clip.name} start`} title="Drag to change start time" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio-start", clip.id, clip.start, clip.end, selection); }} /><button type="button" className="timeline-clip-end-handle" aria-label={`Move ${clip.name} end`} title="Drag to change end time" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio-end", clip.id, clip.start, clip.end, selection); }} /><AudioWaveform url={audioUrls[clip.id]} onDuration={(value) => applyDecodedAudioDuration(clip.id, value)} onProfile={onAudioWaveformProfile ? (measurement) => onAudioWaveformProfile(clip.id, measurement) : undefined} /><span><IconSound /> {clip.name}</span></div>)}
+                    {timeline.audio.map((clip) => <div key={clip.id} className={`timeline-audio-clip${isClipSelected("audio", clip.id) || clip.id === selectedAudio?.id ? " is-selected" : ""}${clip.enabled ? "" : " is-disabled"}`} title="Drag to move the audio; drag an edge to change its timing. Shift/Ctrl-click to select multiple." style={{ left: clip.start * TIMELINE_SCALE * zoom, width: Math.max(12, (clip.end - clip.start) * TIMELINE_SCALE * zoom) }} onPointerDown={(event) => { const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio", clip.id, clip.start, clip.end, selection); }}><button type="button" className="timeline-clip-start-handle" aria-label={`Move ${clip.name} start`} title="Drag to change start time" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio-start", clip.id, clip.start, clip.end, selection); }} /><button type="button" className="timeline-clip-end-handle" aria-label={`Move ${clip.name} end`} title="Drag to change end time" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio-end", clip.id, clip.start, clip.end, selection); }} /><AudioWaveform url={audioUrls[clip.id]} onDuration={(value) => applyDecodedAudioDuration(clip.id, value)} /><span><IconSound /> {clip.name}</span></div>)}
                 <i className="timeline-playhead" style={{ left: currentTime * TIMELINE_SCALE * zoom }} />
                 </div>
               </div>
@@ -3405,7 +4241,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
            <label>Name<input value={selectedLayer.name} disabled={selectedLayer.locked} onChange={(event) => updateLayer(selectedLayer.id, { name: event.target.value })} /></label>
            <div className="editor-two-fields"><label>Role<select value={selectedLayer.role} disabled={selectedLayer.locked} onChange={(event) => updateLayer(selectedLayer.id, { role: event.target.value as TimelineLayerRole })}><option value="background">Background</option><option value="scene">Scene</option><option value="character">Character</option><option value="overlay">Overlay</option></select></label><NumberField label="Order" value={Math.max(0, displayVisualTracks.findIndex((track) => track.kind === "spine" && track.layer.id === selectedLayer.id))} min={0} max={Math.max(0, displayVisualTracks.length - 1)} step={1} disabled={selectedLayer.locked} onCommit={(order) => { const target = displayVisualTracks[Math.max(0, Math.min(displayVisualTracks.length - 1, Math.round(order)))]; if (target) reorderVisualTrack(`spine:${selectedLayer.id}`, visualTrackKey(target)); }} /></div>
            <label>Blend mode<select value={selectedLayer.blendMode ?? "normal"} disabled={selectedLayer.locked} onChange={(event) => updateLayer(selectedLayer.id, { blendMode: event.target.value as EditorTimelineLayer["blendMode"] })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="additive">Additive</option></select></label>
-            <div className="editor-animation-field"><span>{selectedLayer.followMainAnimation ? "Fallback animation" : "Animation"}</span><AnimationPicker ariaLabel={selectedLayer.followMainAnimation ? "Fallback animation" : "Layer animation"} disabled={selectedLayer.locked} value={selectedLayer.animation || metas[selectedLayer.id]?.idleAnimation || ""} options={[{ value: "", label: "Auto idle" }, ...(metas[selectedLayer.id]?.animations ?? []).map((animation) => ({ value: animation, label: animation }))]} onChange={(animation) => updateLayer(selectedLayer.id, { animation })} /></div>
+            <div className="editor-animation-field"><span>{selectedLayer.followMainAnimation ? "Fallback animation" : "Animation"}</span><AnimationPicker ariaLabel={selectedLayer.followMainAnimation ? "Fallback animation" : "Layer animation"} disabled={selectedLayer.locked} value={selectedLayer.animation || metas[selectedLayer.id]?.idleAnimation || ""} options={[{ value: "", label: metas[selectedLayer.id]?.idleAnimation ? "Auto idle" : "No idle detected · choose animation" }, ...(metas[selectedLayer.id]?.animations ?? []).map((animation) => ({ value: animation, label: animation }))]} onChange={(animation) => updateLayer(selectedLayer.id, { animation })} /></div>
            {selectedLayer.role !== "character" && <label><span className="timeline-inline-check"><input type="checkbox" disabled={selectedLayer.locked} checked={selectedLayer.followMainAnimation === true} onChange={(event) => updateLayer(selectedLayer.id, { followMainAnimation: event.target.checked })} /> Follow main character animation</span><small className="editor-field-hint">Uses a matching animation and clock when available.</small></label>}
             <div className="editor-animation-field"><span>Face / secondary animation</span><AnimationPicker ariaLabel="Layer face or secondary animation" disabled={selectedLayer.locked} value={selectedLayer.faceAnimation ?? ""} options={[{ value: "", label: "None" }, ...(metas[selectedLayer.id]?.animations ?? []).map((name) => ({ value: name, label: name }))]} onChange={(faceAnimation) => updateLayer(selectedLayer.id, { faceAnimation })} /></div>
            <div className="editor-two-fields"><NumberField label="Start" value={Number(selectedLayer.start.toFixed(3))} min={0} step={0.001} precision={3} unit="s" disabled={selectedLayer.locked} onCommit={(value) => updateLayer(selectedLayer.id, { start: Math.max(0, value) })} /><NumberField label="End" value={Number(selectedLayer.end.toFixed(3))} min={selectedLayer.start + 0.01} step={0.001} precision={3} unit="s" disabled={selectedLayer.locked} onCommit={(value) => updateLayer(selectedLayer.id, { endMode: "manual", end: Math.max(selectedLayer.start + 0.01, value) })} /></div>

@@ -44,7 +44,7 @@ const MIN_TOUCH_FOLLOW_Y = 35;
 const MAX_TOUCH_FOLLOW_X = 90;
 const MAX_TOUCH_FOLLOW_Y = 65;
 const TOUCH_FOLLOW_SCENE_RATIO = 0.025;
-export type SpineCameraMode = "fit" | "fill" | "game" | "authored";
+export type SpineCameraMode = "fit" | "fill" | "game" | "authored" | "artwork";
 export type SpineInteractionMode = "free" | "interaction";
 
 export interface SpineCameraFrame {
@@ -181,6 +181,7 @@ interface LoadedBundle {
   state: AnimationState;
   meta: SpineMeta;
   bounds: SceneBounds;
+  artworkBounds: SceneBounds;
   viewport: SceneBounds;
   interaction: SpineInteractionProfile;
   project: SpineInteractionProject | null;
@@ -282,11 +283,20 @@ export function findIntroAnimation(animations: string[]): string | null {
 
 /** Prefer the normal idle, then accommodate older/variant lobby exports. */
 export function findIdleAnimation(animations: string[]): string | null {
+  const interactionClip = /(?:^|[_ -])(?:look(?:end)?|talk|pat|pinch|touch|interact(?:ion)?|reaction|react|greet)(?:[_ -]|$)/i;
+  const isIdle = (name: string) => /^idle(?:[_ -].*)?$/i.test(name) && !interactionClip.test(name);
   for (const preferred of ["Idle_01", "Idle", "Idle_1"]) {
-    const found = animations.find((name) => name === preferred);
+    const found = animations.find((name) => name.toLocaleLowerCase() === preferred.toLocaleLowerCase() && isIdle(name));
     if (found) return found;
   }
-  return animations.find((name) => /^idle(?:[_ -].*)?$/i.test(name)) ?? null;
+  return animations.find(isIdle) ?? null;
+}
+
+/** Choose a playback default only when a real idle exists; never use animation order as an idle fallback. */
+export function defaultSpineAnimation(animations: string[]): string {
+  const intro = findIntroAnimation(animations);
+  const idle = findIdleAnimation(animations);
+  return intro && idle ? INTRO_ANIMATION : idle ?? "";
 }
 
 async function loadImage(file: File): Promise<HTMLImageElement | ImageBitmap> {
@@ -412,6 +422,56 @@ function touchTargetState(skeleton: Skeleton, bounds: SceneBounds | null): Inter
   );
 }
 
+function artworkBoundsAcrossAnimations(
+  source: Skeleton,
+  stateData: AnimationStateData,
+  animationNames: readonly string[],
+): SceneBounds {
+  const skeleton = new Skeleton(source.data);
+  const state = new AnimationState(stateData);
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  const collect = () => {
+    skeleton.updateWorldTransform(Physics.reset);
+    const bounds = skeleton.getBoundsRect();
+    if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0) return;
+    minX = Math.min(minX, bounds.x);
+    minY = Math.min(minY, bounds.y);
+    maxX = Math.max(maxX, bounds.x + bounds.width);
+    maxY = Math.max(maxY, bounds.y + bounds.height);
+  };
+
+  skeleton.setToSetupPose();
+  collect();
+  for (const name of animationNames) {
+    const animation = skeleton.data.findAnimation(name);
+    if (!animation) continue;
+    const steps = Math.max(1, Math.min(120, Math.ceil(Math.max(0, animation.duration) * 12)));
+    for (let index = 0; index <= steps; index += 1) {
+      const time = animation.duration * index / steps;
+      skeleton.setToSetupPose();
+      state.clearTracks();
+      const entry = state.setAnimation(0, name, false);
+      entry.trackTime = time;
+      entry.trackLast = time;
+      entry.animationLast = time;
+      entry.nextTrackLast = time;
+      entry.nextAnimationLast = time;
+      state.apply(skeleton);
+      collect();
+    }
+  }
+
+  if (![minX, minY, maxX, maxY].every(Number.isFinite) || maxX <= minX || maxY <= minY) {
+    return { x: 0, y: 0, width: 1, height: 1 };
+  }
+  const width = maxX - minX;
+  const height = maxY - minY;
+  return { x: minX - width * 0.06, y: minY - height * 0.06, width: width * 1.12, height: height * 1.12 };
+}
+
 async function loadBundle(files: SpineFiles, directoryName: string, renderer: SceneRenderer, context: ManagedWebGLRenderingContext, project?: SpineInteractionProject | null, onLoadProgress?: (progress: SpineLoadProgress) => void): Promise<LoadedBundle> {
   const atlasFile = filesWithExtension(files, ".atlas")[0];
   if (!atlasFile) throw new Error("This set does not contain an .atlas file.");
@@ -458,7 +518,7 @@ async function loadBundle(files: SpineFiles, directoryName: string, renderer: Sc
     const idleAnimation = findIdleAnimation(animations);
     const interaction = profileFromProject(animations, project);
     const configuredRegions = authoredRegions(project);
-    const defaultAnimation = introAnimation && idleAnimation ? INTRO_ANIMATION : idleAnimation ?? animations[0] ?? "";
+    const defaultAnimation = defaultSpineAnimation(animations);
     const meta: SpineMeta = {
       animations,
       defaultAnimation,
@@ -484,17 +544,22 @@ async function loadBundle(files: SpineFiles, directoryName: string, renderer: Sc
       const entry = state.setAnimation(0, defaultAnimation, true);
       meta.duration = entry.animation?.duration ?? 0;
     }
-    // Use an independent idle pose for framing: the intro can begin zoomed
-    // out, with invisible attachments or artwork outside the final scene.
+    // Keep game-camera metadata and interaction targets tied to the idle pose.
+    // Authored-camera artwork bounds below separately cover intro, idle, and Talk.
     const framingSkeleton = new Skeleton(skeleton.data);
     const framingState = new AnimationState(stateData);
-    const framingAnimation = idleAnimation ?? animations[0];
+    const framingAnimation = idleAnimation;
     if (framingAnimation) {
       framingState.setAnimation(0, framingAnimation, false);
       framingState.apply(framingSkeleton);
     }
     framingSkeleton.updateWorldTransform(Physics.update);
     const bounds = sceneBounds(framingSkeleton);
+    const artworkBounds = artworkBoundsAcrossAnimations(
+      skeleton,
+      stateData,
+      [...new Set([introAnimation, idleAnimation, ...animations.filter((name) => /^talk(?:[_ -]|$)/i.test(name))].filter((name): name is string => Boolean(name)))],
+    );
     const viewport = authoredViewport(framingSkeleton, setupSkeleton);
     meta.hasGameCamera = viewport.authored;
     state.apply(skeleton);
@@ -503,7 +568,7 @@ async function loadBundle(files: SpineFiles, directoryName: string, renderer: Sc
     const eyeTarget = eyeTargetState(skeleton, touchTarget);
     renderer.resize(ResizeMode.Expand);
     onLoadProgress?.({ stage: "finalizing", loaded: 0, total: 0 });
-    return { atlas, images, skeleton, state, meta, bounds, viewport, interaction, project: project ?? null, authoredRegions: configuredRegions, eyeTarget, touchTarget };
+    return { atlas, images, skeleton, state, meta, bounds, artworkBounds, viewport, interaction, project: project ?? null, authoredRegions: configuredRegions, eyeTarget, touchTarget };
   } catch (error) {
     atlas.dispose();
     for (const image of images) closeImage(image);
@@ -951,7 +1016,7 @@ export class SpineRenderer {
     this.interactionReady = this.skipIntro || !(bundle.meta.introAnimation && bundle.meta.idleAnimation);
     const selection = !this.skipIntro && bundle.meta.introAnimation && bundle.meta.idleAnimation
       ? INTRO_ANIMATION
-      : bundle.meta.idleAnimation ?? bundle.meta.animations[0] ?? "";
+      : bundle.meta.idleAnimation ?? "";
     this.animationSelection = selection;
     this.applyBaseAnimation(selection, true);
   }
@@ -1493,6 +1558,17 @@ export class SpineRenderer {
     };
   }
 
+  /** Stable full-artwork fallback framing for a requested output aspect ratio. */
+  getArtworkCameraFrame(aspectRatio = 16 / 9): SpineCameraFrame | null {
+    const bounds = this.bundle?.artworkBounds;
+    if (!bounds || !Number.isFinite(aspectRatio) || aspectRatio <= 0) return null;
+    return {
+      centerX: bounds.x + bounds.width / 2,
+      centerY: bounds.y + bounds.height / 2,
+      height: Math.max(bounds.height, bounds.width / aspectRatio),
+    };
+  }
+
   /** Camera frame in world units; unlike a camera pose this survives viewport resizes. */
   setCameraFrame(frame: SpineCameraFrame | null) {
     if (!frame) {
@@ -1608,8 +1684,11 @@ export class SpineRenderer {
     const bundle = this.bundle;
     if (!bundle || this.renderer.camera.viewportWidth <= 0 || this.renderer.camera.viewportHeight <= 0) return;
     const camera = this.renderer.camera;
-    const bounds = this.cameraMode === "game" && bundle.meta.hasGameCamera ? bundle.viewport : bundle.bounds;
-    const fit = fitScene(bounds, camera.viewportWidth, camera.viewportHeight, this.cameraMode !== "fit");
+    const bounds = this.cameraMode === "artwork"
+      ? bundle.artworkBounds
+      : this.cameraMode === "game" && bundle.meta.hasGameCamera ? bundle.viewport : bundle.bounds;
+    const fill = this.cameraMode !== "fit" && this.cameraMode !== "artwork";
+    const fit = fitScene(bounds, camera.viewportWidth, camera.viewportHeight, fill);
     this.fitCameraPose = {
       x: fit.x,
       y: fit.y,

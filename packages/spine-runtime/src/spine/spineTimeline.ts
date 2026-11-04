@@ -1,4 +1,4 @@
-import type { SpineMeta } from "./spineRuntime";
+import { findIdleAnimation, type SpineMeta } from "./spineRuntime";
 import { normalizeSpineCameraTrack, type SpineCameraTrack } from "./spineCameraMotion";
 
 export type SpineTimelineLayerRole = "character" | "scene" | "background" | "overlay";
@@ -200,7 +200,7 @@ export interface SpineTimelineProject {
 
 /** Idle is a runtime animation, not an alias for the opening timeline. */
 export function timelineIdleAnimation(meta: Pick<SpineMeta, "idleAnimation" | "animations">): string {
-  return meta.idleAnimation || meta.animations.find((name) => /^idle(?:_|$)/i.test(name)) || "";
+  return meta.idleAnimation || findIdleAnimation(meta.animations) || "";
 }
 
 /** A talk's idle tail stays visible until the sequence, not its clip, ends. */
@@ -352,7 +352,7 @@ export function timelineAnimationClipSampleTime(clip: Pick<SpineTimelineAnimatio
 }
 
 function fallbackAnimation(layer: SpineTimelineLayer, meta: Pick<SpineMeta, "animations" | "idleAnimation">): string {
-  return layer.animation || meta.idleAnimation || meta.animations[0] || "";
+  return layer.animation || timelineIdleAnimation(meta);
 }
 
 /** Return authored clips, or a virtual equivalent for older single-animation timelines. */
@@ -461,7 +461,7 @@ export function timelineMainAnimation(layer: SpineTimelineLayer, meta: Pick<Spin
   }
   const openingCharacter = sequenceId === "opening" && layer.role === "character";
   const useIntro = openingCharacter && openingMode !== "skip" && Boolean(meta.introAnimation) && currentTime >= layer.start && currentTime - layer.start < introDuration;
-  const animation = useIntro && meta.introAnimation ? meta.introAnimation : layer.animation || meta.idleAnimation || meta.animations[0] || "";
+  const animation = useIntro && meta.introAnimation ? meta.introAnimation : layer.animation || timelineIdleAnimation(meta);
   const talkCharacter = sequenceId.startsWith("talk-") && layer.role === "character" && layer.endMode !== "manual";
   return {
     animation,

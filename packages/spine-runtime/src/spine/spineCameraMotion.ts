@@ -1,4 +1,4 @@
-import type { SpineCameraPose } from "./spineRuntime";
+import type { SpineCameraFrame, SpineCameraPose } from "./spineRuntime";
 
 export type SpineCameraAspectRatio = "16:9" | "4:3" | "1:1";
 export type SpineCameraConstraint =
@@ -15,6 +15,7 @@ export interface SpineCameraSafeBound {
   height: number;
   enabled: boolean;
   visible?: boolean;
+  locked?: boolean;
   priority?: number;
 }
 
@@ -80,6 +81,7 @@ export function spineCameraBoundFromCanvasDrag(
   viewportWidth: number,
   viewportHeight: number,
   priority = 0,
+  lockAspectRatio?: number,
 ): SpineCameraSafeBound | null {
   if (![start.x, start.y, end.x, end.y, frame.centerX, frame.centerY, frame.height, viewportWidth, viewportHeight].every(Number.isFinite)
     || frame.height <= 0 || viewportWidth <= 0 || viewportHeight <= 0) return null;
@@ -91,10 +93,24 @@ export function spineCameraBoundFromCanvasDrag(
   const frameWidth = frame.height * viewportWidth / viewportHeight;
   const worldX = (x: number) => frame.centerX + (x / viewportWidth - 0.5) * frameWidth;
   const worldY = (y: number) => frame.centerY + (0.5 - y / viewportHeight) * frame.height;
-  const worldLeft = worldX(left);
-  const worldRight = worldX(right);
-  const worldTop = worldY(top);
-  const worldBottom = worldY(bottom);
+  let worldLeft = worldX(left);
+  let worldRight = worldX(right);
+  let worldTop = worldY(top);
+  let worldBottom = worldY(bottom);
+  if (Number.isFinite(lockAspectRatio) && lockAspectRatio! > 0) {
+    const anchorX = worldX(start.x);
+    const anchorY = worldY(start.y);
+    const signX = worldX(end.x) >= anchorX ? 1 : -1;
+    const signY = worldY(end.y) >= anchorY ? 1 : -1;
+    const width = Math.abs(worldRight - worldLeft);
+    const height = Math.abs(worldTop - worldBottom);
+    const lockedWidth = Math.min(width, height * lockAspectRatio!);
+    const lockedHeight = lockedWidth / lockAspectRatio!;
+    worldLeft = Math.min(anchorX, anchorX + signX * lockedWidth);
+    worldRight = Math.max(anchorX, anchorX + signX * lockedWidth);
+    worldBottom = Math.min(anchorY, anchorY + signY * lockedHeight);
+    worldTop = Math.max(anchorY, anchorY + signY * lockedHeight);
+  }
   return {
     id,
     name,
@@ -156,6 +172,7 @@ export function normalizeSpineCameraTrack(value: unknown, duration = Number.POSI
       height,
       enabled: bound.enabled !== false,
       visible: bound.visible !== false,
+      locked: bound.locked === true,
       ...(typeof bound.priority === "number" && Number.isFinite(bound.priority) ? { priority: bound.priority } : {}),
     });
   }
@@ -237,6 +254,44 @@ export function sampleSpineCameraTrack(track: SpineCameraTrack, time: number): S
   };
 }
 
+/** A full-artwork-fit frame previews bounds before the first authored shot exists. */
+export function defaultSpineCameraSample(
+  track: Pick<SpineCameraTrack, "aspectRatio" | "constraint">,
+  frame: SpineCameraFrame | null,
+): SampledSpineCamera | null {
+  if (!frame || ![frame.centerX, frame.centerY, frame.height].every(Number.isFinite) || frame.height <= 0) return null;
+  return {
+    centerX: frame.centerX,
+    centerY: frame.centerY,
+    frameHeight: frame.height,
+    frameWidth: frame.height * cameraAspectValue(track.aspectRatio),
+    constraint: track.constraint,
+  };
+}
+
+/** Shared Editor/Viewer sampling policy, including a stable full-artwork frame before the first shot. */
+export function sampleSpineCameraTrackWithFallback(
+  track: SpineCameraTrack,
+  time: number,
+  artworkFrame: SpineCameraFrame | null,
+): SampledSpineCamera | null {
+  return sampleSpineCameraTrack(track, time)
+    ?? (track.enabled ? defaultSpineCameraSample(track, artworkFrame) : null);
+}
+
+/** Shared camera evaluation path for the editor preview and saved Viewer composition. */
+export function evaluateSpineCameraTrack(
+  track: SpineCameraTrack,
+  time: number,
+  viewportWidth: number,
+  viewportHeight: number,
+  artworkFrame: SpineCameraFrame | null,
+  activeBoundId: string | null = null,
+): SolvedSpineCamera | null {
+  const sample = sampleSpineCameraTrackWithFallback(track, time, artworkFrame);
+  return sample ? solveSpineCamera(sample, track, viewportWidth, viewportHeight, activeBoundId) : null;
+}
+
 /** Maximum output frame height that stays inside a world-space boundary. */
 export function cameraFrameHeightForBound(bound: Pick<SpineCameraSafeBound, "width" | "height">, aspectRatio: SpineCameraAspectRatio): number {
   if (![bound.width, bound.height].every(Number.isFinite) || bound.width <= 0 || bound.height <= 0) return 0;
@@ -247,11 +302,73 @@ export function moveSpineCameraBound(bound: SpineCameraSafeBound, deltaX: number
   return { ...bound, x: bound.x + deltaX, y: bound.y + deltaY };
 }
 
+export function moveSpineCameraKeyframe(keyframe: SpineCameraKeyframe, deltaX: number, deltaY: number): SpineCameraKeyframe {
+  return { ...keyframe, centerX: keyframe.centerX + deltaX, centerY: keyframe.centerY + deltaY };
+}
+
+export function cameraKeyframeTimeAvailable(
+  keyframes: readonly SpineCameraKeyframe[],
+  id: string,
+  time: number,
+  minimumGap = 0.001,
+): boolean {
+  return Number.isFinite(time) && Number.isFinite(minimumGap) && minimumGap >= 0
+    && !keyframes.some((keyframe) => keyframe.id !== id && Math.abs(keyframe.time - time) < minimumGap);
+}
+
+export function retimeSpineCameraKeyframe(
+  keyframe: SpineCameraKeyframe,
+  requestedTime: number,
+  duration: number,
+): SpineCameraKeyframe | null {
+  if (![requestedTime, duration].every(Number.isFinite) || duration < 0) return null;
+  return { ...keyframe, time: Math.max(0, Math.min(duration, requestedTime)) };
+}
+
+/** Resize a shot around the opposite edge/corner while preserving the output ratio. */
+export function resizeSpineCameraKeyframe(
+  keyframe: SpineCameraKeyframe,
+  handle: SpineCameraBoundResizeHandle,
+  point: CameraCanvasPoint,
+  aspectRatio: number,
+  minimumHeight = 0.01,
+): SpineCameraKeyframe {
+  if (![point.x, point.y, aspectRatio, minimumHeight].every(Number.isFinite) || aspectRatio <= 0) return keyframe;
+  const minHeight = Math.max(Number.EPSILON, minimumHeight);
+  const width = keyframe.frameHeight * aspectRatio;
+  const left = keyframe.centerX - width / 2;
+  const right = keyframe.centerX + width / 2;
+  const bottom = keyframe.centerY - keyframe.frameHeight / 2;
+  const top = keyframe.centerY + keyframe.frameHeight / 2;
+  const horizontal = handle.includes("e") || handle.includes("w");
+  const vertical = handle.includes("n") || handle.includes("s");
+  const anchorX = handle.includes("e") ? left : handle.includes("w") ? right : keyframe.centerX;
+  const anchorY = handle.includes("n") ? bottom : handle.includes("s") ? top : keyframe.centerY;
+  const signX = handle.includes("e") ? 1 : handle.includes("w") ? -1 : 0;
+  const signY = handle.includes("n") ? 1 : handle.includes("s") ? -1 : 0;
+  let frameHeight = keyframe.frameHeight;
+  if (horizontal && vertical) {
+    frameHeight = Math.max(minHeight, Math.min(Math.abs(point.x - anchorX) / aspectRatio, Math.abs(point.y - anchorY)));
+  } else if (horizontal) {
+    frameHeight = Math.max(minHeight, Math.abs(point.x - anchorX) / aspectRatio);
+  } else if (vertical) {
+    frameHeight = Math.max(minHeight, Math.abs(point.y - anchorY));
+  }
+  const nextWidth = frameHeight * aspectRatio;
+  return {
+    ...keyframe,
+    frameHeight,
+    centerX: horizontal ? anchorX + signX * nextWidth / 2 : keyframe.centerX,
+    centerY: vertical ? anchorY + signY * frameHeight / 2 : keyframe.centerY,
+  };
+}
+
 export function resizeSpineCameraBound(
   bound: SpineCameraSafeBound,
   handle: SpineCameraBoundResizeHandle,
   point: CameraCanvasPoint,
   minimumSize = 0.01,
+  lockAspectRatio?: number,
 ): SpineCameraSafeBound {
   const min = Math.max(Number.EPSILON, Number.isFinite(minimumSize) ? minimumSize : 0.01);
   let left = bound.x;
@@ -262,6 +379,33 @@ export function resizeSpineCameraBound(
   if (handle.includes("e")) right = Math.max(point.x, left + min);
   if (handle.includes("n")) top = Math.max(point.y, bottom + min);
   if (handle.includes("s")) bottom = Math.min(point.y, top - min);
+  if (Number.isFinite(lockAspectRatio) && lockAspectRatio! > 0) {
+    const horizontal = handle.includes("e") || handle.includes("w");
+    const vertical = handle.includes("n") || handle.includes("s");
+    const aspect = lockAspectRatio!;
+    if (horizontal && vertical) {
+      const anchorX = handle.includes("e") ? bound.x : bound.x + bound.width;
+      const anchorY = handle.includes("n") ? bound.y : bound.y + bound.height;
+      const width = right - left;
+      const height = top - bottom;
+      const lockedWidth = Math.max(min, Math.min(width, height * aspect));
+      const lockedHeight = Math.max(min, lockedWidth / aspect);
+      left = handle.includes("e") ? anchorX : anchorX - lockedWidth;
+      right = handle.includes("e") ? anchorX + lockedWidth : anchorX;
+      bottom = handle.includes("n") ? anchorY : anchorY - lockedHeight;
+      top = handle.includes("n") ? anchorY + lockedHeight : anchorY;
+    } else if (horizontal) {
+      const height = Math.max(min, (right - left) / aspect);
+      const centerY = bound.y + bound.height / 2;
+      bottom = centerY - height / 2;
+      top = centerY + height / 2;
+    } else if (vertical) {
+      const width = Math.max(min, (top - bottom) * aspect);
+      const centerX = bound.x + bound.width / 2;
+      left = centerX - width / 2;
+      right = centerX + width / 2;
+    }
+  }
   return { ...bound, x: left, y: bottom, width: right - left, height: top - bottom };
 }
 

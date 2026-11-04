@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cameraFrameHeightForBound, moveSpineCameraBound, normalizeSpineCameraTrack, resizeSpineCameraBound, sampleSpineCameraTrack, solveSpineCamera, spineCameraBoundFromCanvasDrag, type SpineCameraTrack } from "./spineCameraMotion";
+import { cameraFrameHeightForBound, cameraKeyframeTimeAvailable, defaultSpineCameraSample, evaluateSpineCameraTrack, moveSpineCameraBound, moveSpineCameraKeyframe, normalizeSpineCameraTrack, resizeSpineCameraBound, resizeSpineCameraKeyframe, retimeSpineCameraKeyframe, sampleSpineCameraTrack, sampleSpineCameraTrackWithFallback, solveSpineCamera, spineCameraBoundFromCanvasDrag, type SpineCameraTrack } from "./spineCameraMotion";
 
 const track = (overrides: Partial<SpineCameraTrack> = {}): SpineCameraTrack => ({
   enabled: true,
@@ -44,6 +44,44 @@ describe("authored camera motion", () => {
     expect(sampleSpineCameraTrack(value, 0.5)?.centerX).toBeCloseTo(15.625);
   });
 
+  test("uses the full-artwork fit to preview and constrain bounds before any shot is authored", () => {
+    const value = track({
+      keyframes: [],
+      safeBounds: [{ id: "room", name: "Room", x: -100, y: -60, width: 200, height: 120, enabled: true }],
+    });
+    expect(sampleSpineCameraTrack(value, 0)).toBeNull();
+    const fallback = defaultSpineCameraSample(value, { centerX: 0, centerY: 0, height: 200 });
+    expect(fallback).toMatchObject({ centerX: 0, centerY: 0, frameHeight: 200, constraint: { mode: "automatic" } });
+    expect(fallback?.frameWidth).toBeCloseTo(200 * 16 / 9);
+    const solved = solveSpineCamera(fallback!, value, 16, 9)!;
+    expect(solved.activeBoundId).toBe("room");
+    expect(solved.frame.width).toBeCloseTo(200);
+    expect(solved.frame.height).toBeCloseTo(112.5);
+  });
+
+  test("uses identical default camera sampling for Editor and Viewer before a shot exists", () => {
+    const value = track({ keyframes: [], safeBounds: [] });
+    const frame = { centerX: 25, centerY: 40, height: 180 };
+    expect(sampleSpineCameraTrackWithFallback(value, 0, frame)).toMatchObject({
+      centerX: 25,
+      centerY: 40,
+      frameHeight: 180,
+      constraint: { mode: "automatic" },
+    });
+    expect(sampleSpineCameraTrackWithFallback({ ...value, enabled: false }, 0, frame)).toBeNull();
+    expect(sampleSpineCameraTrackWithFallback(track(), 1, frame)?.centerX).toBe(50);
+  });
+
+  test("shared Editor and Viewer evaluation produces the same world frame across viewport sizes", () => {
+    const value = track({ keyframes: [], safeBounds: [{ id: "room", name: "Room", x: -120, y: -80, width: 240, height: 160, enabled: true }] });
+    const frame = { centerX: 5, centerY: 10, height: 180 };
+    const editor = evaluateSpineCameraTrack(value, 0, 1, 1, frame)!;
+    const viewer = evaluateSpineCameraTrack(value, 0, 1600, 900, frame)!;
+    expect(viewer.frame).toEqual(editor.frame);
+    expect(viewer.activeBoundId).toBe(editor.activeBoundId);
+    expect(viewer.pose.zoom).not.toBe(editor.pose.zoom);
+  });
+
   test("preserves authored world width across output ratios while boundaries cap the fit", () => {
     const value = track({
       aspectRatio: "16:9",
@@ -81,6 +119,42 @@ describe("authored camera motion", () => {
     expect(moveSpineCameraBound(bound, -5, 7)).toMatchObject({ x: 5, y: 27, width: 100, height: 80 });
     expect(resizeSpineCameraBound(bound, "se", { x: 130, y: 10 })).toMatchObject({ x: 10, y: 10, width: 120, height: 90 });
     expect(resizeSpineCameraBound(bound, "nw", { x: 150, y: 50 }, 5)).toMatchObject({ x: 105, y: 20, width: 5, height: 30 });
+    const locked = resizeSpineCameraBound(bound, "se", { x: 180, y: -90 }, 0.01, 16 / 9);
+    expect(locked.width / locked.height).toBeCloseTo(16 / 9);
+    expect(locked.x).toBe(bound.x);
+    expect(locked.y + locked.height).toBe(bound.y + bound.height);
+  });
+
+  test("optionally locks a drawn boundary to the selected output ratio", () => {
+    const bound = spineCameraBoundFromCanvasDrag("locked", "Locked", { x: 0, y: 0 }, { x: 300, y: 200 }, { centerX: 0, centerY: 0, height: 200 }, 300, 200, 0, 16 / 9)!;
+    expect(bound.width / bound.height).toBeCloseTo(16 / 9);
+    expect(bound.x).toBeCloseTo(-150);
+    expect(bound.y + bound.height).toBeCloseTo(100);
+  });
+
+  test("moves and resizes an existing shot without changing its identity, time or ratio", () => {
+    const keyframe = { id: "selected", time: 4, centerX: 10, centerY: 20, frameHeight: 30, easing: "smooth" as const };
+    expect(moveSpineCameraKeyframe(keyframe, 5, -7)).toMatchObject({ id: "selected", time: 4, centerX: 15, centerY: 13, frameHeight: 30 });
+    const resized = resizeSpineCameraKeyframe(keyframe, "se", { x: 196.6666666667, y: -85 }, 16 / 9);
+    expect(resized.id).toBe("selected");
+    expect(resized.time).toBe(4);
+    expect(resized.easing).toBe("smooth");
+    expect(resized.frameHeight).toBeCloseTo(120);
+    expect(resized.frameHeight * 16 / 9).toBeCloseTo(213.3333333333);
+  });
+
+  test("retimes shots with clamping, identity preservation, and explicit collision checks", () => {
+    const keys = [
+      { id: "one", time: 0, centerX: 0, centerY: 0, frameHeight: 20 },
+      { id: "two", time: 2, centerX: 10, centerY: 5, frameHeight: 30, easing: "hold" as const },
+    ];
+    expect(cameraKeyframeTimeAvailable(keys, "one", 2)).toBe(false);
+    expect(cameraKeyframeTimeAvailable(keys, "one", 1.9995)).toBe(false);
+    expect(cameraKeyframeTimeAvailable(keys, "one", 1.998)).toBe(true);
+    expect(retimeSpineCameraKeyframe(keys[1]!, 1.25, 4)).toMatchObject({ id: "two", time: 1.25, centerX: 10, easing: "hold" });
+    expect(retimeSpineCameraKeyframe(keys[1]!, -1, 4)?.time).toBe(0);
+    expect(retimeSpineCameraKeyframe(keys[1]!, 8, 4)?.time).toBe(4);
+    expect(retimeSpineCameraKeyframe(keys[1]!, 1, Number.NaN)).toBeNull();
   });
 
   test("switches per-keyframe scene assignments at the exact shot boundary", () => {
@@ -190,5 +264,23 @@ describe("authored camera motion", () => {
     expect(normalized?.safeBounds).toHaveLength(1);
     expect(normalized?.safeBounds[0]?.visible).toBe(false);
     expect(normalized?.keyframes.map(({ id }) => id)).toEqual(["a"]);
+  });
+
+  test("camera settings and authored motion survive serialization normalization round-trip", () => {
+    const value = track({
+      enabled: false,
+      aspectRatio: "4:3",
+      referenceLayerId: "reference-scene",
+      constraint: { mode: "manual", boundId: "room" },
+      safeBounds: [{ id: "room", name: "Room", x: -40, y: -20, width: 80, height: 60, enabled: true, visible: false, locked: true, priority: 3 }],
+      keyframes: [
+        { id: "first", time: 0.5, centerX: 10, centerY: 20, frameHeight: 30, easing: "smooth", constraint: { mode: "manual", boundId: "room" } },
+        { id: "second", time: 2.5, centerX: 15, centerY: 25, frameHeight: 35, easing: "hold", constraint: { mode: "none" } },
+      ],
+    });
+    const decoded = normalizeSpineCameraTrack(JSON.parse(JSON.stringify(value)), 5);
+    const reloaded = normalizeSpineCameraTrack(JSON.parse(JSON.stringify(decoded)), 5);
+    expect(decoded).toEqual(value);
+    expect(reloaded).toEqual(decoded);
   });
 });

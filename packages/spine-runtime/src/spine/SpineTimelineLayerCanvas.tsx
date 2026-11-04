@@ -53,6 +53,7 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
   const rendererRef = useRef<SpineRenderer | null>(null);
   const [meta, setMeta] = useState<SpineMeta | null>(null);
   const onMetaRef = useRef(onMeta);
+  const cameraModeRef = useRef<SpineCameraMode | undefined>(cameraMode);
   const onCameraPoseRef = useRef(onCameraPose);
   const onAnimationDurationRef = useRef(onAnimationDuration);
   const onMarkersRef = useRef(onMarkers);
@@ -66,6 +67,7 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
   const onLoadProgressRef = useRef(onLoadProgress);
   const onErrorRef = useRef(onError);
   onMetaRef.current = onMeta;
+  cameraModeRef.current = cameraMode;
   onCameraPoseRef.current = onCameraPose;
   onAnimationDurationRef.current = onAnimationDuration;
   onMarkersRef.current = onMarkers;
@@ -94,7 +96,7 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
             const duration = renderer.getEditorAnimationInfo(animationName).duration;
             if (duration > 0) onAnimationDurationRef.current(layer.id, animationName, duration);
           }
-          renderer.setCameraMode("fit");
+          renderer.setCameraMode(cameraModeRef.current ?? "fit");
           if (referenceCamera) requestAnimationFrame(() => {
             const pose = renderer.getCameraPose();
             if (pose) onCameraPoseRef.current(pose);
@@ -233,13 +235,17 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
     if (cameraMode === "authored") renderer.setCameraFrame(null);
     if (cameraMode) renderer.setCameraMode(cameraMode);
     if (!referenceCamera && sharedCameraPose) renderer.setCameraPose(sharedCameraPose);
-    if (!referenceCamera || !cameraMode) return;
+  }, [cameraMode, referenceCamera, sharedCameraFrame, sharedCameraPose]);
+
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer || !referenceCamera || !cameraMode) return;
     const frame = requestAnimationFrame(() => {
       const pose = renderer.getCameraPose();
       if (pose) onCameraPoseRef.current(pose);
     });
     return () => cancelAnimationFrame(frame);
-  }, [cameraMode, referenceCamera, sharedCameraFrame, sharedCameraPose]);
+  }, [cameraMode, referenceCamera]);
 
   const layerEnd = activeClip
     ? timelineAnimationClipPlaybackEnd(talkCharacter && !Array.isArray(layer.animationClips) ? { ...activeClip, loop: false } : activeClip, clipDuration)

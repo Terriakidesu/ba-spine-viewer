@@ -422,6 +422,7 @@ export function Editor() {
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
   const [selectedAnimation, setSelectedAnimation] = useState("");
+  const [animationSelectionOrigin, setAnimationSelectionOrigin] = useState<"automatic" | "explicit">("automatic");
   const [project, setProject] = useState<EditorProject | null>(null);
   const timelineSaveRef = useRef<((getProject: () => EditorProject | null) => Promise<EditorSaveFile[]>) | null>(null);
   const workspaceRef = useRef<"interaction" | "timeline" | "camera">(workspace);
@@ -456,6 +457,7 @@ export function Editor() {
   const mcpPublishTimerRef = useRef<number | null>(null);
   const mcpRuntimeErrorsRef = useRef<Array<{ time: string; message: string }>>([]);
   const saveStateRef = useRef(saveState);
+  const cameraEditTransactionRef = useRef<{ project: EditorProject; redo: EditorProject[]; saveState: typeof saveState } | null>(null);
   const saveResultRef = useRef<{ ok: boolean; error: string | null } | null>(null);
   const recoveryPromptRef = useRef<{ rootPath: string; directory: string; current: EditorProject | null; backups: EditorProject[]; savedAt: number } | null>(null);
 
@@ -628,6 +630,7 @@ export function Editor() {
     }
     const initialAnimation = value.idleAnimation ?? value.defaultAnimation;
     setSelectedAnimation(initialAnimation);
+    setAnimationSelectionOrigin("automatic");
     if (initialAnimation) rendererRef.current?.setAnimation(initialAnimation, true);
   };
   callbacksRef.current.onFrame = (value) => {
@@ -1226,6 +1229,27 @@ export function Editor() {
     setRedo([]);
   }
 
+  function beginCameraEdit() {
+    const current = projectRef.current;
+    if (!current || cameraEditTransactionRef.current) return;
+    cameraEditTransactionRef.current = { project: current, redo, saveState: saveStateRef.current };
+    setUndo((items) => [...items.slice(-49), current]);
+    setRedo([]);
+  }
+
+  function endCameraEdit() {
+    cameraEditTransactionRef.current = null;
+  }
+
+  function cancelCameraEdit() {
+    const transaction = cameraEditTransactionRef.current;
+    if (!transaction) return;
+    cameraEditTransactionRef.current = null;
+    setUndo((items) => items.at(-1) === transaction.project ? items.slice(0, -1) : items);
+    setRedo(transaction.redo);
+    setSaveState(transaction.saveState);
+  }
+
   function updateViewSetting(field: keyof EditorViewSettings, value: boolean) {
     const nextSettings = { ...(viewSettingsRef.current ?? DEFAULT_EDITOR_VIEW_SETTINGS), [field]: value };
     viewSettingsRef.current = nextSettings;
@@ -1492,6 +1516,7 @@ export function Editor() {
     if (!name) return;
     rendererRef.current?.setAnimation(name, true);
     setSelectedAnimation(name);
+    setAnimationSelectionOrigin("explicit");
     setPlaying(true);
   }
 
@@ -1509,7 +1534,7 @@ export function Editor() {
     previewRef.current.reset();
     setPreviewDebug(previewRef.current.debug);
     const idle = metaRef.current?.idleAnimation ?? metaRef.current?.defaultAnimation;
-    if (idle) { rendererRef.current?.setAnimation(idle, true); setSelectedAnimation(idle); }
+    if (idle) { rendererRef.current?.setAnimation(idle, true); setSelectedAnimation(idle); setAnimationSelectionOrigin("automatic"); }
     setPlaying(true);
   }
 
@@ -1964,7 +1989,8 @@ export function Editor() {
           <div className="editor-timeline">
             <div className="editor-timeline-top">
                <button className="editor-icon-button" title="Play/pause (Space)" onClick={() => { const next = !playing; setPlaying(next); rendererRef.current?.setPlaying(next); }} disabled={!frame || testing}>{playing ? <IconPause /> : <IconPlay />}</button>
-               <AnimationPicker ariaLabel="Preview animation" value={selectedAnimation} options={(meta?.animations ?? []).map((animation) => ({ value: animation, label: animation }))} onChange={(animation) => { setSelectedAnimation(animation); rendererRef.current?.setAnimation(animation, true); }} disabled={!meta || testing} />
+               <AnimationPicker ariaLabel="Preview animation" placeholder={meta && !meta.idleAnimation ? "No idle detected · choose animation" : "Choose animation…"} value={selectedAnimation} options={(meta?.animations ?? []).map((animation) => ({ value: animation, label: animation }))} onChange={(animation) => { setSelectedAnimation(animation); setAnimationSelectionOrigin("explicit"); rendererRef.current?.setAnimation(animation, true); }} disabled={!meta || testing} />
+                {animationSelectionOrigin === "automatic" && meta?.idleAnimation && <small className="editor-field-hint">{selectedAnimation === "__intro__" ? `Automatically playing the detected intro, then ${meta.idleAnimation}.` : selectedAnimation === meta.idleAnimation ? `Automatically selected ${meta.idleAnimation} as the detected idle.` : `Detected idle: ${meta.idleAnimation}. Choose an animation explicitly.`}</small>}
               <NumberField label="Speed" value={speed} min={0.1} max={3} step={0.1} precision={1} unit="×" scrub={false} compact onCommit={setSpeed} />
               <span className="editor-time">{progress.time.toFixed(2)} / {progress.duration.toFixed(2)}s</span>
             </div>
@@ -2090,7 +2116,7 @@ export function Editor() {
           </section>}
         </aside>
       </main>
-      {workspace !== "interaction" && assetLoaded && <TimelineWorkspace mode={workspace} onWorkspaceChange={setWorkspace} source={source} directory={directory} directories={directories} directoryLabels={directoryLabels} directoryInfo={directoryInfo} project={project} initialHandoff={initialTimelineHandoff} initialSubtitlePath={pendingSubtitlePath} onSubtitleOpened={() => setPendingSubtitlePath(null)} initialAudioPaths={pendingAudioPaths} onAudioOpened={() => setPendingAudioPaths(null)} onRecentFile={recordRecentFile} onMutate={mutate} onLive={live} onBeginEdit={beginTimelineEdit} onSave={() => saveProject()} onRegisterSave={(callback) => { timelineSaveRef.current = callback; }} onStatus={setStatus} onError={setError} onRegisterMcp={registerMcpTimeline} onMcpSnapshot={publishTimelineMcpSnapshot} />}
+      {workspace !== "interaction" && assetLoaded && <TimelineWorkspace mode={workspace} onWorkspaceChange={setWorkspace} source={source} directory={directory} directories={directories} directoryLabels={directoryLabels} directoryInfo={directoryInfo} project={project} initialHandoff={initialTimelineHandoff} initialSubtitlePath={pendingSubtitlePath} onSubtitleOpened={() => setPendingSubtitlePath(null)} initialAudioPaths={pendingAudioPaths} onAudioOpened={() => setPendingAudioPaths(null)} onRecentFile={recordRecentFile} onMutate={mutate} onLive={live} onBeginEdit={beginTimelineEdit} onBeginCameraEdit={beginCameraEdit} onEndCameraEdit={endCameraEdit} onCancelCameraEdit={cancelCameraEdit} onSave={() => saveProject()} onRegisterSave={(callback) => { timelineSaveRef.current = callback; }} onStatus={setStatus} onError={setError} onRegisterMcp={registerMcpTimeline} onMcpSnapshot={publishTimelineMcpSnapshot} />}
       <footer className="editor-statusbar">
         <span className={error ? "editor-error" : ""}>{error ?? status}</span>
         <span>{directory ? `${displayName(directory)} · ${files?.size ?? 0} files` : "No asset loaded"} · {testing ? "TEST MODE" : workspace === "camera" ? "CAMERA" : workspace === "timeline" ? "TIMELINE" : "EDIT MODE"}</span>

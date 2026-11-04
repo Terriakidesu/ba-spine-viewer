@@ -435,6 +435,26 @@ describe("Spine scene framing", () => {
     expect(camera.position.y).toBe(45);
   });
 
+  test("artwork camera mode fits complete rig bounds instead of authored scene bounds", () => {
+    const sceneBounds = { x: 0, y: 0, width: 1600, height: 900 };
+    const artworkBounds = { x: -180, y: -700, width: 360, height: 1400 };
+    const expected = fitScene(artworkBounds, 800, 450);
+    const camera = { viewportWidth: 800, viewportHeight: 450, position: { x: 0, y: 0 }, zoom: 1, update() {} };
+    const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
+      destroyed: false,
+      pendingFit: true,
+      cameraMode: "artwork",
+      fitCameraPose: null,
+      bundle: { bounds: sceneBounds, artworkBounds },
+      canvas: { width: 800, height: 450 },
+      renderer: { camera, resize() {} },
+    });
+    renderer.resize();
+    expect(camera.zoom).toBeCloseTo(expected.zoom);
+    expect(camera.position.x).toBeCloseTo(expected.x);
+    expect(camera.position.y).toBeCloseTo(expected.y);
+  });
+
   test("only interaction mode locks the camera to the authored game view", () => {
     const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
       cameraMode: "game",
