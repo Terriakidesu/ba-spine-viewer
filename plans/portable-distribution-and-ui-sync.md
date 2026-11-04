@@ -259,7 +259,8 @@ Do not run write-oriented tests or save commands against the existing authored p
 ## Execution evidence (2026-11-04)
 
 - Bun 1.4.2: `bun run typecheck` passed; `bun test` passed (389 tests, 2,847 assertions).
-- `bun run portable:package` completed. `bun run audit:portable` and `bun run audit:release` passed. Portable ZIP SHA-256: `d3586c08eca9d4ecac54a205f8b39d000ec68f0f8c964a902b478f846bee5124`.
+- `bun run portable:package` completed. `bun run audit:portable` and `bun run audit:release` passed. Portable ZIP SHA-256: `e457e17a336fe5959bf9bd9d83165ef46f94a950ad72e2b3d7b9bed8ddad51ac`.
+- Windows Shell ZIP enumeration confirmed the archive is no longer displayed as empty: it shows all seven root items (`Editor.exe`, `Viewer.exe`, `README.txt`, `suite.json`, `apps`, `data`, and `licenses`). 7-Zip verified 21 folders and 51 files; its archive test passed.
 - Windows x64 native-hook tests compiled and registered the thread-specific hook on a disposable hidden window. Scaling assertions passed at 96, 120, 144, and 192 DPI; the 96-DPI minimum correctly clamps to a 720 × 500 work area.
 - Packaged smoke launch used an extracted suite and isolated app-data under disposable paths containing spaces, with a non-suite working directory. Both root launchers started their bundled `bun.exe` processes. After moving the suite to a second path containing spaces, both launchers started again.
 - On the current 120-DPI display, a real bottom-right drag toward 500 × 400 stopped both packaged windows at 950 × 700 physical pixels (760 × 560 logical). The disposable suite data tree remained byte-for-byte unchanged during launch and resize.

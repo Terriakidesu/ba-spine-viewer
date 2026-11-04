@@ -127,7 +127,10 @@ try {
 
   await rm(outputArchive, { force: true });
   await rm(checksumPath, { force: true });
-  await run("tar", ["-a", "-c", "-f", outputArchive, "-C", stage, "."], repositoryRoot);
+  // Avoid a leading "./" in ZIP entry names: Windows Explorer's compressed-folder
+  // handler can open such archives but shows the root as empty.
+  const archiveEntries = ["Editor.exe", "Viewer.exe", "README.txt", "suite.json", "apps", "data", "licenses"];
+  await run("tar", ["-a", "-c", "-f", outputArchive, "-C", stage, ...archiveEntries], repositoryRoot);
   await mkdir(verifyExtract, { recursive: true });
   await run("tar", ["-xf", outputArchive, "-C", verifyExtract], repositoryRoot);
   const archiveIssues = await auditPortableSuiteDirectory(verifyExtract, forbiddenPaths);
