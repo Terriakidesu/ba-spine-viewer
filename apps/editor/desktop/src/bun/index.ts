@@ -10,30 +10,37 @@ import { libraryIdentityForPath, MAX_SPINE_DRAFT_SNAPSHOT_BYTES, parseHandoffMes
 import { isEditorIgnored, parseEditorIgnore, type EditorIgnoreRule } from "@ba-spine/spine-runtime/spine/editorIgnore";
 import { EditorFileConflictError, saveEditorBatch, type EditorBatchFile } from "@ba-spine/desktop-host/transactionalSave";
 import { SpineEditorMcpBridge } from "./mcpBridge";
-import { defaultDesktopWindowFrame, readDesktopWindowState, restoreDesktopWindowState, startDesktopWindowStatePersistence, type WindowDisplay } from "@ba-spine/desktop-host/windowState";
-import { initialLibraryPath, restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
+import { defaultDesktopWindowFrame, enforceDesktopWindowMinimum, readDesktopWindowState, restoreDesktopWindowState, startDesktopWindowStatePersistence, type WindowDisplay } from "@ba-spine/desktop-host/windowState";
+import { restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
+import { discoverPortableSuite, firstRecognizableLibraryPath } from "@ba-spine/desktop-host/portableSuite";
 
 const editorLibraryPreferencePath = join(Utils.paths.appData, "BA Spine Suite", "Editor", "library.json");
-const rememberedLibraryPath = process.env.BA_SPINE_DATA ? null : await restoreLastLibraryPath(editorLibraryPreferencePath);
+const portableSuite = process.env.BA_SPINE_SUITE_ROOT
+  ? await discoverPortableSuite(process.env.BA_SPINE_SUITE_ROOT).catch((error) => {
+    console.warn("[ba-spine-editor] ignoring invalid portable suite metadata", error);
+    return null;
+  })
+  : null;
+const rememberedLibraryPath = await restoreLastLibraryPath(editorLibraryPreferencePath);
 const developmentDefaultLibraryPath = process.env.BA_SPINE_WORKSPACE_ROOT
   ? join(process.env.BA_SPINE_WORKSPACE_ROOT, "data")
   : null;
-const initialPath = initialLibraryPath(process.env.BA_SPINE_DATA, rememberedLibraryPath, developmentDefaultLibraryPath);
+const initialPath = await firstRecognizableLibraryPath([
+  process.env.BA_SPINE_DATA,
+  rememberedLibraryPath,
+  portableSuite?.dataPath,
+  portableSuite ? null : developmentDefaultLibraryPath,
+]);
 let assetRoot: string | null = initialPath ? resolve(initialPath) : null;
-if (assetRoot) {
-  try {
-    assetRoot = await realpath(assetRoot);
-    if (!(await stat(assetRoot)).isDirectory()) assetRoot = null;
-  }
-  catch { assetRoot = null; }
-}
-const mcpBridge = new SpineEditorMcpBridge(process.env.BA_SPINE_EDITOR_MCP === "1" || Bun.argv.includes("--mcp"));
+const developmentWorkspace = Boolean(process.env.BA_SPINE_WORKSPACE_ROOT);
+const mcpBridge = new SpineEditorMcpBridge(developmentWorkspace && (process.env.BA_SPINE_EDITOR_MCP === "1" || Bun.argv.includes("--mcp")));
 const companionChannel = process.env.BA_SPINE_APP_CHANNEL === "canary" ? "canary" : "stable";
 
 function launchPlanFor(app: "viewer" | "editor") {
   return defaultCompanionLaunchPlan(app, {
     appDataRoot: Utils.paths.appData,
     channel: companionChannel,
+    ...(portableSuite ? { suiteRoot: portableSuite.root } : {}),
     ...(process.env.BA_SPINE_WORKSPACE_ROOT ? { workspaceRoot: process.env.BA_SPINE_WORKSPACE_ROOT } : {}),
   });
 }
@@ -151,7 +158,7 @@ async function api(request: Request, url: URL): Promise<Response> {
       const message = parseHandoffMessage(await request.json() as unknown);
       if (message.targetApp !== "viewer") return errorResponse("The editor can only hand off to the viewer.");
       await sendCompanionHandoff(message, {
-        autoLaunch: { resolvePlan: (targetApp) => launchPlanFor(targetApp) },
+        autoLaunch: { resolvePlan: (targetApp) => launchPlanFor(targetApp), ...(portableSuite ? { preferResolvedPlan: true } : {}) },
       });
       return json({ ok: true, requestId: message.requestId });
     }
@@ -337,7 +344,7 @@ let companionRegistration: CompanionRegistration;
 try {
   companionRegistration = await registerCompanionEndpoint("editor", server.port, {
     token: companionInbox.token,
-    launchPlan: launchPlanFor("editor"),
+    ...(!portableSuite ? { launchPlan: launchPlanFor("editor") } : {}),
   });
 } catch (error) {
   server.stop(true);
@@ -373,6 +380,12 @@ try {
     frame: restoredWindowState?.frame ?? defaultWindowFrame ?? { width: 1440, height: 900 },
   });
   window = nativeWindow;
+  const applyNativeMinimum = () => {
+    enforceDesktopWindowMinimum(nativeWindow, connectedDisplays(), editorMinimumWindowSize);
+  };
+  applyNativeMinimum();
+  nativeWindow.on("move", applyNativeMinimum);
+  nativeWindow.on("resize", applyNativeMinimum);
   if (restoredWindowState?.maximized) nativeWindow.maximize();
   console.log(`[ba-spine-editor] window ${window.id} opened`);
 } catch (value) {

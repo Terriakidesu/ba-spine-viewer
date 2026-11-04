@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
-import { auditPackagedDirectory, auditReleaseArtifacts } from "./releaseArtifactAudit";
+import { auditPackagedDirectory, auditPortableSuiteDirectory, auditReleaseArtifacts } from "./releaseArtifactAudit";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
@@ -61,6 +61,40 @@ function paxPathRecord(path: string): string {
 }
 
 describe("release artifact audit", () => {
+  test("accepts a complete portable suite and rejects authored files in its data placeholder", async () => {
+    const root = await temporaryRoot("ba-spine-portable-suite-");
+    const manifest = {
+      schemaVersion: 1,
+      suiteVersion: "0.1.0",
+      platform: "windows-x64",
+      apps: {
+        editor: "apps/editor/BASpineEditor/bin/launcher.exe",
+        viewer: "apps/viewer/BASpineViewer/bin/launcher.exe",
+      },
+      dataDirectory: "data",
+    };
+    await writeFile(join(root, "suite.json"), JSON.stringify(manifest));
+    for (const app of ["editor", "viewer"] as const) {
+      const bundle = join(root, "apps", app, app === "editor" ? "BASpineEditor" : "BASpineViewer");
+      await mkdir(join(bundle, "Resources", "app"), { recursive: true });
+      await mkdir(join(bundle, "bin"), { recursive: true });
+      await writeFile(join(bundle, "bin", "launcher.exe"), "MZ\0\0");
+      await writeFile(join(bundle, "Resources", "version.json"), JSON.stringify({
+        version: "0.1.0",
+        identifier: app === "editor" ? "dev.ba-spine.editor" : "dev.ba-spine.viewer",
+      }));
+      await writeFile(join(bundle, "Resources", "main.js"), "console.log('portable');");
+    }
+    await writeFile(join(root, "Editor.exe"), "MZ\0\0");
+    await writeFile(join(root, "Viewer.exe"), "MZ\0\0");
+    await mkdir(join(root, "data"), { recursive: true });
+    await writeFile(join(root, "data", "README.txt"), "Keep your library here.");
+
+    expect(await auditPortableSuiteDirectory(root)).toEqual([]);
+    await writeFile(join(root, "data", "catalog.json"), "{}");
+    expect(await auditPortableSuiteDirectory(root)).toContain("data/: portable package must contain only its README placeholder, not user assets.");
+  });
+
   test("accepts a package without library data or workspace markers", async () => {
     const root = await temporaryRoot("ba-spine-release-clean-");
     await mkdir(join(root, "Resources", "app"), { recursive: true });

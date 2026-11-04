@@ -39,10 +39,53 @@ export interface WindowMinimumSize {
   height: number;
 }
 
+/** Keep a native resize minimum within the work area of the window's current display. */
+export function effectiveWindowMinimumSize(
+  frame: WindowRect,
+  displays: readonly WindowDisplay[],
+  minimumSize: WindowMinimumSize,
+): WindowMinimumSize {
+  const candidates = usableDisplays(displays);
+  if (candidates.length === 0) return { ...minimumSize };
+  const target = candidates.reduce((best, candidate) => {
+    const overlap = intersectionArea(frame, candidate.workArea);
+    return overlap > best.overlap ? { candidate, overlap } : best;
+  }, {
+    candidate: candidates.find(({ display }) => display.isPrimary) ?? candidates[0]!,
+    overlap: -1,
+  }).candidate;
+  return {
+    width: Math.max(1, Math.min(Math.floor(minimumSize.width), Math.floor(target.workArea.width))),
+    height: Math.max(1, Math.min(Math.floor(minimumSize.height), Math.floor(target.workArea.height))),
+  };
+}
+
 export interface WindowStateEventSource {
   getFrame(): WindowRect;
   isMaximized(): boolean;
   on(name: string, handler: () => void): void;
+}
+
+export interface NativeResizableWindow extends WindowStateEventSource {
+  setSize(width: number, height: number): void;
+}
+
+/**
+ * Electrobun 2.0.5 does not expose an OS-level minimum-size API. Correct a
+ * below-minimum resize immediately through its supported native setSize API.
+ */
+export function enforceDesktopWindowMinimum(
+  window: NativeResizableWindow,
+  displays: readonly WindowDisplay[],
+  minimumSize: WindowMinimumSize,
+): boolean {
+  const frame = window.getFrame();
+  const minimum = effectiveWindowMinimumSize(frame, displays, minimumSize);
+  const width = Math.max(frame.width, minimum.width);
+  const height = Math.max(frame.height, minimum.height);
+  if (width === frame.width && height === frame.height) return false;
+  window.setSize(width, height);
+  return true;
 }
 
 function validRect(value: unknown, minimumSize = 1): value is WindowRect {

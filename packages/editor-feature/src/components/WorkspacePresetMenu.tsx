@@ -5,6 +5,7 @@ import "./workspacePresetMenu.css";
 export interface WorkspacePresetMenuProps {
   selected: WorkspaceLayoutPreset;
   timelineDisabled?: boolean;
+  compact?: boolean;
   onSelect: (preset: Exclude<WorkspaceLayoutPreset, "custom">) => void;
 }
 
@@ -14,9 +15,9 @@ const options = [
   { id: "timeline-focus", label: "Timeline focus", detail: "Open the sequence timeline", icon: IconChevronDown },
 ] as const;
 
-export function WorkspacePresetMenu({ selected, timelineDisabled = false, onSelect }: WorkspacePresetMenuProps) {
-  return <details className="editor-layout-menu">
-    <summary className="editor-button" title="Choose a workspace layout"><IconExpand /> Layout <IconChevronDown /></summary>
+export function WorkspacePresetMenu({ selected, timelineDisabled = false, compact = false, onSelect }: WorkspacePresetMenuProps) {
+  return <details className="editor-layout-menu" name="editor-toolbar-menu">
+    <summary className={`editor-button${compact ? " editor-icon-button" : ""}`} aria-label="Choose a workspace layout" title="Choose a workspace layout"><IconExpand />{!compact && <span>Layout</span>}<IconChevronDown /></summary>
     <div className="editor-layout-menu-popover" role="group" aria-label="Workspace layout presets">
       {options.map(({ id, label, detail, icon: Icon }) => <button type="button" key={id} className={`editor-layout-preset${selected === id ? " is-selected" : ""}`} aria-pressed={selected === id} disabled={id === "timeline-focus" && timelineDisabled} title={detail} onClick={(event) => {
         onSelect(id);

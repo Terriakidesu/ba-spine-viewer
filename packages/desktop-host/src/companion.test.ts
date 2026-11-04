@@ -254,6 +254,40 @@ describe("authenticated local companion transport", () => {
     });
   });
 
+  test("coalesces concurrent first launches so repeated handoffs do not open duplicate Viewer processes", async () => {
+    await withRegistry(async (directory) => {
+      const token = "c".repeat(64);
+      const inbox = new CompanionInbox("viewer", token);
+      let server: ReturnType<typeof Bun.serve> | undefined;
+      let registration: Awaited<ReturnType<typeof registerCompanionEndpoint>> | undefined;
+      let launches = 0;
+      const launch = async () => {
+        launches += 1;
+        await new Promise((resolveLaunch) => setTimeout(resolveLaunch, 25));
+        server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => inbox.handle(request) });
+        if (server.port === undefined) throw new Error("Test companion server failed to bind.");
+        registration = await registerCompanionEndpoint("viewer", server.port, { directory, token });
+      };
+      try {
+        await Promise.all([
+          sendCompanionHandoff({ ...message, requestId: "req_parallel_01" }, {
+            directory,
+            autoLaunch: { resolvePlan: () => ({ command: "fixture-viewer-launcher", args: [] }), launch, timeoutMs: 1_000, pollIntervalMs: 5 },
+          }),
+          sendCompanionHandoff({ ...message, requestId: "req_parallel_02" }, {
+            directory,
+            autoLaunch: { resolvePlan: () => ({ command: "fixture-viewer-launcher", args: [] }), launch, timeoutMs: 1_000, pollIntervalMs: 5 },
+          }),
+        ]);
+        expect(launches).toBe(1);
+        expect(inbox.pending().map((item) => item.requestId)).toEqual(["req_parallel_01", "req_parallel_02"]);
+      } finally {
+        registration?.close();
+        server?.stop(true);
+      }
+    });
+  });
+
   test("uses the saved launch plan instead of asking discovery again", async () => {
     await withRegistry(async (directory) => {
       const plan = { command: "fixture-editor-launcher", args: [] };
@@ -272,6 +306,41 @@ describe("authenticated local companion transport", () => {
         },
       })).rejects.toBeInstanceOf(CompanionUnavailableError);
       expect(launches).toBe(1);
+    });
+  });
+
+  test("prefers the recalculated suite launcher over a stale standalone launch record", async () => {
+    await withRegistry(async (directory) => {
+      const stale = { command: "C:\\Previous Location\\Viewer.exe", args: [] };
+      const current = { command: "C:\\Moved Suite\\Viewer.exe", args: [], cwd: "C:\\Moved Suite" };
+      await writeCompanionLaunchPlan("viewer", stale, directory);
+      const token = "b".repeat(64);
+      const inbox = new CompanionInbox("viewer", token);
+      let server: ReturnType<typeof Bun.serve> | undefined;
+      let registration: Awaited<ReturnType<typeof registerCompanionEndpoint>> | undefined;
+      let launchedPlan: unknown;
+      try {
+        await sendCompanionHandoff(message, {
+          directory,
+          autoLaunch: {
+            resolvePlan: () => current,
+            preferResolvedPlan: true,
+            launch: async (_target, plan) => {
+              launchedPlan = plan;
+              server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => inbox.handle(request) });
+              if (server.port === undefined) throw new Error("Test companion server failed to bind.");
+              registration = await registerCompanionEndpoint("viewer", server.port, { directory, token });
+            },
+            timeoutMs: 1_000,
+            pollIntervalMs: 5,
+          },
+        });
+        expect(launchedPlan).toEqual(current);
+        expect(inbox.pending()).toEqual([message]);
+      } finally {
+        registration?.close();
+        server?.stop(true);
+      }
     });
   });
 

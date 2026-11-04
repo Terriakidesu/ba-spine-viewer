@@ -14,23 +14,28 @@ import { isEditorIgnored, parseEditorIgnore, type EditorIgnoreRule } from "@ba-s
 import { manifestReferenceCandidates, normalizeSpineManifest } from "@ba-spine/spine-runtime/spine/spineManifest";
 import { MAX_VIEWER_THUMBNAIL_BYTES, ViewerThumbnailCache } from "@ba-spine/desktop-host/viewerThumbnailCache";
 import { createDebouncedAction } from "@ba-spine/desktop-host/debouncedAction";
-import { defaultDesktopWindowFrame, readDesktopWindowState, restoreDesktopWindowState, startDesktopWindowStatePersistence, type WindowDisplay } from "@ba-spine/desktop-host/windowState";
-import { initialLibraryPath, restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
+import { defaultDesktopWindowFrame, enforceDesktopWindowMinimum, readDesktopWindowState, restoreDesktopWindowState, startDesktopWindowStatePersistence, type WindowDisplay } from "@ba-spine/desktop-host/windowState";
+import { restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
+import { discoverPortableSuite, firstRecognizableLibraryPath } from "@ba-spine/desktop-host/portableSuite";
 
 const viewerLibraryPreferencePath = join(Utils.paths.appData, "BA Spine Suite", "Viewer", "library.json");
-const rememberedLibraryPath = process.env.BA_SPINE_DATA ? null : await restoreLastLibraryPath(viewerLibraryPreferencePath);
+const portableSuite = process.env.BA_SPINE_SUITE_ROOT
+  ? await discoverPortableSuite(process.env.BA_SPINE_SUITE_ROOT).catch((error) => {
+    console.warn("[ba-spine-viewer] ignoring invalid portable suite metadata", error);
+    return null;
+  })
+  : null;
+const rememberedLibraryPath = await restoreLastLibraryPath(viewerLibraryPreferencePath);
 const developmentDefaultLibraryPath = process.env.BA_SPINE_WORKSPACE_ROOT
   ? join(process.env.BA_SPINE_WORKSPACE_ROOT, "data")
   : null;
-const initialPath = initialLibraryPath(process.env.BA_SPINE_DATA, rememberedLibraryPath, developmentDefaultLibraryPath);
+const initialPath = await firstRecognizableLibraryPath([
+  process.env.BA_SPINE_DATA,
+  rememberedLibraryPath,
+  portableSuite?.dataPath,
+  portableSuite ? null : developmentDefaultLibraryPath,
+]);
 let assetRoot: string | null = initialPath ? resolve(initialPath) : null;
-if (assetRoot) {
-  try {
-    assetRoot = await realpath(assetRoot);
-    if (!(await stat(assetRoot)).isDirectory()) assetRoot = null;
-  }
-  catch { assetRoot = null; }
-}
 const EDITOR_DIRECTORIES = new Set([".editor", ".shittim-spine-editor"]);
 const companionChannel = process.env.BA_SPINE_APP_CHANNEL === "canary" ? "canary" : "stable";
 const viewerThumbnailCache = new ViewerThumbnailCache(join(Utils.paths.appData, "BA Spine Suite", "Viewer", "thumbnails"));
@@ -46,6 +51,7 @@ function launchPlanFor(app: "viewer" | "editor") {
   return defaultCompanionLaunchPlan(app, {
     appDataRoot: Utils.paths.appData,
     channel: companionChannel,
+    ...(portableSuite ? { suiteRoot: portableSuite.root } : {}),
     ...(process.env.BA_SPINE_WORKSPACE_ROOT ? { workspaceRoot: process.env.BA_SPINE_WORKSPACE_ROOT } : {}),
   });
 }
@@ -313,7 +319,7 @@ async function api(request: Request, url: URL): Promise<Response> {
       const message = parseHandoffMessage(await request.json() as unknown);
       if (message.targetApp !== "editor") return errorResponse("The viewer can only hand off to the editor.");
       await sendCompanionHandoff(message, {
-        autoLaunch: { resolvePlan: (targetApp) => launchPlanFor(targetApp) },
+        autoLaunch: { resolvePlan: (targetApp) => launchPlanFor(targetApp), ...(portableSuite ? { preferResolvedPlan: true } : {}) },
       });
       return json({ ok: true, requestId: message.requestId });
     }
@@ -450,7 +456,7 @@ let companionRegistration: CompanionRegistration;
 try {
   companionRegistration = await registerCompanionEndpoint("viewer", server.port, {
     token: companionInbox.token,
-    launchPlan: launchPlanFor("viewer"),
+    ...(!portableSuite ? { launchPlan: launchPlanFor("viewer") } : {}),
   });
 } catch (error) {
   server.stop(true);
@@ -481,6 +487,12 @@ const nativeWindow = new BrowserWindow({
   frame: restoredWindowState?.frame ?? defaultWindowFrame ?? { width: 1440, height: 940 },
 });
 window = nativeWindow;
+const applyNativeMinimum = () => {
+  enforceDesktopWindowMinimum(nativeWindow, connectedDisplays(), viewerMinimumWindowSize);
+};
+applyNativeMinimum();
+nativeWindow.on("move", applyNativeMinimum);
+nativeWindow.on("resize", applyNativeMinimum);
 if (restoredWindowState?.maximized) nativeWindow.maximize();
 startDesktopWindowStatePersistence(nativeWindow, viewerWindowStatePath, connectedDisplays, (error) => console.warn("[ba-spine-viewer] could not save window state", error));
 

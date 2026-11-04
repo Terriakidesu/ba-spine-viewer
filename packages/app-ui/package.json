@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./icons": "./src/icons.tsx"
+    "./icons": "./src/icons.tsx",
+    "./styles/tokens.css": "./src/styles/tokens.css",
+    "./styles/controls.css": "./src/styles/controls.css"
   },
   "dependencies": {
     "react": "^19.0.0"

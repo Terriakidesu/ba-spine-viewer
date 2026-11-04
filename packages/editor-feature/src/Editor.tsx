@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   SpineRenderer,
   type SpineEditorFrame,
@@ -54,7 +54,7 @@ import { isCommandPaletteShortcut, isTextEditingTarget } from "./editorKeyboard"
 import "./validationIssues.css";
 import type { EditorMcpCommand, EditorMcpState, EditorMcpTimelineBridge, EditorMcpTimelineSnapshot } from "./editorMcp";
 import { DEFAULT_EDITOR_LAYOUT_PREFERENCES, EDITOR_LAYOUT_PREFERENCES_KEY, normalizeEditorLayoutPreferences, type WorkspaceLayoutPreset } from "./editorLayout";
-import { IconCheck, IconChevronDown, IconClose, IconExpand, IconFile, IconFolder, IconHand, IconMenu, IconMessage, IconPause, IconPlay, IconPlus, IconSliders, IconSound, IconTarget } from "@ba-spine/app-ui/icons";
+import { IconAlert, IconCheck, IconChevronDown, IconClose, IconEye, IconExpand, IconFile, IconFolder, IconHand, IconHelp, IconMenu, IconMessage, IconMore, IconPause, IconPlay, IconPlus, IconSave, IconSearch, IconSliders, IconSound, IconTarget } from "@ba-spine/app-ui/icons";
 
 function displayName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
@@ -944,7 +944,7 @@ export function Editor() {
       });
       setCompanionStatus("Saved files sent to BA Spine Viewer.");
     } catch (reason) {
-      setCompanionStatus(reason instanceof Error ? reason.message : String(reason));
+      setCompanionStatus(`Viewer preview failed: ${reason instanceof Error ? reason.message : String(reason)}`);
     }
   }
 
@@ -991,7 +991,7 @@ export function Editor() {
     } catch (reason) {
       if (draftPreviewSessionRef.current?.sessionId === sessionId) stopDraftPreview();
       else void revokeDesktopDraft(sessionId).catch(() => undefined);
-      setCompanionStatus(reason instanceof Error ? reason.message : String(reason));
+      setCompanionStatus(`Viewer draft preview failed: ${reason instanceof Error ? reason.message : String(reason)}`);
     }
   }
 
@@ -1043,7 +1043,10 @@ export function Editor() {
       if (!live || polling) return;
       polling = true;
       try {
-        for (const message of await receiveDesktopHandoffs()) {
+        const messages = await receiveDesktopHandoffs();
+        if (!live) return;
+        setCompanionStatus((current) => current?.startsWith("Viewer connection issue:") ? null : current);
+        for (const message of messages) {
           if (!live) continue;
           if (handledHandoffIdsRef.current.has(message.requestId)) {
             await acknowledgeDesktopHandoff(message.requestId).catch(() => undefined);
@@ -1078,7 +1081,7 @@ export function Editor() {
           break;
         }
       } catch (reason) {
-        if (live) setError(`Companion handoff polling failed: ${reason instanceof Error ? reason.message : String(reason)}`);
+        if (live) setCompanionStatus(`Viewer connection issue: ${reason instanceof Error ? reason.message : String(reason)}`);
       } finally {
         polling = false;
       }
@@ -1703,11 +1706,16 @@ export function Editor() {
     return item.kind === "folder" ? item.rootPath : nativePath(item.rootPath, item.path);
   }
 
+  function closeHeaderMenu(event: ReactMouseEvent<HTMLElement>) {
+    const menu = event.currentTarget.closest("details");
+    if (menu) menu.open = false;
+  }
+
   function recentList(limit = 6) {
     if (recentFiles.length === 0) return <p className="editor-muted editor-recent-empty">No recent files yet.</p>;
     return <div className="editor-recent-list">
       {recentFiles.slice(0, limit).map((item) => <div className="editor-recent-item" key={`${item.kind}:${item.rootPath}:${item.path}`}>
-        <button className="editor-recent-open" title={recentPath(item)} onClick={() => void openRecentFile(item)}>
+        <button className="editor-recent-open" title={recentPath(item)} onClick={(event) => { closeHeaderMenu(event); void openRecentFile(item); }}>
            <span className={`editor-recent-icon kind-${item.kind}`}>{item.kind === "folder" ? <IconFolder /> : item.kind === "project" ? <IconFile /> : item.kind === "subtitle" ? <IconMessage /> : <IconSound />}</span>
           <span><b>{item.label}</b><small>{recentKindLabel(item.kind)} · {displayName(item.rootPath)}</small></span>
         </button>
@@ -1754,6 +1762,8 @@ export function Editor() {
     { id: "keyboard-help", title: "Show keyboard shortcuts", description: "Open editor shortcut help", group: "Help", keywords: ["shortcuts", "keys"], run: () => setHelp(true) },
   ];
 
+  const companionStatusIsError = Boolean(companionStatus && /(failed|error|could not|did not|unavailable|issue)/i.test(companionStatus));
+
   return (
     <div className={`editor-app${testing ? " is-testing" : ""}`}>
       <header className="editor-header">
@@ -1761,32 +1771,58 @@ export function Editor() {
           <span className="editor-kicker">BA SPINE SUITE · SPINE 4.2</span>
           <h1>{workspace === "timeline" ? "Timeline Composer" : "Interaction Studio"}</h1>
         </div>
-        <div className="editor-actions">
-          <div className="editor-workspace-tabs" role="tablist" aria-label="Editor workspace">
-            <button className={`editor-button${workspace === "interaction" ? " active" : ""}`} role="tab" aria-selected={workspace === "interaction"} onClick={() => setWorkspace("interaction")}>Interactions</button>
-            <button className={`editor-button${workspace === "timeline" ? " active" : ""}`} role="tab" aria-selected={workspace === "timeline"} onClick={() => setWorkspace("timeline")} disabled={!assetLoaded}>Timeline</button>
+        <div className="editor-header-context">
+          <div className="editor-workspace-tabs suite-tabs" role="tablist" aria-label="Editor workspace">
+            <button className={`editor-button suite-tab${workspace === "interaction" ? " active" : ""}`} role="tab" aria-selected={workspace === "interaction"} onClick={() => setWorkspace("interaction")}>Interactions</button>
+            <button className={`editor-button suite-tab${workspace === "timeline" ? " active" : ""}`} role="tab" aria-selected={workspace === "timeline"} onClick={() => setWorkspace("timeline")} disabled={!assetLoaded}>Timeline</button>
           </div>
-          <button className="editor-button editor-command-trigger" type="button" aria-keyshortcuts="Control+K Meta+K" title="Search commands (Ctrl/⌘ K)" onClick={() => setCommandPaletteOpen(true)}>⌘ K</button>
-          <WorkspacePresetMenu selected={layoutPreset} timelineDisabled={!assetLoaded} onSelect={applyWorkspacePreset} />
-           <div className="editor-asset-picker"><span>Set</span><button className="editor-asset-picker-button" type="button" aria-haspopup="dialog" aria-expanded={assetPickerOpen} onClick={() => setAssetPickerOpen(true)} disabled={!directories.length} title={directory || "Open a folder first"}><span>{directory ? characterDirectoryLabel(directory, directoryLabels) : "Open a folder…"}</span><IconChevronDown /></button></div>
-          <details className="editor-open-menu">
-             <summary className="editor-button"><IconFolder /> Open <IconChevronDown /></summary>
+          <div className="editor-asset-picker"><span>Set</span><button className="editor-asset-picker-button" type="button" aria-label="Choose character or asset set" aria-haspopup="dialog" aria-expanded={assetPickerOpen} onClick={() => setAssetPickerOpen(true)} disabled={!directories.length} title={directory || "Open a folder first"}><span>{directory ? characterDirectoryLabel(directory, directoryLabels) : "Open a folder…"}</span><IconChevronDown /></button></div>
+        </div>
+        <div className="editor-actions">
+          <button className="suite-icon-button editor-button editor-icon-button editor-command-trigger" type="button" aria-label="Search commands" aria-keyshortcuts="Control+K Meta+K" title="Search commands (Ctrl/⌘ K)" onClick={() => setCommandPaletteOpen(true)}><IconSearch /></button>
+          <WorkspacePresetMenu compact selected={layoutPreset} timelineDisabled={!assetLoaded} onSelect={applyWorkspacePreset} />
+          <details className="editor-open-menu editor-header-menu" name="editor-toolbar-menu">
+            <summary className="editor-button editor-icon-button" aria-label="Open files and folders" title="Open files and folders"><IconFolder /><IconChevronDown /></summary>
             <div className="editor-open-menu-popover">
-              <button className="editor-button" onClick={() => void openFolder()}>Asset folder…</button>
-              <button className="editor-button" onClick={() => void openProjectFile()}>Project file…</button>
+              <button className="suite-button editor-button" type="button" onClick={(event) => { closeHeaderMenu(event); void openFolder(); }}><IconFolder /> Open asset folder…</button>
+              <button className="suite-button editor-button" type="button" onClick={(event) => { closeHeaderMenu(event); void openProjectFile(); }}><IconFile /> Open project file…</button>
               <div className="editor-open-menu-heading"><span>Recently opened</span>{recentFiles.length > 0 && <button onClick={() => { recentFilesRef.current = []; setRecentFiles([]); try { localStorage.removeItem(RECENT_FILES_KEY); } catch { /* optional */ } }}>Clear</button>}</div>
               {recentList(8)}
             </div>
           </details>
-          {isDesktopHost() && source && <button className="editor-button" type="button" onClick={() => void previewSavedInViewer()} disabled={!assetLoaded || saveState === "saving"} title="Save changes before previewing the saved library files in BA Spine Viewer">Preview saved in Viewer</button>}
-          {isDesktopHost() && source && <button className="editor-button" type="button" onClick={() => void previewUnsavedDraftInViewer()} disabled={!assetLoaded || (saveState !== "dirty" && saveState !== "error")} title="Send a read-only, in-memory snapshot of the current project to BA Spine Viewer">Preview unsaved draft in Viewer</button>}
-          {draftPreviewSessionId && <button className="editor-button" type="button" onClick={() => stopDraftPreview("Draft preview ended; Viewer will return to saved files.")}>Stop draft preview</button>}
-            <SaveStatus state={saveState} savedAt={savedAt} hasProject={Boolean(project)} />
-           <button className="editor-button editor-save-button" onClick={() => void saveProject()} disabled={!assetLoaded || saveState === "saving"} title="Write the project and linked subtitles to the selected asset root">Save to root</button>
-          <button className="editor-button" onClick={() => setHelp((value) => !value)} title="Keyboard shortcuts (?)">? Help</button>
+          {isDesktopHost() && source && <details className="editor-header-menu editor-preview-menu" name="editor-toolbar-menu">
+            <summary className="suite-button editor-button editor-preview-trigger" aria-label="Preview in Viewer" title="Preview in BA Spine Viewer"><IconEye /><span>Preview</span><IconChevronDown /></summary>
+            <div className="editor-header-menu-popover" role="group" aria-label="Viewer preview options">
+              <button className="editor-header-menu-item" type="button" onClick={(event) => { closeHeaderMenu(event); void previewSavedInViewer(); }} disabled={!assetLoaded || saveState === "saving"} title="Preview the last saved library files">
+                <IconFile /><span><strong>Preview saved</strong><small>Open the saved project in Viewer</small></span>
+              </button>
+              <button className="editor-header-menu-item" type="button" onClick={(event) => { closeHeaderMenu(event); void previewUnsavedDraftInViewer(); }} disabled={!assetLoaded || (saveState !== "dirty" && saveState !== "error")} title="Send a read-only, in-memory snapshot to Viewer">
+                <IconEye /><span><strong>Preview unsaved draft</strong><small>Send the current in-memory project</small></span>
+              </button>
+              {draftPreviewSessionId && <button className="editor-header-menu-item is-danger" type="button" onClick={(event) => { closeHeaderMenu(event); stopDraftPreview("Draft preview ended; Viewer will return to saved files."); }}>
+                <IconClose /><span><strong>Stop draft preview</strong><small>Return Viewer to saved files</small></span>
+              </button>}
+            </div>
+          </details>}
+          {companionStatus && <details className={`editor-header-menu editor-notice-menu${companionStatusIsError ? " has-error" : ""}`} name="editor-toolbar-menu">
+            <summary className="editor-button editor-icon-button editor-notice-trigger" aria-label={companionStatusIsError ? "Viewer connection issue" : "Viewer status"} title={companionStatus}>{companionStatusIsError ? <IconAlert /> : <IconEye />}</summary>
+            <div className="editor-header-menu-popover editor-notice-popover" role="status">
+              <div className="editor-notice-heading"><strong>{companionStatusIsError ? "Viewer connection issue" : "Viewer status"}</strong><button className="editor-icon-button" type="button" aria-label="Dismiss Viewer notice" title="Dismiss" onClick={(event) => { closeHeaderMenu(event); setCompanionStatus(null); }}><IconClose /></button></div>
+              <p>{companionStatus}</p>
+            </div>
+          </details>}
+          <SaveStatus state={saveState} savedAt={savedAt} hasProject={Boolean(project)} />
+          <button className="suite-icon-button editor-button editor-icon-button editor-save-button" type="button" aria-label="Save to root" onClick={() => void saveProject()} disabled={!assetLoaded || saveState === "saving"} title="Save the project and linked subtitles to this asset root"><IconSave /></button>
+          <details className="editor-header-menu editor-more-menu" name="editor-toolbar-menu">
+            <summary className="editor-button editor-icon-button" aria-label="More editor actions" title="More editor actions"><IconMore /></summary>
+            <div className="editor-header-menu-popover editor-more-popover" role="group" aria-label="More editor actions">
+              <button className="editor-header-menu-item" type="button" onClick={(event) => { closeHeaderMenu(event); setHelp((value) => !value); }}>
+                <IconHelp /><span><strong>Help & shortcuts</strong><small>View keyboard shortcuts</small></span>
+              </button>
+            </div>
+          </details>
         </div>
       </header>
-      {companionStatus && <div role="status" className="editor-companion-status">{companionStatus}</div>}
       {recoveryPrompt && recoveryPrompt.rootPath === source?.rootPath && recoveryPrompt.directory === directory && <section className="editor-recovery-prompt" role="region" aria-label="Project recovery">
         <div><strong>Local recovery snapshots found</strong><span>Nothing was restored automatically. Choose a snapshot to restore as an unsaved draft, or dismiss.</span></div>
         <div className="editor-recovery-actions">

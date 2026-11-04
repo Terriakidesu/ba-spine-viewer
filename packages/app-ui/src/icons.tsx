@@ -81,6 +81,18 @@ export function IconMenu(props: IconProps) {
   return <Base {...props}><line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="20" y2="17" /></Base>;
 }
 
+export function IconMore(props: IconProps) {
+  return <Base {...props}><circle cx="5" cy="12" r="1" fill="currentColor" /><circle cx="12" cy="12" r="1" fill="currentColor" /><circle cx="19" cy="12" r="1" fill="currentColor" /></Base>;
+}
+
+export function IconHelp(props: IconProps) {
+  return <Base {...props}><circle cx="12" cy="12" r="9" /><path d="M9.6 9a2.5 2.5 0 1 1 4.2 1.8c-1.1 1-1.8 1.3-1.8 3" /><path d="M12 17.5h.01" /></Base>;
+}
+
+export function IconSave(props: IconProps) {
+  return <Base {...props}><path d="M5 3h12l4 4v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M7 3v6h10V3M7 21v-7h10v7" /></Base>;
+}
+
 export function IconDot(props: IconProps) {
   return <Base {...props}><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" /></Base>;
 }

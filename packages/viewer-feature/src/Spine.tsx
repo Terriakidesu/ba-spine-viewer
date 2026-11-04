@@ -1793,8 +1793,8 @@ export function Spine() {
       </div>
       <small className="spine-source-local">{t("spine.source.localOnly")}</small>
       <div className="spine-source-action">
-        {isDesktopHost() && source && <button className="btn ghost" type="button" onClick={() => void openInEditor()} disabled={!selectedDirectoryName}>{t("spine.source.editInEditor")}</button>}
-        <button className="btn ghost" type="button" onClick={chooseFolder}><IconFolder /><span>{t(source ? "spine.source.change" : "spine.source.choose")}</span></button>
+        {isDesktopHost() && source && <button className="suite-button btn ghost" type="button" onClick={() => void openInEditor()} disabled={!selectedDirectoryName}>{t("spine.source.editInEditor")}</button>}
+        <button className="suite-button btn ghost" type="button" onClick={chooseFolder}><IconFolder /><span>{t(source ? "spine.source.change" : "spine.source.choose")}</span></button>
         <details className="spine-source-help">
           <summary aria-label={t("spine.source.helpAria")} title={t("spine.source.helpAria")}>?</summary>
           <div className="spine-source-help-panel">
@@ -1813,7 +1813,7 @@ export function Spine() {
     {draftPreview?.lobbyId === selectedDirectoryName && <div className="spine-draft-banner" role="status">
       <strong>{t("spine.draft.badge")}</strong>
       <span>{t("spine.draft.readOnly")}</span>
-      <button className="btn ghost" type="button" onClick={returnToSavedFiles}>{t("spine.draft.return")}</button>
+      <button className="suite-button btn ghost" type="button" onClick={returnToSavedFiles}>{t("spine.draft.return")}</button>
     </div>}
     {draftPreviewNotice && !draftPreview && <div className="spine-draft-notice" role="status">
       <span>{draftPreviewNotice}</span>

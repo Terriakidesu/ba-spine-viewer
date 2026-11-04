@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { isAbsolute, posix, win32 } from "node:path";
 import type { HandoffTargetApp } from "@ba-spine/platform-contracts/handoff";
+import { suiteCompanionLauncherPath } from "./portableSuite";
 
 export interface CompanionLaunchPlan {
   command: string;
@@ -61,9 +62,14 @@ export function defaultCompanionLaunchPlan(
     appDataRoot: string;
     channel: "stable" | "canary" | "dev";
     workspaceRoot?: string;
+    suiteRoot?: string;
   },
 ): CompanionLaunchPlan {
   const platform = options.platform ?? process.platform as CompanionPlatform;
+  if (options.suiteRoot && platform === "win32") {
+    const command = suiteCompanionLauncherPath(options.suiteRoot, app);
+    if (command) return { command, args: [], cwd: options.suiteRoot };
+  }
   if (options.workspaceRoot) {
     return {
       command: "bun",

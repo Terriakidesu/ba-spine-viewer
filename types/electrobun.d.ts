@@ -52,6 +52,7 @@ declare module "electrobun/main" {
     isMaximized(): boolean;
     maximize(): void;
     getFrame(): WindowFrame;
+    setSize(width: number, height: number): void;
     on(name: string, handler: (event: { data: unknown }) => void): void;
     show(): void;
     unminimize(): void;

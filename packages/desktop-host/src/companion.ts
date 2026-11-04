@@ -44,6 +44,8 @@ interface CompanionLeaseRecord {
   pid: number;
 }
 
+const pendingCompanionLaunches = new Map<string, Promise<CompanionEndpointRecord>>();
+
 export class CompanionUnavailableError extends Error {
   constructor(message: string) {
     super(message);
@@ -240,6 +242,8 @@ export interface CompanionRegistration {
 export interface CompanionAutoLaunchOptions {
   resolvePlan(targetApp: HandoffTargetApp): unknown | Promise<unknown>;
   launch?: (targetApp: HandoffTargetApp, plan: CompanionLaunchPlan) => Promise<void>;
+  /** Prefer current suite discovery over a legacy absolute plan saved by a standalone install. */
+  preferResolvedPlan?: boolean;
   timeoutMs?: number;
   pollIntervalMs?: number;
 }
@@ -501,9 +505,8 @@ export async function sendCompanionHandoff(
 
   const launchAndWait = async (): Promise<CompanionEndpointRecord> => {
     if (!options.autoLaunch) throw new CompanionUnavailableError(`BA Spine ${message.targetApp} is not currently registered on this device.`);
-    const plan = await readCompanionLaunchPlan(message.targetApp, directory) ?? parseCompanionLaunchPlan(
-      await options.autoLaunch.resolvePlan(message.targetApp),
-    );
+    const storedPlan = options.autoLaunch.preferResolvedPlan ? null : await readCompanionLaunchPlan(message.targetApp, directory);
+    const plan = storedPlan ?? parseCompanionLaunchPlan(await options.autoLaunch.resolvePlan(message.targetApp));
     try {
       if (options.autoLaunch.launch) await options.autoLaunch.launch(message.targetApp, plan);
       else await launchCompanionProcess(plan);
@@ -524,8 +527,21 @@ export async function sendCompanionHandoff(
     throw new CompanionUnavailableError(`BA Spine ${message.targetApp} started but did not register in time.`);
   };
 
+  const launchAndWaitOnce = async (): Promise<CompanionEndpointRecord> => {
+    const key = `${resolve(directory)}\0${message.targetApp}`;
+    const existing = pendingCompanionLaunches.get(key);
+    if (existing) return existing;
+    const pending = launchAndWait();
+    pendingCompanionLaunches.set(key, pending);
+    try {
+      return await pending;
+    } finally {
+      if (pendingCompanionLaunches.get(key) === pending) pendingCompanionLaunches.delete(key);
+    }
+  };
+
   let endpoint = await readEndpoint();
-  endpoint ??= await launchAndWait();
+  endpoint ??= await launchAndWaitOnce();
 
   let response: Response;
   try {

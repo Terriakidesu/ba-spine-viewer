@@ -1,9 +1,9 @@
 export type ThemePreference = "light" | "dark" | "system";
 const KEY = "shittim-theme";
-let preference: ThemePreference = "system";
+let preference: ThemePreference = "dark";
 
 export function parseTheme(value: string | null): ThemePreference {
-  return value === "light" || value === "dark" ? value : "system";
+  return value === "light" || value === "dark" || value === "system" ? value : "dark";
 }
 export function resolveTheme(value: ThemePreference, systemDark: boolean) {
   return value === "system" ? (systemDark ? "dark" : "light") : value;

@@ -15,6 +15,8 @@
     "build:viewer": "bun --cwd=apps/viewer run desktop:build",
     "build:editor": "bun --cwd=apps/editor run desktop:build",
     "build": "bun run build:viewer && bun run build:editor && bun run audit:release",
+    "portable:package": "bun scripts/packagePortableSuite.ts",
+    "audit:portable": "bun scripts/auditPortableSuite.ts",
     "audit:release": "bun scripts/releaseArtifactAudit.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",

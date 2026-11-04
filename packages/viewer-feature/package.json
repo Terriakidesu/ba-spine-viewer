@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./styles.css": "./src/styles.css",
-    "./i18n": "./src/i18n/index.ts"
+    "./i18n": "./src/i18n/index.ts",
+    "./theme": "./src/theme.ts"
   },
   "dependencies": {
     "@ba-spine/app-ui": "workspace:*",

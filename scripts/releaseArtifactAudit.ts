@@ -1,7 +1,8 @@
 import { createReadStream } from "node:fs";
-import { lstat, open, readdir } from "node:fs/promises";
-import { delimiter, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { lstat, open, readFile, readdir } from "node:fs/promises";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { createZstdDecompress } from "node:zlib";
+import { discoverPortableSuite } from "../packages/desktop-host/src/portableSuite";
 
 const DEFAULT_ARTIFACT_MARKERS = ["data/catalog.json"];
 const SCAN_CHUNK_BYTES = 64 * 1024;
@@ -289,6 +290,71 @@ async function auditWindowsLauncher(packageRoot: string, app: "viewer" | "editor
     await file?.close().catch(() => undefined);
   }
   return [];
+}
+
+async function auditPortableRootLauncher(path: string): Promise<string[]> {
+  const relativePath = basename(path);
+  let info;
+  try { info = await lstat(path); }
+  catch { return [`${relativePath}: portable root launcher is missing.`]; }
+  if (!info.isFile() || info.isSymbolicLink()) return [`${relativePath}: portable root launcher is not a regular file.`];
+  let file;
+  try {
+    file = await open(path, "r");
+    const signature = Buffer.alloc(2);
+    const { bytesRead } = await file.read(signature, 0, signature.length, 0);
+    if (bytesRead !== 2 || signature[0] !== 0x4d || signature[1] !== 0x5a) return [`${relativePath}: portable root launcher has no Windows PE signature.`];
+  } catch {
+    return [`${relativePath}: portable root launcher could not be inspected.`];
+  } finally {
+    await file?.close().catch(() => undefined);
+  }
+  return [];
+}
+
+/** Audit the relocatable two-app Windows suite without accepting authored assets in its data placeholder. */
+export async function auditPortableSuiteDirectory(root: string, forbiddenPaths: readonly string[] = []): Promise<string[]> {
+  const absoluteRoot = resolve(root);
+  const issues: string[] = [];
+  let suite;
+  try { suite = await discoverPortableSuite(absoluteRoot); }
+  catch (error) { return [`suite.json: ${error instanceof Error ? error.message : String(error)}`]; }
+
+  for (const name of ["Editor.exe", "Viewer.exe"]) issues.push(...await auditPortableRootLauncher(join(absoluteRoot, name)));
+
+  const dataRoot = suite.dataPath;
+  try {
+    const dataInfo = await lstat(dataRoot);
+    if (!dataInfo.isDirectory() || dataInfo.isSymbolicLink()) {
+      issues.push("data/: portable data placeholder must be a regular directory.");
+    } else {
+      const entries = await readdir(dataRoot, { withFileTypes: true });
+      if (entries.length !== 1 || entries[0]?.name !== "README.txt" || !entries[0].isFile()) {
+        issues.push("data/: portable package must contain only its README placeholder, not user assets.");
+      }
+    }
+  } catch {
+    issues.push("data/: portable data placeholder is missing.");
+  }
+
+  for (const app of ["editor", "viewer"] as const) {
+    const appRoot = dirname(dirname(suite.appPaths[app]));
+    const versionPath = join(appRoot, "Resources", "version.json");
+    try {
+      const info = await lstat(versionPath);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 16 * 1024) throw new Error("invalid version file");
+      const record = JSON.parse(await readFile(versionPath, "utf8")) as { version?: unknown; identifier?: unknown };
+      const expectedIdentifier = app === "editor" ? "dev.ba-spine.editor" : "dev.ba-spine.viewer";
+      if (record.version !== suite.manifest.suiteVersion || record.identifier !== expectedIdentifier) {
+        issues.push(`${app}: bundle identity or version does not match suite.json.`);
+      }
+    } catch {
+      issues.push(`${app}: Electrobun bundle version metadata is missing or invalid.`);
+    }
+    issues.push(...(await auditPackagedDirectory(appRoot, forbiddenPaths)).map((issue) => `${app}/${issue}`));
+  }
+
+  return issues;
 }
 
 async function auditBuildLog(path: string, forbiddenPaths: readonly string[]): Promise<string[]> {

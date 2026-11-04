@@ -5,6 +5,8 @@ import { join } from "node:path";
 import {
   createDesktopWindowState,
   defaultDesktopWindowFrame,
+  enforceDesktopWindowMinimum,
+  effectiveWindowMinimumSize,
   MAX_WINDOW_STATE_BYTES,
   readDesktopWindowState,
   restoreDesktopWindowState,
@@ -29,6 +31,53 @@ afterEach(async () => {
 });
 
 describe("desktop window state", () => {
+  test("limits the native minimum to the work area of the window's display", () => {
+    const smallDisplay = display({
+      id: 2,
+      bounds: { x: 1600, y: 0, width: 720, height: 540 },
+      workArea: { x: 1600, y: 0, width: 720, height: 500 },
+    });
+    expect(effectiveWindowMinimumSize(
+      { x: 1650, y: 40, width: 700, height: 480 },
+      [display(), smallDisplay],
+      { width: 760, height: 560 },
+    )).toEqual({ width: 720, height: 500 });
+  });
+
+  test("keeps the requested minimum when the display work area is large enough", () => {
+    expect(effectiveWindowMinimumSize(
+      { x: 100, y: 100, width: 900, height: 700 },
+      [display()],
+      { width: 760, height: 560 },
+    )).toEqual({ width: 760, height: 560 });
+  });
+
+  test("corrects a native resize below the effective minimum using the supported size API", () => {
+    const sizes: Array<{ width: number; height: number }> = [];
+    const window = {
+      getFrame: () => ({ x: 10, y: 10, width: 600, height: 420 }),
+      isMaximized: () => false,
+      on: () => undefined,
+      setSize: (width: number, height: number) => sizes.push({ width, height }),
+    };
+    expect(enforceDesktopWindowMinimum(window, [display()], { width: 760, height: 560 })).toBe(true);
+    expect(sizes).toEqual([{ width: 760, height: 560 }]);
+    expect(enforceDesktopWindowMinimum({ ...window, getFrame: () => ({ x: 0, y: 0, width: 900, height: 700 }) }, [display()], { width: 760, height: 560 })).toBe(false);
+  });
+
+  test("shrinks the correction to a smaller display's logical work area", () => {
+    const sizes: Array<{ width: number; height: number }> = [];
+    const window = {
+      getFrame: () => ({ x: 1650, y: 40, width: 600, height: 420 }),
+      isMaximized: () => false,
+      on: () => undefined,
+      setSize: (width: number, height: number) => sizes.push({ width, height }),
+    };
+    const smallDisplay = display({ id: 2, bounds: { x: 1600, y: 0, width: 720, height: 540 }, workArea: { x: 1600, y: 0, width: 720, height: 500 } });
+    expect(enforceDesktopWindowMinimum(window, [display(), smallDisplay], { width: 760, height: 560 })).toBe(true);
+    expect(sizes).toEqual([{ width: 720, height: 500 }]);
+  });
+
   test("captures a frame against the display with greatest work-area overlap", () => {
     const displays = [
       display(),
