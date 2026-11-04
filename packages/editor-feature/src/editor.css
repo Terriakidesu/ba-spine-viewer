@@ -548,6 +548,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--editor-cy
 .timeline-stage { width: auto; max-width: 100%; height: 100%; min-height: 300px; aspect-ratio: 16 / 9; isolation: isolate; }
 .timeline-stage { touch-action: none; cursor: grab; }
 .timeline-stage.is-panning { cursor: grabbing; }
+.timeline-stage.is-drawing-camera-bound { cursor: crosshair; }
 .timeline-stage-content { position: absolute; inset: 0; transform-origin: center center; pointer-events: none; will-change: transform; }
 .timeline-visual-composition { position: absolute; inset: 0; overflow: hidden; isolation: isolate; pointer-events: none; }
 .timeline-color-layer { position: absolute; inset: 0; pointer-events: none; }
@@ -619,8 +620,11 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--editor-cy
 
 /* Authored camera track and the scene-space viewport gizmo. */
 .timeline-camera-overlay { position: absolute; z-index: 6; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.timeline-camera-overlay.is-drawing { cursor: crosshair; }
+.timeline-camera-draw-surface { fill: transparent; pointer-events: all; }
 .timeline-camera-bound { fill: #ffcc3310; stroke: #ffd36f99; stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
 .timeline-camera-bound.is-active { fill: #ffd36f20; stroke: #ffd36f; stroke-width: 2; }
+.timeline-camera-bound-draft { fill: #46d9ff1a; stroke: #46d9ff; stroke-width: 2; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; pointer-events: none; }
 .timeline-camera-frame { fill: #ff33440c; stroke: #ff4559; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .timeline-camera-center { fill: #ff4559; stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .timeline-camera-center line { stroke: #ff4559; stroke-width: 2.5; }

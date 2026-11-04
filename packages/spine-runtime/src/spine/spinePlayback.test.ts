@@ -22,16 +22,25 @@ test("authored talks sample both moving body and face while preserving interacti
   renderer.sampleEditorAnimation("Talk_01_M", "Talk_01_A", 0.5, false, true, true);
   expect(skeleton.bones[0]!.x).toBeCloseTo(5);
   expect(skeleton.bones[1]!.y).toBeCloseTo(10);
+  expect(state.getCurrent(0)?.animation?.name).toBe("Idle_01");
+  expect(state.getCurrent(9)?.animation?.name).toBe("Talk_01_M");
+  expect(state.getCurrent(10)?.animation?.name).toBe("Talk_01_A");
+  renderer.sampleEditorAnimation("Talk_01_M", "Talk_01_A", 0.5, false, true, true, 0.5, 0.25, 2.5);
+  expect(state.getCurrent(0)?.trackTime).toBe(2.5);
+  expect(state.getCurrent(9)?.trackTime).toBe(0.5);
   renderer.sampleEditorAnimation("Talk_01_M", "Talk_01_A", 0.5, false, true, true, 0.5, 0.25);
-  expect(state.getCurrent(0)?.alpha).toBe(0.5);
-  expect(state.getCurrent(2)?.alpha).toBe(0.25);
+  expect(state.getCurrent(0)?.alpha).toBe(1);
+  expect(state.getCurrent(9)?.alpha).toBe(0.5);
+  expect(state.getCurrent(10)?.alpha).toBe(0.25);
   renderer.sampleEditorAnimation("Talk_01_M", "Talk_01_A", 1.5, false, true, true);
   expect(skeleton.bones[0]!.x).toBeCloseTo(15);
   expect(skeleton.bones[1]!.y).toBeCloseTo(30);
-  expect(state.getCurrent(2)?.animation?.name).toBe("Talk_01_A");
+  expect(state.getCurrent(10)?.animation?.name).toBe("Talk_01_A");
   renderer.sampleEditorAnimation("Idle_01", "", 0, true, false, true);
   expect(state.getCurrent(7)).toBeNull();
   expect(state.getCurrent(8)).toBeNull();
+  expect(state.getCurrent(9)).toBeNull();
+  expect(state.getCurrent(10)).toBeNull();
   expect(state.getCurrent(2)).toBeNull();
 });
 

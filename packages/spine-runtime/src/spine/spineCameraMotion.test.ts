@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeSpineCameraTrack, sampleSpineCameraTrack, solveSpineCamera, type SpineCameraTrack } from "./spineCameraMotion";
+import { normalizeSpineCameraTrack, sampleSpineCameraTrack, solveSpineCamera, spineCameraBoundFromCanvasDrag, type SpineCameraTrack } from "./spineCameraMotion";
 
 const track = (overrides: Partial<SpineCameraTrack> = {}): SpineCameraTrack => ({
   enabled: true,
@@ -14,6 +14,25 @@ const track = (overrides: Partial<SpineCameraTrack> = {}): SpineCameraTrack => (
 });
 
 describe("authored camera motion", () => {
+  test("converts a preview-canvas drag into a scene-space safe bound", () => {
+    const bound = spineCameraBoundFromCanvasDrag(
+      "room",
+      "Room",
+      { x: 200, y: 100 },
+      { x: 1400, y: 800 },
+      { centerX: 10, centerY: 20, height: 900 },
+      1600,
+      900,
+      3,
+    );
+    expect(bound).toMatchObject({ id: "room", name: "Room", enabled: true, priority: 3 });
+    expect(bound?.x).toBeCloseTo(-590);
+    expect(bound?.y).toBeCloseTo(-330);
+    expect(bound?.width).toBeCloseTo(1200);
+    expect(bound?.height).toBeCloseTo(700);
+    expect(spineCameraBoundFromCanvasDrag("tiny", "Tiny", { x: 2, y: 2 }, { x: 2, y: 10 }, { centerX: 0, centerY: 0, height: 10 }, 16, 9)).toBeNull();
+  });
+
   test("interpolates camera center and frame size and honors hold/smooth easing", () => {
     const value = track();
     expect(sampleSpineCameraTrack(value, 1)).toEqual({ centerX: 50, centerY: 25, frameHeight: 150, constraint: { mode: "automatic" } });

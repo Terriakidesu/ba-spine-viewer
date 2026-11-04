@@ -1230,7 +1230,7 @@ export class SpineRenderer {
   }
 
   /** Deterministic authoring sample: idle under body/face tracks, with no event playback. */
-  sampleEditorAnimation(animation: string, face: string, time: number, loop: boolean, idleUnderlay = false, preserveInteractions = false, animationAlpha = 1, faceAlpha = animationAlpha) {
+  sampleEditorAnimation(animation: string, face: string, time: number, loop: boolean, idleUnderlay = false, preserveInteractions = false, animationAlpha = 1, faceAlpha = animationAlpha, idleTime = time) {
     const bundle = this.bundle;
     if (!bundle) return;
     if (!preserveInteractions) this.playing = false;
@@ -1248,12 +1248,13 @@ export class SpineRenderer {
       bundle.state.clearTrack(8);
     }
     else bundle.state.clearTracks();
-    const apply = (name: string, track: number, repeat = loop): TrackEntry | null => {
+    const apply = (name: string, track: number, repeat = loop, sampleTime = time): TrackEntry | null => {
       const data = bundle.skeleton.data.findAnimation(name);
       if (!data) return null;
       const entry = bundle.state.setAnimation(track, name, repeat);
       entry.trackEnd = Number.POSITIVE_INFINITY;
-      entry.trackTime = repeat && data.duration > 0 ? time % data.duration : Math.min(time, data.duration);
+      const clampedTime = Math.max(0, sampleTime);
+      entry.trackTime = repeat && data.duration > 0 ? clampedTime % data.duration : Math.min(clampedTime, data.duration);
       if (track === 0) {
         const last = previousTime !== null && previousTime <= entry.trackTime ? previousTime : entry.trackTime;
         entry.animationLast = last;
@@ -1266,23 +1267,26 @@ export class SpineRenderer {
     let baseEntry: TrackEntry | null = null;
     if (preserveInteractions) {
       // Keep gesture tracks 1–6, but do not drop the authored idle underlay
-      // or face. The base body remains on track 0 so every interaction track
-      // keeps priority; the authored face shares the normal look-face track
-      // only while no interaction overlay is using it.
-      const underlay = idleUnderlay && bundle.meta.idleAnimation ? apply(bundle.meta.idleAnimation, 0, true) : null;
+      // or face. Timeline Talk uses isolated high-priority tracks so it can sit
+      // over Idle without replacing it or mutating live interaction overlays.
+      bundle.state.clearTrack(9);
+      bundle.state.clearTrack(10);
+      const underlay = idleUnderlay && bundle.meta.idleAnimation ? apply(bundle.meta.idleAnimation, 0, true, idleTime) : null;
       if (underlay) underlay.timeScale = 0;
-      baseEntry = apply(animation, 0);
+      baseEntry = apply(animation, idleUnderlay ? 9 : 0);
       if (baseEntry) {
         baseEntry.timeScale = 0;
         if (idleUnderlay) baseEntry.alpha = animationAlpha;
       }
       const faceTrack = bundle.state.getCurrent(2);
       const authoredFaceActive = Boolean(this.sampledEditorFace && faceTrack?.animation?.name === this.sampledEditorFace);
-      const interactionFaceActive = Boolean(bundle.state.getCurrent(4) || bundle.state.getCurrent(6) || (faceTrack && !authoredFaceActive));
+      const interactionFaceActive = idleUnderlay
+        ? Boolean(bundle.state.getCurrent(4))
+        : Boolean(bundle.state.getCurrent(4) || bundle.state.getCurrent(6) || (faceTrack && !authoredFaceActive));
       if (face && !interactionFaceActive) {
-        const faceEntry = apply(face, 2);
+        const faceEntry = apply(face, idleUnderlay ? 10 : 2);
         if (faceEntry) { faceEntry.timeScale = 0; faceEntry.alpha = faceAlpha; }
-        this.sampledEditorFace = face;
+        if (!idleUnderlay) this.sampledEditorFace = face;
       } else if (!face && authoredFaceActive) {
         bundle.state.clearTrack(2);
         this.sampledEditorFace = "";

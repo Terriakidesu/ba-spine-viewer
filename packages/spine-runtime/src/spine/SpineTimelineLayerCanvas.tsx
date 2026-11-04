@@ -215,7 +215,7 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
   useEffect(() => {
     if (!meta || !animation) return;
     const renderer = rendererRef.current;
-    renderer?.sampleEditorAnimation(animation, idle ? "" : talkBlendActive ? talkFace : activeClip?.faceAnimation ?? layer.faceAnimation ?? "", time, effectiveLoop, talkBlendActive || timelineAnimationNeedsIdleUnderlay(animation), interactionEnabled, talkBlendActive ? talkAlpha : 1, talkBlendActive ? talkAlpha : 1);
+    renderer?.sampleEditorAnimation(animation, idle ? "" : talkBlendActive ? talkFace : activeClip?.faceAnimation ?? layer.faceAnimation ?? "", time, effectiveLoop, talkBlendActive || timelineAnimationNeedsIdleUnderlay(animation), interactionEnabled, talkBlendActive ? talkAlpha : 1, talkBlendActive ? talkAlpha : 1, currentTime);
     if (referenceCamera) onMarkersRef.current?.(renderer?.getEditorAnimationInfo(animation).markers ?? []);
   }, [activeClip?.faceAnimation, animation, effectiveLoop, followMainClock, idle, interactionEnabled, layer.faceAnimation, mainAnimationLoop, mainAnimationTime, meta, openingMode, referenceCamera, sequenceId, talkAlpha, talkBlendActive, talkCharacter, talkFace, time]);
 

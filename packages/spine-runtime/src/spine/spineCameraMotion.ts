@@ -42,6 +42,11 @@ export interface EvaluatedCameraFrame {
   height: number;
 }
 
+export interface CameraCanvasPoint {
+  x: number;
+  y: number;
+}
+
 export interface SolvedSpineCamera {
   pose: SpineCameraPose;
   frame: EvaluatedCameraFrame;
@@ -58,6 +63,43 @@ const ASPECTS: Record<SpineCameraAspectRatio, number> = {
 
 export function cameraAspectValue(value: SpineCameraAspectRatio): number {
   return ASPECTS[value];
+}
+
+/** Convert a drag on the preview canvas into a fixed scene-space camera region. */
+export function spineCameraBoundFromCanvasDrag(
+  id: string,
+  name: string,
+  start: CameraCanvasPoint,
+  end: CameraCanvasPoint,
+  frame: Pick<EvaluatedCameraFrame, "centerX" | "centerY" | "height">,
+  viewportWidth: number,
+  viewportHeight: number,
+  priority = 0,
+): SpineCameraSafeBound | null {
+  if (![start.x, start.y, end.x, end.y, frame.centerX, frame.centerY, frame.height, viewportWidth, viewportHeight].every(Number.isFinite)
+    || frame.height <= 0 || viewportWidth <= 0 || viewportHeight <= 0) return null;
+  const left = Math.min(start.x, end.x);
+  const right = Math.max(start.x, end.x);
+  const top = Math.min(start.y, end.y);
+  const bottom = Math.max(start.y, end.y);
+  if (right <= left || bottom <= top) return null;
+  const frameWidth = frame.height * viewportWidth / viewportHeight;
+  const worldX = (x: number) => frame.centerX + (x / viewportWidth - 0.5) * frameWidth;
+  const worldY = (y: number) => frame.centerY + (0.5 - y / viewportHeight) * frame.height;
+  const worldLeft = worldX(left);
+  const worldRight = worldX(right);
+  const worldTop = worldY(top);
+  const worldBottom = worldY(bottom);
+  return {
+    id,
+    name,
+    x: Math.min(worldLeft, worldRight),
+    y: Math.min(worldTop, worldBottom),
+    width: Math.abs(worldRight - worldLeft),
+    height: Math.abs(worldBottom - worldTop),
+    enabled: true,
+    priority,
+  };
 }
 
 export function isCameraAspectRatio(value: unknown): value is SpineCameraAspectRatio {
