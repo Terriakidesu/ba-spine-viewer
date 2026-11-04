@@ -403,7 +403,7 @@ export function Editor() {
   const [help, setHelp] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const validationDetailsRef = useRef<HTMLDetailsElement>(null);
-  const [workspace, setWorkspace] = useState<"interaction" | "timeline">("interaction");
+  const [workspace, setWorkspace] = useState<"interaction" | "timeline" | "camera">("interaction");
   const [assetPickerOpen, setAssetPickerOpen] = useState(false);
   const [initialTimelineHandoff, setInitialTimelineHandoff] = useState<{ requestId: string; sequenceId: string; playheadSeconds?: number } | null>(null);
   const [companionStatus, setCompanionStatus] = useState<string | null>(null);
@@ -424,7 +424,7 @@ export function Editor() {
   const [selectedAnimation, setSelectedAnimation] = useState("");
   const [project, setProject] = useState<EditorProject | null>(null);
   const timelineSaveRef = useRef<((getProject: () => EditorProject | null) => Promise<EditorSaveFile[]>) | null>(null);
-  const workspaceRef = useRef<"interaction" | "timeline">(workspace);
+  const workspaceRef = useRef<"interaction" | "timeline" | "camera">(workspace);
   const sourceRef = useRef<DesktopAssetSource | null>(source);
   const saveBaselineRef = useRef<{ rootPath: string; directory: string; versions: Record<string, string> } | null>(null);
   const projectSaveQueueRef = useRef(Promise.resolve());
@@ -631,7 +631,7 @@ export function Editor() {
     if (initialAnimation) rendererRef.current?.setAnimation(initialAnimation, true);
   };
   callbacksRef.current.onFrame = (value) => {
-    const timelineMode = workspaceRef.current === "timeline";
+    const timelineMode = workspaceRef.current !== "interaction";
     if (!timelineMode) setFrame(value);
     const preview = previewRef.current;
     if (!timelineMode) setProgress(preview.phase !== "idle" ? { ...preview.progress, animation: preview.phase } : { time: value.duration > 0 ? value.time % value.duration : 0, duration: value.duration, animation: value.animation });
@@ -683,13 +683,13 @@ export function Editor() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const renderer = new SpineRenderer(canvas, {
-      onBeforeEditorUpdate: () => { if (workspaceRef.current !== "timeline") previewRef.current.beforeUpdate(); },
+      onBeforeEditorUpdate: () => { if (workspaceRef.current === "interaction") previewRef.current.beforeUpdate(); },
       onEditorUpdate: (delta, skeleton, state) => {
         if (!headDetectionDone.current) {
           headRegionRef.current = detectHeadRegion(skeleton);
           headDetectionDone.current = true;
         }
-        if (workspaceRef.current === "timeline") return;
+        if (workspaceRef.current !== "interaction") return;
         previewRef.current.update(delta, skeleton, state);
         const preview = previewRef.current;
         const debug = preview.debug;
@@ -717,7 +717,7 @@ export function Editor() {
   }, []);
 
   useEffect(() => {
-    rendererRef.current?.setRenderEnabled(workspace !== "timeline");
+    rendererRef.current?.setRenderEnabled(workspace === "interaction");
   }, [workspace]);
 
   useEffect(() => {
@@ -803,7 +803,7 @@ export function Editor() {
     if (isCommandPaletteShortcut(event)) { event.preventDefault(); setCommandPaletteOpen(true); return; }
     if (key === "escape" && commandPaletteOpen) { event.preventDefault(); setCommandPaletteOpen(false); return; }
     if (isTextEditingTarget(event.target)) return;
-    if (workspace === "timeline" && key !== "?" && key !== "escape" && !(modifier && ["z", "y"].includes(key))) return;
+    if (workspace !== "interaction" && key !== "?" && key !== "escape" && !(modifier && ["z", "y"].includes(key))) return;
     if (modifier && key === "z") { event.preventDefault(); event.shiftKey ? redoProject() : undoProject(); }
     else if (modifier && key === "y") { event.preventDefault(); redoProject(); }
     else if (modifier && key === "s") { event.preventDefault(); void saveProject(); }
@@ -1378,7 +1378,7 @@ export function Editor() {
         return { directory: command.directory, status: "Loading asset set." };
       }
       case "set_workspace":
-        if (command.workspace === "timeline" && (!projectRef.current || !metaRef.current || !directoryRef.current)) throw new Error("Load a Spine asset before opening the timeline.");
+        if (command.workspace !== "interaction" && (!projectRef.current || !metaRef.current || !directoryRef.current)) throw new Error("Load a Spine asset before opening the timeline or camera workspace.");
         setWorkspace(command.workspace);
         return { workspace: command.workspace };
       case "save": {
@@ -1743,6 +1743,7 @@ export function Editor() {
   const commandPaletteCommands: EditorCommand[] = [
     { id: "workspace-interactions", title: "Switch to Interactions", description: "Open the interaction authoring workspace", group: "Workspace", keywords: ["edit", "studio"], run: () => setWorkspace("interaction") },
     { id: "workspace-timeline", title: "Switch to Timeline", description: "Open the sequence composer", group: "Workspace", keywords: ["sequence", "composer"], disabled: !assetLoaded, run: () => setWorkspace("timeline") },
+    { id: "workspace-camera", title: "Switch to Camera", description: "Author camera boundaries and shots", group: "Workspace", keywords: ["camera", "bounds", "shots"], disabled: !assetLoaded, run: () => setWorkspace("camera") },
     { id: "choose-asset-set", title: "Choose character or asset set", description: directory ? `Current set: ${characterDirectoryLabel(directory, directoryLabels)}` : "Open a local set from the loaded catalog", group: "Assets", keywords: ["character", "switch"], disabled: !directories.length, run: () => setAssetPickerOpen(true) },
     { id: "open-asset-folder", title: "Open asset folder…", description: "Choose a local Spine asset root", group: "Assets", keywords: ["browse", "root"], run: () => { void openFolder(); } },
     { id: "open-project-file", title: "Open project file…", description: "Load a saved editor project", group: "Project", keywords: ["interaction", "timeline", "json"], run: () => { void openProjectFile(); } },
@@ -1769,12 +1770,13 @@ export function Editor() {
       <header className="editor-header">
         <div className="editor-brand">
           <span className="editor-kicker">BA SPINE SUITE · SPINE 4.2</span>
-          <h1>{workspace === "timeline" ? "Timeline Composer" : "Interaction Studio"}</h1>
+          <h1>{workspace === "timeline" ? "Timeline Composer" : workspace === "camera" ? "Camera Studio" : "Interaction Studio"}</h1>
         </div>
         <div className="editor-header-context">
           <div className="editor-workspace-tabs suite-tabs" role="tablist" aria-label="Editor workspace">
             <button className={`editor-button suite-tab${workspace === "interaction" ? " active" : ""}`} role="tab" aria-selected={workspace === "interaction"} onClick={() => setWorkspace("interaction")}>Interactions</button>
             <button className={`editor-button suite-tab${workspace === "timeline" ? " active" : ""}`} role="tab" aria-selected={workspace === "timeline"} onClick={() => setWorkspace("timeline")} disabled={!assetLoaded}>Timeline</button>
+            <button className={`editor-button suite-tab${workspace === "camera" ? " active" : ""}`} role="tab" aria-selected={workspace === "camera"} onClick={() => setWorkspace("camera")} disabled={!assetLoaded}>Camera</button>
           </div>
           <div className="editor-asset-picker"><span>Set</span><button className="editor-asset-picker-button" type="button" aria-label="Choose character or asset set" aria-haspopup="dialog" aria-expanded={assetPickerOpen} onClick={() => setAssetPickerOpen(true)} disabled={!directories.length} title={directory || "Open a folder first"}><span>{directory ? characterDirectoryLabel(directory, directoryLabels) : "Open a folder…"}</span><IconChevronDown /></button></div>
         </div>
@@ -1834,8 +1836,8 @@ export function Editor() {
       <AssetPickerModal open={assetPickerOpen} title="Switch character or asset set" eyebrow="CHARACTER / ASSET SET" description="Search the loaded Spine catalog, then choose the set to edit." directories={directories} selected={directory} assetRoot={source?.rootPath ?? ""} directoryInfo={directoryInfo} renderLabel={(item) => characterDirectoryLabel(item, directoryLabels)} getSearchText={(item) => characterDirectoryLabel(item, directoryLabels)} onClose={() => setAssetPickerOpen(false)} onSelect={(next) => { setAssetPickerOpen(false); void changeDirectory(next); }} />
       <CommandPalette open={commandPaletteOpen} commands={commandPaletteCommands} onClose={() => setCommandPaletteOpen(false)} />
 
-        {help && <div className="editor-help" role="region" aria-label="Editor help"><strong>Shortcuts</strong>{workspace === "timeline" ? <span>Ctrl/⌘ K Commands · Space Play/pause · Left/right Frame · Shift+Left/right 10 frames · Home/End · S Split subtitle · Ctrl/⌘ C/V Copy/paste · Ctrl/⌘ D Duplicate · Ctrl/⌘ Z Undo · Ctrl/⌘ Shift+Z or Y Redo · Delete Remove · F Fit timeline · Ctrl/⌘ S Save</span> : <><span>Draw a hit region, choose animations, then test it with press, hold, drag, and release.</span><span>Ctrl/⌘ K Commands · V Select · H Pan · R Draw · T Test · F Fit canvas · B Bones · Space Play/pause · Esc Idle/Edit</span><span>Ctrl/⌘ Z Undo · Ctrl/⌘ Shift+Z or Y Redo · Ctrl/⌘ D Duplicate · Delete Remove region · Ctrl/⌘ S Save</span></>}<button className="editor-button" onClick={() => setHelp(false)}><IconClose /> Close</button></div>}
-      <main className={`editor-layout${leftHidden ? " hide-left" : ""}${rightHidden ? " hide-right" : ""}${!assetLoaded ? " is-loading" : ""}`} style={{ position: workspace === "timeline" ? "absolute" : undefined, visibility: workspace === "timeline" ? "hidden" : undefined, inset: workspace === "timeline" ? "100px 0 40px" : undefined, pointerEvents: workspace === "timeline" ? "none" : undefined, gridTemplateColumns: `${leftHidden ? "" : `${leftWidth}px `}minmax(180px, 1fr)${rightHidden ? "" : ` ${rightWidth}px`}` }}>
+        {help && <div className="editor-help" role="region" aria-label="Editor help"><strong>Shortcuts</strong>{workspace === "camera" ? <><span>Camera: use Select, Pan, or Draw tools on the full-scene canvas. Edit selected boundaries and shots in the right inspector.</span><span>Ctrl/⌘ K Commands · Space Play/pause · Use the shared playhead to sync with Timeline · Ctrl/⌘ S Save</span></> : workspace === "timeline" ? <span>Ctrl/⌘ K Commands · Space Play/pause · Left/right Frame · Shift+Left/right 10 frames · Home/End · S Split subtitle · Ctrl/⌘ C/V Copy/paste · Ctrl/⌘ D Duplicate · Ctrl/⌘ Z Undo · Ctrl/⌘ Shift+Z or Y Redo · Delete Remove · F Fit timeline · Select a camera key, then Edit in Camera · Ctrl/⌘ S Save</span> : <><span>Draw a hit region, choose animations, then test it with press, hold, drag, and release.</span><span>Ctrl/⌘ K Commands · V Select · H Pan · R Draw · T Test · F Fit canvas · B Bones · Space Play/pause · Esc Idle/Edit</span><span>Ctrl/⌘ Z Undo · Ctrl/⌘ Shift+Z or Y Redo · Ctrl/⌘ D Duplicate · Delete Remove region · Ctrl/⌘ S Save</span></>}<button className="editor-button" onClick={() => setHelp(false)}><IconClose /> Close</button></div>}
+        <main className={`editor-layout${leftHidden ? " hide-left" : ""}${rightHidden ? " hide-right" : ""}${!assetLoaded ? " is-loading" : ""}`} style={{ position: workspace !== "interaction" ? "absolute" : undefined, visibility: workspace !== "interaction" ? "hidden" : undefined, inset: workspace !== "interaction" ? "100px 0 40px" : undefined, pointerEvents: workspace !== "interaction" ? "none" : undefined, gridTemplateColumns: `${leftHidden ? "" : `${leftWidth}px `}minmax(180px, 1fr)${rightHidden ? "" : ` ${rightWidth}px`}` }}>
         {assetLoaded && (["left", "right"] as const).filter((side) => side === "left" ? !leftHidden : !rightHidden).map((side) => <div key={side} className={`editor-panel-resizer ${side}`} role="separator" aria-label={`Resize ${side} panel`} aria-orientation="vertical" tabIndex={0} style={side === "left" ? { left: leftWidth + 7 } : { right: rightWidth + 7 }} onDoubleClick={() => { setLayoutPreset("custom"); side === "left" ? setLeftWidth(220) : setRightWidth(320); }} onKeyDown={(event) => {
            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
            event.preventDefault(); setLayoutPreset("custom"); const delta = event.key === "ArrowRight" ? 10 : -10;
@@ -2088,10 +2090,10 @@ export function Editor() {
           </section>}
         </aside>
       </main>
-      {workspace === "timeline" && assetLoaded && <TimelineWorkspace source={source} directory={directory} directories={directories} directoryLabels={directoryLabels} directoryInfo={directoryInfo} project={project} initialHandoff={initialTimelineHandoff} initialSubtitlePath={pendingSubtitlePath} onSubtitleOpened={() => setPendingSubtitlePath(null)} initialAudioPaths={pendingAudioPaths} onAudioOpened={() => setPendingAudioPaths(null)} onRecentFile={recordRecentFile} onMutate={mutate} onLive={live} onBeginEdit={beginTimelineEdit} onSave={() => saveProject()} onRegisterSave={(callback) => { timelineSaveRef.current = callback; }} onStatus={setStatus} onError={setError} onRegisterMcp={registerMcpTimeline} onMcpSnapshot={publishTimelineMcpSnapshot} />}
+      {workspace !== "interaction" && assetLoaded && <TimelineWorkspace mode={workspace} onWorkspaceChange={setWorkspace} source={source} directory={directory} directories={directories} directoryLabels={directoryLabels} directoryInfo={directoryInfo} project={project} initialHandoff={initialTimelineHandoff} initialSubtitlePath={pendingSubtitlePath} onSubtitleOpened={() => setPendingSubtitlePath(null)} initialAudioPaths={pendingAudioPaths} onAudioOpened={() => setPendingAudioPaths(null)} onRecentFile={recordRecentFile} onMutate={mutate} onLive={live} onBeginEdit={beginTimelineEdit} onSave={() => saveProject()} onRegisterSave={(callback) => { timelineSaveRef.current = callback; }} onStatus={setStatus} onError={setError} onRegisterMcp={registerMcpTimeline} onMcpSnapshot={publishTimelineMcpSnapshot} />}
       <footer className="editor-statusbar">
         <span className={error ? "editor-error" : ""}>{error ?? status}</span>
-        <span>{directory ? `${displayName(directory)} · ${files?.size ?? 0} files` : "No asset loaded"} · {testing ? "TEST MODE" : workspace === "timeline" ? "TIMELINE" : "EDIT MODE"}</span>
+        <span>{directory ? `${displayName(directory)} · ${files?.size ?? 0} files` : "No asset loaded"} · {testing ? "TEST MODE" : workspace === "camera" ? "CAMERA" : workspace === "timeline" ? "TIMELINE" : "EDIT MODE"}</span>
       </footer>
     </div>
   );

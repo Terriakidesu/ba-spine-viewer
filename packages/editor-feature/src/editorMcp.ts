@@ -78,7 +78,7 @@ export interface EditorMcpState {
   snapshotRevision?: number;
   snapshotUpdatedAt?: string;
   snapshotAgeMs?: number;
-  workspace: "interaction" | "timeline";
+  workspace: "interaction" | "timeline" | "camera";
   assetRoot: string | null;
   assetSets: string[];
   directory: string | null;
@@ -98,7 +98,7 @@ export type EditorMcpColorClipPreset = "solid" | "fade-from-black" | "fade-to-bl
 export type EditorMcpCommand =
   | { name: "open_asset_root"; rootPath: string }
   | { name: "select_asset_set"; directory: string }
-  | { name: "set_workspace"; workspace: "interaction" | "timeline" }
+  | { name: "set_workspace"; workspace: "interaction" | "timeline" | "camera" }
   | { name: "select_sequence"; sequenceId: string }
   | { name: "seek"; seconds: number }
   | { name: "set_playback"; playing: boolean }
@@ -170,7 +170,7 @@ export function normalizeEditorMcpCommand(value: unknown): EditorMcpCommand {
       if (!onlyKeys(value, ["name", "directory"])) throw new Error("Unexpected select_asset_set fields.");
       return { name: value.name, directory: stringField(value.directory, "directory") };
     case "set_workspace":
-      if (!onlyKeys(value, ["name", "workspace"]) || (value.workspace !== "interaction" && value.workspace !== "timeline")) throw new Error("workspace must be interaction or timeline.");
+      if (!onlyKeys(value, ["name", "workspace"]) || (value.workspace !== "interaction" && value.workspace !== "timeline" && value.workspace !== "camera")) throw new Error("workspace must be interaction, timeline, or camera.");
       return { name: value.name, workspace: value.workspace };
     case "select_sequence":
       if (!onlyKeys(value, ["name", "sequenceId"])) throw new Error("Unexpected select_sequence fields.");
