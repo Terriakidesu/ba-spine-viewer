@@ -13,6 +13,7 @@ import { SpineEditorMcpBridge } from "./mcpBridge";
 import { defaultDesktopWindowFrame, enforceDesktopWindowMinimum, readDesktopWindowState, restoreDesktopWindowState, startDesktopWindowStatePersistence, type WindowDisplay } from "@ba-spine/desktop-host/windowState";
 import { restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
 import { discoverPortableSuite, firstRecognizableLibraryPath } from "@ba-spine/desktop-host/portableSuite";
+import { installWindowsNativeWindowMinimum } from "@ba-spine/desktop-host/windowsWindowMinimum";
 
 const editorLibraryPreferencePath = join(Utils.paths.appData, "BA Spine Suite", "Editor", "library.json");
 const portableSuite = process.env.BA_SPINE_SUITE_ROOT
@@ -380,6 +381,14 @@ try {
     frame: restoredWindowState?.frame ?? defaultWindowFrame ?? { width: 1440, height: 900 },
   });
   window = nativeWindow;
+  if (process.platform === "win32" && process.arch === "x64") {
+    const removeNativeMinimum = installWindowsNativeWindowMinimum(nativeWindow, editorMinimumWindowSize.width, editorMinimumWindowSize.height);
+    if (!removeNativeMinimum) throw new Error("Could not install the native Windows 760 × 560 minimum-size hook.");
+    nativeWindow.on("close", removeNativeMinimum);
+    console.log("[ba-spine-editor] hard native minimum 760 × 560 logical pixels installed");
+  } else if (process.platform === "win32") {
+    console.warn(`[ba-spine-editor] native minimum hook is unavailable on ${process.arch}; using the resize correction fallback`);
+  }
   const applyNativeMinimum = () => {
     enforceDesktopWindowMinimum(nativeWindow, connectedDisplays(), editorMinimumWindowSize);
   };
@@ -390,6 +399,8 @@ try {
   console.log(`[ba-spine-editor] window ${window.id} opened`);
 } catch (value) {
   console.error("[ba-spine-editor] native window failed", value);
+  try { (window as (BrowserWindow & { close(): void }) | null)?.close(); } catch { /* preserve the original native-window error */ }
+  window = null;
   companionRegistration.close();
   server.stop();
   mcpBridge.cleanup();

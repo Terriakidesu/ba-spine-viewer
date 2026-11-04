@@ -100,7 +100,7 @@ try {
     "Manual update: close both applications, extract the new ZIP elsewhere, then replace Editor.exe, Viewer.exe, suite.json, README.txt, licenses\\, and apps\\ as a coordinated set. Do not replace or delete the existing data\\ folder.",
     "The portable ZIP contains no authored asset library. Copy your own library into data\\ after extraction.",
     "",
-    "The pinned Electrobun 2.0.5 runtime does not expose an OS-level minimum-size setter. The hosts immediately restore a resize that falls below the 760 x 560 logical-pixel minimum, reduced to the display work area on smaller screens.",
+    "On Windows x64, both apps enforce a native 760 x 560 logical-pixel resize minimum, scaled for the display DPI and reduced to the monitor work area on smaller screens.",
     "",
   ].join("\r\n"), "utf8");
 

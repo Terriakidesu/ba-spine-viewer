@@ -59,7 +59,7 @@ Offer the application ZIP independently of the asset library. Users with a large
 
 ### Current implementation note
 
-Both native hosts currently pass `{ width: 760, height: 560 }` to the shared default/restore geometry helpers. Those values constrain first-run and restored frames, but the `BrowserWindow` construction shown in the hosts does not currently request a native resize minimum. Confirm Electrobun's supported minimum-size API before implementation and add an actual native constraint where supported. Do not describe the current frame calculation as a hard resize limit until verified.
+Electrobun 2.0.5 exposes the native HWND but has no minimum-size API. The Windows x64 hosts compile a small `bun:ffi` Win32 hook at startup and install a thread-specific `WH_CALLWNDPROC` hook for the native window. It updates `WM_GETMINMAXINFO` on the window-owning thread, without calling JavaScript from the resize path. The hook converts the logical minimum using `GetDpiForWindow` and limits it to the current monitor work area. Shared frame geometry remains responsible for first-run and restored positions; the existing resize correction remains a fallback on platforms without this Windows hook. Treat the hook as a hard constraint only on Windows x64, and retain packaged drag verification as the release gate.
 
 ### Minimum-size verification
 
@@ -68,6 +68,8 @@ Both native hosts currently pass `{ width: 760, height: 560 }` to the shared def
 - Verify keyboard focus, toolbar menus, dialogs, and status content at the minimum size.
 - Test 100%, 125%, 150%, and 200% display scaling where available.
 - Add unit tests for geometry clamping and a packaged manual test for the native resize limit.
+
+The Windows x64 automated test compiles the same native source and registers the hook on a disposable hidden window. Separate assertions cover 100%, 125%, 150%, and 200% DPI conversion and work-area clamping. Packaged drag testing verifies the integrated native resize constraint.
 
 ## Portable path and data behavior
 
@@ -253,3 +255,14 @@ Do not run write-oriented tests or save commands against the existing authored p
 - Viewer uses the Editor's shared visual system; there is no separately maintained default styling system.
 - Editor and Viewer functionality, formats, safety boundaries, and existing standalone releases remain supported.
 - Builds, tests, audits, and packaged smoke tests pass without accessing or modifying the real `data/` library.
+
+## Execution evidence (2026-11-04)
+
+- Bun 1.4.2: `bun run typecheck` passed; `bun test` passed (389 tests, 2,847 assertions).
+- `bun run portable:package` completed. `bun run audit:portable` and `bun run audit:release` passed. Portable ZIP SHA-256: `d3586c08eca9d4ecac54a205f8b39d000ec68f0f8c964a902b478f846bee5124`.
+- Windows x64 native-hook tests compiled and registered the thread-specific hook on a disposable hidden window. Scaling assertions passed at 96, 120, 144, and 192 DPI; the 96-DPI minimum correctly clamps to a 720 × 500 work area.
+- Packaged smoke launch used an extracted suite and isolated app-data under disposable paths containing spaces, with a non-suite working directory. Both root launchers started their bundled `bun.exe` processes. After moving the suite to a second path containing spaces, both launchers started again.
+- On the current 120-DPI display, a real bottom-right drag toward 500 × 400 stopped both packaged windows at 950 × 700 physical pixels (760 × 560 logical). The disposable suite data tree remained byte-for-byte unchanged during launch and resize.
+- A simulated coordinated app-file update overlaid the two launchers, manifest, documentation, licenses, and `apps/` from the package. Hash snapshots confirmed the disposable suite `data/` and isolated OS app-data were retained.
+
+The packaged smoke fixture contained a recognized disposable catalog/manifest but only a placeholder skeleton, so it verifies packaging, launch, relocation, minimum sizing, and startup data safety—not actual Spine rendering. The following checklist items remain unverified in a packaged interactive run with a valid disposable Spine asset set: Viewer playback/read-only actions, Editor save behavior, saved/draft companion preview and return-to-saved, keyboard focus/menus/dialogs at the minimum, visual comparison of both apps, and live native sizing on 100%, 150%, 200%, or a physically smaller display. The DPI conversion and small-work-area calculations are covered by automated native tests; those tests do not replace the remaining interactive checks.

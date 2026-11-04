@@ -17,6 +17,7 @@ import { createDebouncedAction } from "@ba-spine/desktop-host/debouncedAction";
 import { defaultDesktopWindowFrame, enforceDesktopWindowMinimum, readDesktopWindowState, restoreDesktopWindowState, startDesktopWindowStatePersistence, type WindowDisplay } from "@ba-spine/desktop-host/windowState";
 import { restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
 import { discoverPortableSuite, firstRecognizableLibraryPath } from "@ba-spine/desktop-host/portableSuite";
+import { installWindowsNativeWindowMinimum } from "@ba-spine/desktop-host/windowsWindowMinimum";
 
 const viewerLibraryPreferencePath = join(Utils.paths.appData, "BA Spine Suite", "Viewer", "library.json");
 const portableSuite = process.env.BA_SPINE_SUITE_ROOT
@@ -481,12 +482,30 @@ const initialDisplays = connectedDisplays();
 const viewerMinimumWindowSize = { width: 760, height: 560 };
 const restoredWindowState = restoreDesktopWindowState(await readDesktopWindowState(viewerWindowStatePath), initialDisplays, viewerMinimumWindowSize);
 const defaultWindowFrame = defaultDesktopWindowFrame(initialDisplays, { width: 1440, height: 940 }, viewerMinimumWindowSize);
-const nativeWindow = new BrowserWindow({
-  title: "BA Spine Viewer",
-  url: `http://${server.hostname}:${server.port}/`,
-  frame: restoredWindowState?.frame ?? defaultWindowFrame ?? { width: 1440, height: 940 },
-});
-window = nativeWindow;
+let nativeWindow: BrowserWindow;
+try {
+  nativeWindow = new BrowserWindow({
+    title: "BA Spine Viewer",
+    url: `http://${server.hostname}:${server.port}/`,
+    frame: restoredWindowState?.frame ?? defaultWindowFrame ?? { width: 1440, height: 940 },
+  });
+  window = nativeWindow;
+  if (process.platform === "win32" && process.arch === "x64") {
+    const removeNativeMinimum = installWindowsNativeWindowMinimum(nativeWindow, viewerMinimumWindowSize.width, viewerMinimumWindowSize.height);
+    if (!removeNativeMinimum) throw new Error("Could not install the native Windows 760 × 560 minimum-size hook.");
+    nativeWindow.on("close", removeNativeMinimum);
+    console.log("[ba-spine-viewer] hard native minimum 760 × 560 logical pixels installed");
+  } else if (process.platform === "win32") {
+    console.warn(`[ba-spine-viewer] native minimum hook is unavailable on ${process.arch}; using the resize correction fallback`);
+  }
+} catch (error) {
+  try { (window as (BrowserWindow & { close(): void }) | null)?.close(); } catch { /* preserve the original native-window error */ }
+  window = null;
+  closeLibraryWatcher();
+  companionRegistration.close();
+  server.stop(true);
+  throw error;
+}
 const applyNativeMinimum = () => {
   enforceDesktopWindowMinimum(nativeWindow, connectedDisplays(), viewerMinimumWindowSize);
 };
