@@ -11,18 +11,22 @@ export interface NumberFieldProps extends NumericBounds {
   unit?: string;
   disabled?: boolean;
   scrub?: boolean;
+  shiftMultiplier?: number;
+  altMultiplier?: number;
+  scrubLabel?: string | false;
+  scrubHint?: string;
   compact?: boolean;
   onCommit: (value: number) => void;
 }
 
 interface ScrubGesture {
   pointerId: number;
-  startX: number;
+  lastX: number;
   startValue: number;
-  multiplier: number;
+  accumulatedSteps: number;
 }
 
-export function NumberField({ label, value, min, max, step = 1, precision = numericPrecision(step), unit, disabled = false, scrub = true, compact = false, onCommit }: NumberFieldProps) {
+export function NumberField({ label, value, min, max, step = 1, precision = numericPrecision(step), unit, disabled = false, scrub = true, shiftMultiplier = 10, altMultiplier = 1, scrubLabel = "Drag", scrubHint, compact = false, onCommit }: NumberFieldProps) {
   const inputId = useId();
   const errorId = useId();
   const [draft, setDraft] = useState(() => formatNumericValue(value, precision));
@@ -65,24 +69,28 @@ export function NumberField({ label, value, min, max, step = 1, precision = nume
   function onScrubMove(event: ReactPointerEvent<HTMLButtonElement>) {
     const gesture = scrubRef.current;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
-    const steps = Math.trunc((event.clientX - gesture.startX) / 5);
-    const next = stepNumericValue(gesture.startValue, steps < 0 ? -1 : 1, step, bounds, Math.abs(steps) * gesture.multiplier);
-    setDraft(formatNumericValue(next, precision));
+    const deltaX = event.clientX - gesture.lastX;
+    gesture.lastX = event.clientX;
+    const multiplier = event.shiftKey ? shiftMultiplier : event.altKey ? altMultiplier : 1;
+    gesture.accumulatedSteps += deltaX / 5 * multiplier;
+    const next = clampNumericValue(gesture.startValue + gesture.accumulatedSteps * step, bounds);
+    const effectivePrecision = Math.max(precision, numericPrecision(step * Math.min(1, shiftMultiplier, altMultiplier || 1)));
+    setDraft(formatNumericValue(next, effectivePrecision));
   }
 
   function finishScrub(event: ReactPointerEvent<HTMLButtonElement>) {
     const gesture = scrubRef.current;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     scrubRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     commitDraft(draft);
   }
 
   function cancelScrub(event: ReactPointerEvent<HTMLButtonElement>) {
     const gesture = scrubRef.current;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     scrubRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     setDraft(formatNumericValue(value, precision));
   }
 
@@ -93,24 +101,26 @@ export function NumberField({ label, value, min, max, step = 1, precision = nume
         type="button"
         className="editor-number-scrub"
         aria-label={`Scrub ${label}`}
-        title={`Drag horizontally to adjust ${label}; hold Shift for 10× steps.`}
+         title={scrubHint ?? `Drag horizontally to adjust ${label}; Shift ${shiftMultiplier < 1 ? "fine-tunes" : `${shiftMultiplier}× steps`}${altMultiplier !== 1 ? `; Alt ${altMultiplier}× steps` : ""}.`}
         disabled={disabled}
         onPointerDown={(event) => {
           event.preventDefault();
           event.currentTarget.setPointerCapture(event.pointerId);
-          scrubRef.current = { pointerId: event.pointerId, startX: event.clientX, startValue: value, multiplier: event.shiftKey ? 10 : 1 };
+          scrubRef.current = { pointerId: event.pointerId, lastX: event.clientX, startValue: value, accumulatedSteps: 0 };
         }}
         onPointerMove={onScrubMove}
         onPointerUp={finishScrub}
         onPointerCancel={cancelScrub}
+        onLostPointerCapture={cancelScrub}
         onKeyDown={(event) => {
           if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
           event.preventDefault();
-          const next = stepNumericValue(value, event.key === "ArrowRight" ? 1 : -1, step, bounds, event.shiftKey ? 10 : 1);
+          const multiplier = event.shiftKey ? shiftMultiplier : event.altKey ? altMultiplier : 1;
+          const next = stepNumericValue(value, event.key === "ArrowRight" ? 1 : -1, step, bounds, multiplier);
           setDraft(formatNumericValue(next, precision));
           commitValue(next);
         }}
-      ><IconSliders /><span>Drag</span></button>}
+       ><IconSliders />{scrubLabel !== false && <span>{scrubLabel}</span>}</button>}
     </span>
     <span className="editor-number-input-wrap">
       <input
@@ -136,7 +146,8 @@ export function NumberField({ label, value, min, max, step = 1, precision = nume
           } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
             event.preventDefault();
             const direction = event.key === "ArrowUp" ? 1 : -1;
-            const next = stepNumericValue(parseNumericDraft(draft) ?? value, direction, step, bounds, event.shiftKey ? 10 : 1);
+            const multiplier = event.shiftKey ? shiftMultiplier : event.altKey ? altMultiplier : 1;
+            const next = stepNumericValue(parseNumericDraft(draft) ?? value, direction, step, bounds, multiplier);
             setDraft(formatNumericValue(next, precision));
             setInvalid(false);
             commitValue(next);

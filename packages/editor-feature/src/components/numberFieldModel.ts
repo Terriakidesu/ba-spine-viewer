@@ -32,7 +32,7 @@ export function stepNumericValue(
   bounds: NumericBounds = {},
   multiplier = 1,
 ): number {
-  const precision = numericPrecision(step);
+  const precision = Math.max(numericPrecision(step), numericPrecision(step * multiplier));
   const next = clampNumericValue(value + direction * step * multiplier, bounds);
   return Number(next.toFixed(precision));
 }

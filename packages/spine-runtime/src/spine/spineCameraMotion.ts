@@ -346,9 +346,17 @@ export function resizeSpineCameraKeyframe(
   point: CameraCanvasPoint,
   aspectRatio: number,
   minimumHeight = 0.01,
+  centered = false,
 ): SpineCameraKeyframe {
   if (![point.x, point.y, aspectRatio, minimumHeight].every(Number.isFinite) || aspectRatio <= 0) return keyframe;
   const minHeight = Math.max(Number.EPSILON, minimumHeight);
+  if (centered) {
+    const horizontal = handle.includes("e") || handle.includes("w");
+    const vertical = handle.includes("n") || handle.includes("s");
+    const widthHeight = horizontal ? Math.abs(point.x - keyframe.centerX) * 2 / aspectRatio : Number.POSITIVE_INFINITY;
+    const verticalHeight = vertical ? Math.abs(point.y - keyframe.centerY) * 2 : Number.POSITIVE_INFINITY;
+    return { ...keyframe, frameHeight: Math.max(minHeight, Math.min(widthHeight, verticalHeight)) };
+  }
   const width = keyframe.frameHeight * aspectRatio;
   const left = keyframe.centerX - width / 2;
   const right = keyframe.centerX + width / 2;
@@ -383,8 +391,26 @@ export function resizeSpineCameraBound(
   point: CameraCanvasPoint,
   minimumSize = 0.01,
   lockAspectRatio?: number,
+  centered = false,
 ): SpineCameraSafeBound {
   const min = Math.max(Number.EPSILON, Number.isFinite(minimumSize) ? minimumSize : 0.01);
+  if (centered) {
+    const centerX = bound.x + bound.width / 2;
+    const centerY = bound.y + bound.height / 2;
+    const horizontal = handle.includes("e") || handle.includes("w");
+    const vertical = handle.includes("n") || handle.includes("s");
+    let width = horizontal ? Math.max(min, Math.abs(point.x - centerX) * 2) : bound.width;
+    let height = vertical ? Math.max(min, Math.abs(point.y - centerY) * 2) : bound.height;
+    if (Number.isFinite(lockAspectRatio) && lockAspectRatio! > 0) {
+      const aspect = lockAspectRatio!;
+      if (horizontal && vertical) {
+        if (width / height > aspect) width = height * aspect;
+        else height = width / aspect;
+      } else if (horizontal) height = width / aspect;
+      else if (vertical) width = height * aspect;
+    }
+    return { ...bound, x: centerX - width / 2, y: centerY - height / 2, width, height };
+  }
   let left = bound.x;
   let right = bound.x + bound.width;
   let bottom = bound.y;

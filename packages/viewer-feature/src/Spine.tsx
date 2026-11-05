@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { IconChevronDown, IconChevronUp, IconClose, IconCompress, IconDot, IconExpand, IconEye, IconEyeOff, IconFolder, IconHand, IconHelp, IconMessage, IconPause, IconPlay, IconRotate, IconSearch, IconSliders, IconStar, IconSync, IconTarget, IconUsers } from "@ba-spine/app-ui/icons";
+import { IconChevronDown, IconChevronRight, IconChevronUp, IconClose, IconCompress, IconDot, IconExpand, IconEye, IconEyeOff, IconFolder, IconHand, IconHelp, IconMessage, IconPause, IconPlay, IconRotate, IconSearch, IconSliders, IconStar, IconSync, IconTarget, IconUsers } from "@ba-spine/app-ui/icons";
 import { LanguageSwitch } from "./components/LanguageSwitch";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { setLanguage, t, useLanguage, type LangKey } from "./i18n";
@@ -318,6 +318,7 @@ export function Spine() {
   const firstCharacter = characterNames[0] ?? "";
   const [selectedCharacter, setSelectedCharacter] = useState(firstCharacter);
   const [selectedDirectory, setSelectedDirectory] = useState(characterIndex.characters[firstCharacter]?.variants[0]?.directory ?? "");
+  const [expandedCharacter, setExpandedCharacter] = useState(firstCharacter);
   const [selectedSequenceId, setSelectedSequenceId] = useState("");
   const [characterSearch, setCharacterSearch] = useState("");
   const [navigationLibraryIdentity, setNavigationLibraryIdentity] = useState("");
@@ -584,6 +585,7 @@ export function Spine() {
       const nextCharacter = characterNames[0] ?? "";
       setSelectedCharacter(nextCharacter);
       setSelectedDirectory(characterIndex.characters[nextCharacter]?.variants[0]?.directory ?? "");
+      setExpandedCharacter(nextCharacter);
       return;
     }
     const variants = indexedAssets(characterIndex.characters[selectedCharacter]);
@@ -1260,6 +1262,7 @@ export function Spine() {
     resetAssetPlayback();
     setSelectedCharacter(nextCharacter ?? "");
     setSelectedDirectory(nextVariant?.directory ?? "");
+    setExpandedCharacter(nextCharacter ?? "");
   }, [availableDirectories, selectedCharacter, source]);
 
   const clearFullscreenHideTimer = () => {
@@ -1288,7 +1291,7 @@ export function Spine() {
     if (!fullscreen || fullscreenClean || showOptions) return;
     fullscreenHideTimerRef.current = window.setTimeout(() => {
       fullscreenHideTimerRef.current = null;
-      if (fullscreen) {
+      if (fullscreen && !showOptions) {
         setShowFullscreenControls(false);
         showFullscreenControlsHintOnce();
       }
@@ -1365,19 +1368,41 @@ export function Spine() {
   }, []);
 
   useEffect(() => {
+    if (!fullscreen || !showOptions) return;
+    clearFullscreenHideTimer();
+    if (fullscreenClean) setFullscreenClean(false);
+    setShowFullscreenControls(true);
+  }, [fullscreen, fullscreenClean, showOptions]);
+
+  useEffect(() => {
     const layout = fullscreenLayoutRef.current;
     const controls = fullscreenControlsRef.current;
-    if (!layout || !controls || typeof ResizeObserver === "undefined") return;
+    const workspace = layout?.querySelector<HTMLElement>(".spine-workspace");
+    const heading = workspace?.querySelector<HTMLElement>(".spine-workspace-heading");
+    if (!layout || !workspace || !controls || !heading || typeof ResizeObserver === "undefined") return;
 
-    const updateControlsHeight = () => layout.style.setProperty("--spine-fullscreen-controls-height", `${controls.getBoundingClientRect().height}px`);
-    const observer = new ResizeObserver(updateControlsHeight);
+    const updateSettingsBounds = () => {
+      layout.style.setProperty("--spine-fullscreen-controls-height", `${controls.getBoundingClientRect().height}px`);
+      const workspaceRect = workspace.getBoundingClientRect();
+      const headingRect = heading.getBoundingClientRect();
+      const controlsRect = controls.getBoundingClientRect();
+      const headingHeight = heading.getClientRects().length ? headingRect.bottom - workspaceRect.top : 10;
+      const settingsBottom = controls.getClientRects().length ? workspaceRect.bottom - controlsRect.top + 8 : 8;
+      workspace.style.setProperty("--spine-settings-top", `${Math.max(8, headingHeight + 4)}px`);
+      workspace.style.setProperty("--spine-settings-bottom", `${Math.max(8, settingsBottom)}px`);
+    };
+    const observer = new ResizeObserver(updateSettingsBounds);
+    observer.observe(workspace);
+    observer.observe(heading);
     observer.observe(controls);
-    updateControlsHeight();
+    updateSettingsBounds();
     return () => {
       observer.disconnect();
       layout.style.removeProperty("--spine-fullscreen-controls-height");
+      workspace.style.removeProperty("--spine-settings-top");
+      workspace.style.removeProperty("--spine-settings-bottom");
     };
-  }, []);
+  }, [fullscreen]);
 
   useEffect(() => {
     scheduleFullscreenHide();
@@ -1497,6 +1522,7 @@ export function Spine() {
     resetAssetPlayback();
     setSelectedCharacter(name);
     setSelectedDirectory(first?.directory ?? "");
+    setExpandedCharacter(name);
   };
 
   const selectLobby = (lobbyId: string) => {
@@ -1506,6 +1532,7 @@ export function Spine() {
     resetAssetPlayback();
     setSelectedCharacter(character[0]);
     setSelectedDirectory(lobbyId);
+    setExpandedCharacter(character[0]);
   };
 
   const toggleFavorite = (lobbyId: string) => {
@@ -1514,15 +1541,18 @@ export function Spine() {
 
   const onCharacterListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!filteredCharacters.length || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-    const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='option']")];
-    const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button[role='option']") : null;
+    const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button[data-browser-item]")];
+    const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button[data-browser-item]") : null;
     const focused = target ? options.indexOf(target) : -1;
-    const current = focused >= 0 ? focused : Math.max(0, filteredCharacters.indexOf(selectedCharacter));
-    const next = nextViewerListIndex(filteredCharacters.length, current, event.key);
-    if (next < 0) return;
+    const current = focused >= 0 ? focused : options.findIndex((item) => item.dataset.character === selectedCharacter);
+    const next = current < 0
+      ? event.key === "ArrowUp" ? options.length - 1 : 0
+      : nextViewerListIndex(options.length, current, event.key);
+    const targetItem = next >= 0 ? options[next] : null;
+    if (!targetItem) return;
     event.preventDefault();
-    options[next]?.focus();
-    selectCharacter(filteredCharacters[next]!);
+    targetItem.focus();
+    targetItem.click();
   };
 
   const selectAnimation = (value: string) => {
@@ -1771,15 +1801,23 @@ export function Spine() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
       const key = event.key.toLowerCase();
-      if (key === "escape" && fullscreen) {
-        event.preventDefault();
-        if (isDesktopHost()) void setDesktopFullscreen(false);
-        else if (document.fullscreenElement) void document.exitFullscreen();
+      const target = event.target as HTMLElement | null;
+      if (key === "escape") {
+        if (target?.closest("input, select, textarea, [contenteditable]")) return;
+        if (showOptions) {
+          event.preventDefault();
+          setShowOptions(false);
+          return;
+        }
+        if (fullscreen) {
+          event.preventDefault();
+          if (isDesktopHost()) void setDesktopFullscreen(false);
+          else if (document.fullscreenElement) void document.exitFullscreen();
+        }
         return;
       }
-      const target = event.target as HTMLElement | null;
+      if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
       if (target?.closest("input, select, textarea, button, a, [contenteditable]")) return;
 
       if (key === "arrowleft" || key === "arrowright") {
@@ -1841,7 +1879,7 @@ export function Spine() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [cameraMode, compositionActive, compositionSequenceId, fullscreen, fullscreenClean, interactionMode, interactionReady, loop, meta, playing, selectedInteractionProject, showFullscreenControls, speed, voiceLines.length]);
+  }, [cameraMode, compositionActive, compositionSequenceId, fullscreen, fullscreenClean, interactionMode, interactionReady, loop, meta, playing, selectedInteractionProject, showFullscreenControls, showOptions, speed, voiceLines.length]);
 
   const compositionCameraMode: SpineCameraMode = cameraMode === "authored" && !compositionTimeline?.camera?.enabled
     ? "fit"
@@ -1910,7 +1948,7 @@ export function Spine() {
             <div className="phead"><IconUsers /><span>{t("spine.characters")}</span></div>
             <span className="spine-character-count">{t("spine.characterCount", { n: filteredCharacters.length })}</span>
           </div>
-          <label className="spine-search-field">
+          <div className="spine-search-field" role="search">
             <IconSearch />
             <input
               className="search spine-character-search"
@@ -1919,7 +1957,8 @@ export function Spine() {
               placeholder={t("spine.characterSearch")}
               aria-label={t("spine.characterSearchAria")}
             />
-          </label>
+            {characterSearch && <button type="button" className="spine-search-clear" onClick={() => setCharacterSearch("")} aria-label={t("spine.characterSearchClear")} title={t("spine.characterSearchClear")}><IconClose /></button>}
+          </div>
           <nav className="spine-navigation-links" aria-label={t("spine.quickAccess")}>
             {favoriteLobbies.length > 0 && <section>
               <h3>{t("spine.favorites")}</h3>
@@ -1935,40 +1974,52 @@ export function Spine() {
             </section>}
           </nav>
           <span id="spine-character-keyboard-hint" className="spine-visually-hidden">{t("spine.keyboardHint")}</span>
-          <div className="spine-character-list" role="listbox" aria-label={t("spine.charactersAria")} aria-keyshortcuts="ArrowUp ArrowDown Home End" aria-describedby="spine-character-keyboard-hint" onKeyDown={onCharacterListKeyDown}>
+          <div className="spine-character-list" role="group" aria-label={t("spine.charactersAria")} aria-keyshortcuts="ArrowUp ArrowDown Home End" aria-describedby="spine-character-keyboard-hint" onKeyDown={onCharacterListKeyDown}>
             {filteredCharacters.map((name) => {
               const availableAssets = indexedAssets(characterIndex.characters[name]).filter((variant) => availableDirectories?.has(variant.directory));
               const count = availableAssets.length;
-              return <button
-                key={name}
-                type="button"
-                role="option"
-                aria-selected={name === selectedCharacter}
-                tabIndex={name === (filteredCharacters.includes(selectedCharacter) ? selectedCharacter : filteredCharacters[0]) ? 0 : -1}
-                className={name === selectedCharacter ? "is-selected" : undefined}
-                onClick={() => selectCharacter(name)}
-              >
-                <LobbyThumbnail source={thumbnailSource} directory={availableAssets[0]?.directory ?? ""} />
-                <span className="spine-character-option-label">{name}</span><small>{count}</small>
-              </button>;
+              const query = characterSearch.trim();
+              const characterMatches = !query || matchesLibrarySearch(query, [name]);
+              const visibleVariants = characterMatches ? availableAssets : availableAssets.filter((variant) => matchesLibrarySearch(query, [variant.variant, variant.directory, variant.assetId, variant.devName, variant.extraType]));
+              const expanded = Boolean(query) || expandedCharacter === name;
+              return <section key={name} className={`spine-character-entry${name === selectedCharacter ? " is-selected" : ""}`}>
+                <div className="spine-character-row-wrap">
+                  <button
+                    type="button"
+                    data-browser-item
+                    data-character={name}
+                    aria-expanded={expanded}
+                    className={`spine-character-row${name === selectedCharacter ? " is-selected" : ""}`}
+                    onClick={() => {
+                      if (name !== selectedCharacter) selectCharacter(name);
+                      else setExpandedCharacter((current) => current === name ? "" : name);
+                    }}
+                  >
+                    <span className="spine-character-expander" aria-hidden="true">{expanded ? <IconChevronDown /> : <IconChevronRight />}</span>
+                    <LobbyThumbnail source={thumbnailSource} directory={availableAssets.find((variant) => variant.directory === selectedDirectory)?.directory ?? availableAssets[0]?.directory ?? ""} kind="face" />
+                    <span className="spine-character-option-label">{name}</span><small>{count}</small>
+                  </button>
+                </div>
+                {expanded && <div className="spine-character-variants" role="group" aria-label={t("spine.characterVariants", { name })}>
+                  {visibleVariants.map((variant) => <div key={variant.directory} className="spine-variant-row">
+                    <button type="button" data-browser-item data-character={name} className={`spine-variant-select${variant.directory === selectedDirectoryName ? " is-selected" : ""}`} aria-current={variant.directory === selectedDirectoryName ? "true" : undefined} onClick={() => {
+                      if (variant.directory !== selectedDirectoryName || name !== selectedCharacter) resetAssetPlayback();
+                      setSelectedCharacter(name);
+                      setSelectedDirectory(variant.directory);
+                      setExpandedCharacter(name);
+                    }}>
+                      <LobbyThumbnail source={thumbnailSource} directory={variant.directory} kind="lobby" />
+                      <span>{variant.extraType ? extraLabel(variant.extraType) : variant.variant}</span>
+                    </button>
+                    <button className={`spine-variant-favorite${navigation.favorites.includes(variant.directory) ? " is-favorite" : ""}`} type="button" aria-pressed={navigation.favorites.includes(variant.directory)} aria-label={t(navigation.favorites.includes(variant.directory) ? "spine.favorite.remove" : "spine.favorite.add")} title={t(navigation.favorites.includes(variant.directory) ? "spine.favorite.remove" : "spine.favorite.add")} onClick={() => toggleFavorite(variant.directory)}><IconStar /></button>
+                  </div>)}
+                  {visibleVariants.length === 0 && <p className="spine-character-no-variants">{t("spine.noMatchingVariants")}</p>}
+                </div>}
+              </section>;
             })}
             {filteredCharacters.length === 0 && <p className="hint">{source && !availableDirectories ? t("spine.loading") : t("spine.noCharacters")}</p>}
           </div>
           <div className="spine-variant-picker">
-            {selectedDirectoryName && <button className={`spine-favorite-toggle${navigation.favorites.includes(selectedDirectoryName) ? " is-favorite" : ""}`} type="button" aria-pressed={navigation.favorites.includes(selectedDirectoryName)} onClick={() => toggleFavorite(selectedDirectoryName)}>
-              <IconStar /><span>{t(navigation.favorites.includes(selectedDirectoryName) ? "spine.favorite.remove" : "spine.favorite.add")}</span>
-            </button>}
-            <label className="spine-field">
-              <span>{t("spine.variant")}</span>
-               <select value={selectedDirectoryName} onChange={(event) => { resetAssetPlayback(); setSelectedDirectory(event.target.value); }} aria-label={t("spine.variantAria")}>
-                 {variants.some((variant) => !variant.extraType) && <optgroup label={t("spine.variant")}>
-                   {variants.filter((variant) => !variant.extraType).map((variant) => <option key={variant.directory} value={variant.directory}>{variant.variant}</option>)}
-                 </optgroup>}
-                 {variants.some((variant) => variant.extraType) && <optgroup label={t("spine.extras")}>
-                   {variants.filter((variant) => variant.extraType).map((variant) => <option key={variant.directory} value={variant.directory}>{extraLabel(variant.extraType!)}</option>)}
-                 </optgroup>}
-               </select>
-            </label>
             <details className="spine-set-meta"><summary>{t("spine.assetDetails")}</summary><div>
               <code>{selectedDirectoryName}</code>
               {selectedVariant?.assetId && <span>{selectedVariant.assetId}</span>}
@@ -2140,9 +2191,11 @@ export function Spine() {
             <span className="spine-time" aria-live="off">{formatSeconds(progress.time)} / {formatSeconds(progress.duration)}s</span>
           </div>}
 
-           {showOptions && <div id="spine-options" className="spine-settings-panel">
-             <div className="spine-settings-heading"><strong>{t("spine.options")}</strong><button type="button" onClick={() => setShowOptions(false)} aria-label={t("spine.options.close")} title={t("spine.options.close")}><IconClose /></button></div>
-              <div className="spine-settings-grid">
+        </div>
+
+           {showOptions && <aside id="spine-options" className="spine-settings-drawer" role="complementary" aria-label={t("spine.options")}>
+             <div className="spine-settings-heading"><h2>{t("spine.options")}</h2><button type="button" onClick={() => setShowOptions(false)} aria-label={t("spine.options.close")} title={t("spine.options.close")}><IconClose /></button></div>
+             <div className="spine-settings-scroll"><div className="spine-settings-grid">
                 <section className="spine-settings-group">
                   <h3>{t("spine.settings.cameraGroup")}</h3>
                   <label className="spine-setting-field"><span>{t("spine.camera")}</span><select value={cameraMode} onChange={(event) => setCameraMode(event.target.value as SpineCameraMode)} disabled={!meta} aria-label={t("spine.cameraAria")}>
@@ -2192,9 +2245,8 @@ export function Spine() {
                   <h3>{t("spine.settings.visualGroup")}</h3>
                   <label className="spine-setting-field"><span>{t("spine.effects")}</span><div className="spine-range-control"><input type="range" min="0" max="1" step="0.05" value={effectsStrength} onChange={(event) => setEffectsStrength(Number(event.target.value))} aria-label={t("spine.effects")} title={t("spine.effects.hint")} /><output>{Math.round(effectsStrength * 100)}%</output></div></label>
                 </section>
-              </div>
-            </div>}
-        </div>
+              </div></div>
+            </aside>}
         <p className="spine-caption">{meta ? t("spine.loaded", { animations: meta.animations.length }) : t("spine.caption")}</p>
       </section>
     </div>

@@ -16,6 +16,16 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function variantForFingerprint(fingerprint: string): "face" | "lobby" | "legacy" {
+  return /^face-v\d+:/i.test(fingerprint) ? "face" : /^lobby-v\d+:/i.test(fingerprint) ? "lobby" : "legacy";
+}
+
+function cacheFilename(fingerprint: string, extension: string): string {
+  const variant = variantForFingerprint(fingerprint);
+  const prefix = variant === "legacy" ? "" : `${variant}-`;
+  return `${prefix}${digest(fingerprint)}.${extension}`;
+}
+
 function validateKeyPart(value: string, label: string): void {
   if (typeof value !== "string" || !value || value.length > 512 || /[\u0000-\u001f\u007f]/.test(value)) {
     throw new Error(`Invalid thumbnail ${label}.`);
@@ -36,7 +46,7 @@ export class ViewerThumbnailCache {
     validateKeyPart(fingerprint, "fingerprint");
     const directory = this.directory(libraryRoot, lobbyId);
     for (const [contentType, extension] of ALLOWED_CONTENT_TYPES) {
-      const path = join(directory, `${digest(fingerprint)}.${extension}`);
+      const path = join(directory, cacheFilename(fingerprint, extension));
       try {
         const info = await lstat(path);
         if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_VIEWER_THUMBNAIL_BYTES) return null;
@@ -59,7 +69,7 @@ export class ViewerThumbnailCache {
 
     const directory = this.directory(libraryRoot, lobbyId);
     await mkdir(directory, { recursive: true });
-    const filename = `${digest(fingerprint)}.${extension}`;
+    const filename = cacheFilename(fingerprint, extension);
     const target = join(directory, filename);
     const temporary = `${target}.tmp-${randomUUID()}`;
     try {
@@ -69,10 +79,15 @@ export class ViewerThumbnailCache {
       await rm(temporary, { force: true }).catch(() => undefined);
     }
 
-    // Retain only the current fingerprint for this library/lobby pair.
+    // Retain one current fingerprint per preview kind, so face and lobby views coexist.
     const entries = await readdir(directory, { withFileTypes: true });
+    const variant = variantForFingerprint(fingerprint);
+    const categoryPrefix = variant === "legacy" ? "" : `${variant}-`;
     await Promise.all(entries
-      .filter((entry) => entry.isFile() && entry.name !== filename && /\.(?:webp|png)$/i.test(entry.name))
+      .filter((entry) => entry.isFile() && entry.name !== filename && /\.(?:webp|png)$/i.test(entry.name)
+        && (variant === "legacy"
+          ? !/^(?:face|lobby)-/i.test(entry.name)
+          : entry.name.startsWith(categoryPrefix) || variant === "lobby" && /^[a-f0-9]{64}\.(?:webp|png)$/i.test(entry.name)))
       .map((entry) => rm(join(directory, entry.name), { force: true })));
     await this.prune();
   }

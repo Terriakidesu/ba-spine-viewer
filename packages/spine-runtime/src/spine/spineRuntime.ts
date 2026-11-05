@@ -5,7 +5,9 @@ import {
   AnimationStateData,
   Bone,
   EventTimeline,
+  MeshAttachment,
   Physics,
+  RegionAttachment,
   Skeleton,
   SkeletonBinary,
   TrackEntry,
@@ -193,6 +195,54 @@ interface LoadedBundle {
   authoredRegions: SpineAuthoredRegion[];
   eyeTarget: EyeTarget | null;
   touchTarget: InteractionTarget | null;
+}
+
+const HEAD_BONE_NAME = /^(?:(?:pc|head)[ _-](?:[ab][ _-])?)?(?:head|face)(?:[ _-]?(?:root|rot|rotation|main|base|pos|ani|top))?(?:[ _-]?\d+[a-z]?)?$/i;
+const FACE_ATTACHMENT_NAME = /(?:^|[\\/_ -])(?:face(?:base)?|head)(?:[\\/_ -]|\d|$)/i;
+const FACE_DETAIL_NAME = /(?:^|[\\/_ -])(?:eye\w*|brow\w*|mouth\w*|lip\w*|ear\w*|hair\w*|shadow\w*|fx|effect\w*|mask\w*)(?:[\\/_ -]|\d|$)/i;
+
+/** Bounds of explicitly named visible face/head art, not interaction controller bones. */
+function headArtworkBounds(skeleton: Skeleton): SceneBounds | null {
+  const candidates: SceneBounds[] = [];
+  for (const slot of skeleton.slots) {
+    if (!slot.bone.active || slot.color.a * skeleton.color.a <= 0.01) continue;
+    const attachment = slot.getAttachment();
+    if (!(attachment instanceof MeshAttachment || attachment instanceof RegionAttachment) || attachment.color.a <= 0.01) continue;
+    const label = `${slot.data.name}/${attachment.name}`;
+    if (!FACE_ATTACHMENT_NAME.test(label) || FACE_DETAIL_NAME.test(label)) continue;
+
+    let headBone: Bone | null = slot.bone;
+    while (headBone && !HEAD_BONE_NAME.test(headBone.data.name.trim())) headBone = headBone.parent;
+    if (!headBone && attachment instanceof MeshAttachment && attachment.bones) {
+      const weights = new Map<Bone, number>();
+      let vertex = 0;
+      for (let index = 0; index < attachment.bones.length;) {
+        const count = attachment.bones[index++]!;
+        for (let influenceIndex = 0; influenceIndex < count; influenceIndex++) {
+          let influence: Bone | null = skeleton.bones[attachment.bones[index++]!] ?? null;
+          const weight = attachment.vertices[vertex + 2] ?? 0;
+          vertex += 3;
+          while (influence && !HEAD_BONE_NAME.test(influence.data.name.trim())) influence = influence.parent;
+          if (influence) weights.set(influence, (weights.get(influence) ?? 0) + weight);
+        }
+      }
+      headBone = [...weights].sort((left, right) => right[1] - left[1])[0]?.[0] ?? null;
+    }
+    if (!headBone) continue;
+
+    const vertices = new Float32Array(attachment instanceof MeshAttachment ? attachment.worldVerticesLength : 8);
+    if (attachment instanceof MeshAttachment) attachment.computeWorldVertices(slot, 0, vertices.length, vertices, 0, 2);
+    else attachment.computeWorldVertices(slot, vertices, 0, 2);
+    let left = Infinity, bottom = Infinity, right = -Infinity, top = -Infinity;
+    for (let index = 0; index < vertices.length; index += 2) {
+      left = Math.min(left, vertices[index]!); right = Math.max(right, vertices[index]!);
+      bottom = Math.min(bottom, vertices[index + 1]!); top = Math.max(top, vertices[index + 1]!);
+    }
+    const width = right - left, height = top - bottom;
+    if (![left, bottom, width, height].every(Number.isFinite) || width <= 0 || height <= 0 || width / height < 0.3 || width / height > 3) continue;
+    candidates.push({ x: left, y: bottom, width, height });
+  }
+  return candidates.sort((left, right) => right.width * right.height - left.width * left.height)[0] ?? null;
 }
 
 interface InteractionTarget {
@@ -1560,6 +1610,24 @@ export class SpineRenderer {
       centerY: this.renderer.camera.position.y,
       height: this.renderer.camera.zoom * this.renderer.camera.viewportHeight,
     };
+  }
+
+  /** Canvas-pixel rectangle for detected face/head artwork in the current rendered pose. */
+  getHeadCanvasRect(): SceneBounds | null {
+    const bounds = this.bundle ? headArtworkBounds(this.bundle.skeleton) : null;
+    const frame = this.getCameraFrame();
+    const camera = this.renderer.camera;
+    if (!bounds || !frame || camera.viewportWidth <= 0 || camera.viewportHeight <= 0 || this.canvas.width <= 0 || this.canvas.height <= 0) return null;
+    const frameWidth = frame.height * camera.viewportWidth / camera.viewportHeight;
+    const scaleX = this.canvas.width / frameWidth;
+    const scaleY = this.canvas.height / frame.height;
+    const rect = {
+      x: (bounds.x - frame.centerX + frameWidth / 2) * scaleX,
+      y: (frame.centerY + frame.height / 2 - (bounds.y + bounds.height)) * scaleY,
+      width: bounds.width * scaleX,
+      height: bounds.height * scaleY,
+    };
+    return [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) && rect.width >= 4 && rect.height >= 4 ? rect : null;
   }
 
   /** Stable full-artwork fallback framing for a requested output aspect ratio. */

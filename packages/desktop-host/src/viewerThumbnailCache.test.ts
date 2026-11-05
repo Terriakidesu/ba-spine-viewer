@@ -45,4 +45,23 @@ describe("external Viewer thumbnail cache", () => {
       await rm(temporary, { recursive: true, force: true });
     }
   });
+
+  test("keeps independently versioned face and full-lobby previews for one set", async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "ba-spine-thumbnail-fixture-"));
+    const cache = new ViewerThumbnailCache(join(temporary, "cache"));
+    try {
+      const lobby = new Uint8Array([1, 2, 3]);
+      const face = new Uint8Array([4, 5, 6]);
+      await cache.put("/fixture/library", "Airi_home", "lobby-v2:asset-fingerprint", "image/webp", lobby);
+      await cache.put("/fixture/library", "Airi_home", "face-v1:asset-fingerprint", "image/png", face);
+      expect(await cache.get("/fixture/library", "Airi_home", "lobby-v2:asset-fingerprint")).toMatchObject({ bytes: lobby, contentType: "image/webp" });
+      expect(await cache.get("/fixture/library", "Airi_home", "face-v1:asset-fingerprint")).toMatchObject({ bytes: face, contentType: "image/png" });
+
+      await cache.put("/fixture/library", "Airi_home", "face-v2:asset-fingerprint", "image/png", new Uint8Array([7]));
+      expect(await cache.get("/fixture/library", "Airi_home", "face-v1:asset-fingerprint")).toBeNull();
+      expect(await cache.get("/fixture/library", "Airi_home", "lobby-v2:asset-fingerprint")).toMatchObject({ bytes: lobby });
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
 });

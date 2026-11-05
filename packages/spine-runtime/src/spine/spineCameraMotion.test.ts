@@ -157,6 +157,15 @@ describe("authored camera motion", () => {
     expect(locked.width / locked.height).toBeCloseTo(16 / 9);
     expect(locked.x).toBe(bound.x);
     expect(locked.y + locked.height).toBe(bound.y + bound.height);
+    const centered = resizeSpineCameraBound(bound, "se", { x: 90, y: 10 }, 0.01, undefined, true);
+    expect(centered.x + centered.width / 2).toBeCloseTo(bound.x + bound.width / 2);
+    expect(centered.y + centered.height / 2).toBeCloseTo(bound.y + bound.height / 2);
+    expect(centered.width).toBeCloseTo(60);
+    expect(centered.height).toBeCloseTo(100);
+    const centeredLocked = resizeSpineCameraBound(bound, "nw", { x: -90, y: 90 }, 0.01, 16 / 9, true);
+    expect(centeredLocked.x + centeredLocked.width / 2).toBeCloseTo(bound.x + bound.width / 2);
+    expect(centeredLocked.y + centeredLocked.height / 2).toBeCloseTo(bound.y + bound.height / 2);
+    expect(centeredLocked.width / centeredLocked.height).toBeCloseTo(16 / 9);
   });
 
   test("optionally locks a drawn boundary to the selected output ratio", () => {
@@ -175,6 +184,10 @@ describe("authored camera motion", () => {
     expect(resized.easing).toBe("smooth");
     expect(resized.frameHeight).toBeCloseTo(120);
     expect(resized.frameHeight * 16 / 9).toBeCloseTo(213.3333333333);
+    const centered = resizeSpineCameraKeyframe(keyframe, "se", { x: 100, y: -10 }, 16 / 9, 0.01, true);
+    expect(centered.centerX).toBe(keyframe.centerX);
+    expect(centered.centerY).toBe(keyframe.centerY);
+    expect(centered.frameHeight).toBeCloseTo(60);
   });
 
   test("retimes shots with clamping, identity preservation, and explicit collision checks", () => {

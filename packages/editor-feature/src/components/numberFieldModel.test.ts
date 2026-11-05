@@ -22,5 +22,7 @@ describe("numeric field model", () => {
     expect(stepNumericValue(0.1, 1, 0.05, { min: 0, max: 0.2 })).toBe(0.15);
     expect(stepNumericValue(0.15, 1, 0.05, { min: 0, max: 0.2 }, 10)).toBe(0.2);
     expect(stepNumericValue(0, -1, 1, { min: 0 })).toBe(0);
+    expect(stepNumericValue(0, 1, 1, { min: 0, max: 5 }, 0.1)).toBe(0.1);
+    expect(stepNumericValue(0, 1, 1, { min: 0, max: 5 }, 10)).toBe(5);
   });
 });
