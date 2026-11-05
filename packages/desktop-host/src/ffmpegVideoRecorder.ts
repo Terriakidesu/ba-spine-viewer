@@ -56,6 +56,21 @@ interface FfmpegVideoSession {
   phase: "rendering" | "encoding" | "saving";
   encodeProgress: number;
   activeEncoder: string | null;
+  activeEncoderHardware: boolean | null;
+  encoderAttempt: number;
+  encoderAttempts: number;
+  encodeFrames: number;
+  encodeTotalFrames: number;
+  encodedTimeSeconds: number;
+  encodeDurationSeconds: number;
+  encodingFps: number | null;
+  encodingSpeed: number | null;
+  encodeStartedAt: number | null;
+  encoderAttemptStartedAt: number | null;
+  saveOperation: "finalizing" | "copying" | "verifying" | null;
+  saveStartedAt: number | null;
+  saveBytesCopied: number;
+  saveTotalBytes: number | null;
   socket: RecordingSocket | null;
   socketClaimed: boolean;
   finishing: boolean;
@@ -69,6 +84,67 @@ const MAX_RECORDING_FRAMES = 108_000;
 const MAX_AUDIO_BYTES = 256 * 1024 * 1024;
 const MAX_AUDIO_TRACKS = 128;
 const AUDIO_EXTENSIONS = new Set(["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "webm"]);
+
+export interface FfmpegVideoStatus {
+  phase: "rendering" | "encoding" | "saving";
+  progress?: number;
+  encoder?: string;
+  encoderHardware?: boolean;
+  encoderAttempt?: number;
+  encoderAttempts?: number;
+  framesEncoded?: number;
+  totalFrames?: number;
+  encodedTimeSeconds?: number;
+  totalTimeSeconds?: number;
+  fps?: number;
+  speed?: number;
+  elapsedSeconds?: number;
+  etaSeconds?: number;
+  saveOperation?: "finalizing" | "copying" | "verifying";
+  saveBytesCopied?: number;
+  saveTotalBytes?: number;
+}
+
+export interface FfmpegProgressMetrics {
+  frames: number | null;
+  progress: number | null;
+  timeSeconds: number | null;
+  fps: number | null;
+  speed: number | null;
+}
+
+function parseFfmpegTime(value: string | undefined): number | null {
+  if (!value || value === "N/A") return null;
+  const match = /^(\d+):(\d{2}):(\d{2}(?:\.\d+)?)$/.exec(value.trim());
+  if (!match) return null;
+  const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+  return Number.isFinite(seconds) ? Math.max(0, seconds) : null;
+}
+
+function positiveFinite(value: number | null): value is number {
+  return value !== null && Number.isFinite(value) && value >= 0;
+}
+
+export function parseFfmpegProgressMetrics(values: Record<string, string>, totalFrames: number, totalTimeSeconds: number): FfmpegProgressMetrics {
+  const rawFrames = Number(values.frame);
+  const frames = Number.isFinite(rawFrames) && rawFrames >= 0 ? Math.min(totalFrames, rawFrames) : null;
+  const parsedTime = parseFfmpegTime(values.out_time);
+  const outTimeUs = Number(values.out_time_us);
+  const outTimeMs = Number(values.out_time_ms);
+  const rawTimeMicroseconds = Number.isFinite(outTimeUs) && outTimeUs >= 0 ? outTimeUs : outTimeMs;
+  const timeSeconds = parsedTime ?? (Number.isFinite(rawTimeMicroseconds) && rawTimeMicroseconds >= 0 ? rawTimeMicroseconds / 1_000_000 : null);
+  const rawFps = Number(values.fps);
+  const fps = Number.isFinite(rawFps) && rawFps >= 0 ? rawFps : null;
+  const rawSpeed = Number(values.speed?.replace(/x$/i, ""));
+  const speed = Number.isFinite(rawSpeed) && rawSpeed >= 0 ? rawSpeed : null;
+  return {
+    frames,
+    progress: frames === null || totalFrames <= 0 ? null : Math.min(1, frames / totalFrames),
+    timeSeconds: positiveFinite(timeSeconds) ? Math.min(totalTimeSeconds, timeSeconds) : null,
+    fps,
+    speed,
+  };
+}
 
 function parseEncoders(output: string): Set<string> {
   const encoders = new Set<string>();
@@ -174,7 +250,7 @@ function safeRecordingDimensions(width: number, height: number): boolean {
 
 export class FfmpegVideoRecorder {
   private readonly sessions = new Map<string, FfmpegVideoSession>();
-  private readonly finishPromises = new Map<string, Promise<{ fileName: string; encoder: string }>>();
+  private readonly finishPromises = new Map<string, Promise<{ fileName: string; encoder: string; encoderHardware: boolean; encoderAttempt: number; encoderAttempts: number; outputBytes: number }>>();
   private supportPromise: Promise<FfmpegVideoSupport> | null = null;
 
   constructor(
@@ -283,6 +359,21 @@ export class FfmpegVideoRecorder {
       phase: "rendering",
       encodeProgress: 0,
       activeEncoder: null,
+      activeEncoderHardware: null,
+      encoderAttempt: 0,
+      encoderAttempts: 0,
+      encodeFrames: 0,
+      encodeTotalFrames: 0,
+      encodedTimeSeconds: 0,
+      encodeDurationSeconds: 0,
+      encodingFps: null,
+      encodingSpeed: null,
+      encodeStartedAt: null,
+      encoderAttemptStartedAt: null,
+      saveOperation: null,
+      saveStartedAt: null,
+      saveBytesCopied: 0,
+      saveTotalBytes: null,
       socket: null,
       socketClaimed: false,
       finishing: false,
@@ -318,16 +409,46 @@ export class FfmpegVideoRecorder {
     session.audioBytes += track.bytes.byteLength;
   }
 
-  status(sessionId: string): { phase: "rendering" | "encoding" | "saving"; progress: number; encoder?: string } | null {
+  status(sessionId: string): FfmpegVideoStatus | null {
     const session = this.sessions.get(sessionId);
-    return session ? {
-      phase: session.phase,
-      progress: session.phase === "encoding" ? session.encodeProgress : session.phase === "saving" ? 1 : 0,
-      ...(session.activeEncoder ? { encoder: session.activeEncoder } : {}),
-    } : null;
+    if (!session) return null;
+    const status: FfmpegVideoStatus = { phase: session.phase };
+    if (session.phase === "encoding") {
+      status.progress = session.encodeProgress;
+      status.framesEncoded = session.encodeFrames;
+      status.totalFrames = session.encodeTotalFrames;
+      status.encodedTimeSeconds = session.encodedTimeSeconds;
+      status.totalTimeSeconds = session.encodeDurationSeconds;
+      if (typeof session.encodingFps === "number") status.fps = session.encodingFps;
+      if (typeof session.encodingSpeed === "number") status.speed = session.encodingSpeed;
+      if (typeof session.encodeStartedAt === "number") {
+        status.elapsedSeconds = Math.max(0, (performance.now() - session.encodeStartedAt) / 1000);
+        if (session.encodingFps !== null && session.encodingFps > 0) {
+          status.etaSeconds = Math.max(0, (session.encodeTotalFrames - session.encodeFrames) / session.encodingFps);
+        } else if (session.encodeProgress > 0 && session.encodeProgress < 1 && typeof session.encoderAttemptStartedAt === "number") {
+          const attemptElapsed = Math.max(0, (performance.now() - session.encoderAttemptStartedAt) / 1000);
+          if (attemptElapsed > 0) status.etaSeconds = attemptElapsed * (1 - session.encodeProgress) / session.encodeProgress;
+        }
+      }
+      if (session.activeEncoder) status.encoder = session.activeEncoder;
+      if (typeof session.activeEncoderHardware === "boolean") status.encoderHardware = session.activeEncoderHardware;
+      if (session.encoderAttempt > 0) status.encoderAttempt = session.encoderAttempt;
+      if (session.encoderAttempts > 0) status.encoderAttempts = session.encoderAttempts;
+    } else if (session.phase === "saving") {
+      if (session.saveOperation) status.saveOperation = session.saveOperation;
+      if (typeof session.saveStartedAt === "number") status.elapsedSeconds = Math.max(0, (performance.now() - session.saveStartedAt) / 1000);
+      if (typeof session.saveTotalBytes === "number") {
+        status.saveBytesCopied = session.saveBytesCopied;
+        status.saveTotalBytes = session.saveTotalBytes;
+        if (session.saveTotalBytes > 0) status.progress = Math.min(1, session.saveBytesCopied / session.saveTotalBytes);
+      }
+      if (session.activeEncoder) status.encoder = session.activeEncoder;
+      if (typeof session.activeEncoderHardware === "boolean") status.encoderHardware = session.activeEncoderHardware;
+    }
+    return status;
   }
 
-  finish(sessionId: string, expectedFrameCount: number): Promise<{ fileName: string; encoder: string }> {
+  finish(sessionId: string, expectedFrameCount: number): Promise<{ fileName: string; encoder: string; encoderHardware: boolean; encoderAttempt: number; encoderAttempts: number; outputBytes: number }> {
     const existingFinish = this.finishPromises.get(sessionId);
     if (existingFinish) return existingFinish;
     const session = this.sessions.get(sessionId);
@@ -347,7 +468,7 @@ export class FfmpegVideoRecorder {
     return finishPromise;
   }
 
-  private async finishSession(sessionId: string, session: FfmpegVideoSession, expectedFrameCount: number): Promise<{ fileName: string; encoder: string }> {
+  private async finishSession(sessionId: string, session: FfmpegVideoSession, expectedFrameCount: number): Promise<{ fileName: string; encoder: string; encoderHardware: boolean; encoderAttempt: number; encoderAttempts: number; outputBytes: number }> {
     try {
       if (session.socket) {
         session.socket.close(1000, "Recording complete.");
@@ -364,12 +485,36 @@ export class FfmpegVideoRecorder {
       }
       session.phase = "encoding";
       session.encodeProgress = 0;
+      session.encodeFrames = 0;
+      session.encodeTotalFrames = expectedFrameCount;
+      session.encodedTimeSeconds = 0;
+      session.encodeDurationSeconds = expectedFrameCount / session.frameRate;
+      session.encodeStartedAt = performance.now();
       const { encoder, outputPath } = await this.encode(session, expectedFrameCount);
       session.phase = "saving";
+      session.saveStartedAt = performance.now();
+      session.saveOperation = "finalizing";
+      session.saveBytesCopied = 0;
+      session.saveTotalBytes = null;
       const outputSize = (await stat(outputPath)).size;
       if (outputSize <= 0 || outputSize > MAX_RECORDING_BYTES) throw new Error("The encoded video is empty or exceeds the 1 GB export limit.");
-      const fileName = await saveVideoFileWithoutOverwrite(session.exportDirectory, session.filename, outputPath);
-      return { fileName, encoder };
+      session.saveOperation = "copying";
+      session.saveTotalBytes = outputSize;
+      const fileName = await saveVideoFileWithoutOverwrite(session.exportDirectory, session.filename, outputPath, (copiedBytes, totalBytes) => {
+        session.saveBytesCopied = copiedBytes;
+        session.saveTotalBytes = totalBytes;
+      });
+      session.saveOperation = "verifying";
+      const savedSize = (await stat(join(session.exportDirectory, fileName))).size;
+      if (savedSize !== outputSize) throw new Error("The saved video did not match the encoded output size.");
+      return {
+        fileName,
+        encoder,
+        encoderHardware: session.activeEncoderHardware ?? false,
+        encoderAttempt: session.encoderAttempt,
+        encoderAttempts: session.encoderAttempts,
+        outputBytes: savedSize,
+      };
     } finally {
       this.sessions.delete(sessionId);
       if (!session.frameWriter.destroyed && !session.frameWriter.writableEnded) session.frameWriter.destroy();
@@ -391,6 +536,7 @@ export class FfmpegVideoRecorder {
   private async encode(session: FfmpegVideoSession, frameCount: number): Promise<{ encoder: string; outputPath: string }> {
     const attempts = ffmpegEncoderAttempts(session.format, await this.encoderListing());
     if (!attempts.length) throw new Error(`The bundled FFmpeg has no encoder for ${session.format.toUpperCase()}.`);
+    session.encoderAttempts = attempts.length;
     const extension = session.format === "webm" ? "webm" : "mp4";
     const outputPath = join(session.temporaryDirectory, `recording.${extension}`);
     const duration = (frameCount / session.frameRate).toFixed(6);
@@ -399,9 +545,16 @@ export class FfmpegVideoRecorder {
       .map((track) => ({ ...track, duration: Math.min(track.duration, durationSeconds - track.start) }))
       .filter((track) => track.start < durationSeconds && track.duration > 0);
     let lastError = "FFmpeg could not encode the recording.";
-    for (const attempt of attempts) {
+    for (const [attemptIndex, attempt] of attempts.entries()) {
       session.activeEncoder = attempt.name;
+      session.activeEncoderHardware = attempt.hardware;
+      session.encoderAttempt = attemptIndex + 1;
       session.encodeProgress = 0;
+      session.encodeFrames = 0;
+      session.encodedTimeSeconds = 0;
+      session.encodingFps = null;
+      session.encodingSpeed = null;
+      session.encoderAttemptStartedAt = performance.now();
       await rm(outputPath, { force: true });
       const args = [
         this.executablePath,
@@ -424,6 +577,15 @@ export class FfmpegVideoRecorder {
       const progressTask = (async () => {
         const decoder = new TextDecoder();
         let buffered = "";
+        const progressValues: Record<string, string> = {};
+        const applyProgress = () => {
+          const metrics = parseFfmpegProgressMetrics(progressValues, frameCount, session.encodeDurationSeconds);
+          if (metrics.frames !== null) session.encodeFrames = Math.max(session.encodeFrames, metrics.frames);
+          if (metrics.progress !== null) session.encodeProgress = Math.max(session.encodeProgress, metrics.progress);
+          if (metrics.timeSeconds !== null) session.encodedTimeSeconds = Math.max(session.encodedTimeSeconds, metrics.timeSeconds);
+          if (metrics.fps !== null) session.encodingFps = metrics.fps;
+          if (metrics.speed !== null) session.encodingSpeed = metrics.speed;
+        };
         while (true) {
           const { value, done } = await progressReader.read();
           if (done) break;
@@ -431,9 +593,11 @@ export class FfmpegVideoRecorder {
           const lines = buffered.split(/\r?\n/);
           buffered = lines.pop() ?? "";
           for (const line of lines) {
-            if (!line.startsWith("frame=")) continue;
-            const encodedFrames = Number(line.slice(6).trim());
-            if (Number.isFinite(encodedFrames)) session.encodeProgress = Math.max(session.encodeProgress, Math.min(1, encodedFrames / frameCount));
+            const separator = line.indexOf("=");
+            if (separator <= 0) continue;
+            const key = line.slice(0, separator).trim();
+            progressValues[key] = line.slice(separator + 1).trim();
+            if (key === "progress") applyProgress();
           }
         }
       })();
@@ -442,7 +606,11 @@ export class FfmpegVideoRecorder {
         process.exited,
         progressTask,
       ]).then(([stderrText, code]) => [stderrText, code] as const);
-      if (exitCode === 0) session.encodeProgress = 1;
+      if (exitCode === 0) {
+        session.encodeProgress = 1;
+        session.encodeFrames = frameCount;
+        session.encodedTimeSeconds = session.encodeDurationSeconds;
+      }
       if (exitCode === 0) return { encoder: attempt.name, outputPath };
       lastError = stderr.trim().split(/\r?\n/).slice(-3).join(" ") || `${attempt.name} exited with status ${exitCode}.`;
     }

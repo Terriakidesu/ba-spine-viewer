@@ -3,7 +3,7 @@ import { SpineRenderer, type SpineCameraFrame, type SpineCameraMode, type SpineC
 import type { AssetSource } from "./spineAssets";
 import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration, type SpineInteractionProject } from "./spineInteraction";
 import { spineAudioPathCandidates } from "./spineAudio";
-import { advanceSpineTimeline, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineLayerAnimation, timelineLayerAnimationClips, timelineMainAnimation, timelineOpeningContinuationStart, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimeline, type SpineTimelineAudioPreloadState } from "./spineTimeline";
+import { advanceSpineTimeline, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineIdleAnimation, timelineLayerAnimation, timelineLayerAnimationClips, timelineMainAnimation, timelineOpeningContinuationStart, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimeline, type SpineTimelineAudioPreloadState } from "./spineTimeline";
 import { SpineTimelineLayerCanvas } from "./SpineTimelineLayerCanvas";
 import { cameraAspectValue, changeSpineCameraAspectRatio, evaluateSpineCameraTrack, type SpineCameraAspectRatio } from "./spineCameraMotion";
 
@@ -45,6 +45,7 @@ interface SpineCompositionViewportProps {
   cameraMode?: SpineCameraMode;
   aspectRatio?: SpineCameraAspectRatio;
   idleMode?: "none" | "persistent" | "bridge";
+  recordingIdleOverride?: boolean;
   preserveDrawingBuffer?: boolean;
   onMeta: (meta: SpineMeta | null) => void;
   onProgress: (progress: SpineProgress) => void;
@@ -58,7 +59,7 @@ interface SpineCompositionViewportProps {
   onIntroClip: (clipIndex: number) => void;
 }
 
-export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandle, SpineCompositionViewportProps>(function SpineCompositionViewport({ source, timeline, preloadTimelines = [], interactionMode, interactionProject, showInteractionPoints, currentTime, playing, speed, effectsStrength, cameraMode = "fit", aspectRatio = "16:9", idleMode = "none", preserveDrawingBuffer = false, onMeta, onProgress, onLoading, onLoadProgress, onError, onFinished, onTalk, onTalkClip, onIntro, onIntroClip }, ref) {
+export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandle, SpineCompositionViewportProps>(function SpineCompositionViewport({ source, timeline, preloadTimelines = [], interactionMode, interactionProject, showInteractionPoints, currentTime, playing, speed, effectsStrength, cameraMode = "fit", aspectRatio = "16:9", idleMode = "none", recordingIdleOverride = false, preserveDrawingBuffer = false, onMeta, onProgress, onLoading, onLoadProgress, onError, onFinished, onTalk, onTalkClip, onIntro, onIntroClip }, ref) {
   const stageRef = useRef<HTMLDivElement>(null);
   const currentTimeRef = useRef(currentTime);
   const idleAnimationTimeRef = useRef(0);
@@ -101,13 +102,14 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   const referenceLayerId = timelineReferenceLayerId(timeline);
   const characterLayer = timeline.layers.find((layer) => layer.role === "character");
   const characterMeta = characterLayer ? metas[characterLayer.id] ?? null : null;
+  const recordingIdleAnimation = recordingIdleOverride && characterMeta ? timelineIdleAnimation(characterMeta) : "";
   const introAnimation = characterMeta?.introAnimation ?? "";
   const introDuration = characterLayer && introAnimation
     ? animationDurations[`${characterLayer.id}:${introAnimation}`] ?? 0
     : 0;
   const hasAnimationClips = Array.isArray(characterLayer?.animationClips);
   const mainAnimationName = characterLayer && characterMeta
-    ? timelineLayerAnimation(characterLayer, characterMeta, undefined, currentTime, timeline.sequenceId, timeline.openingMode, introDuration, idleMode !== "none")
+    ? recordingIdleAnimation || timelineLayerAnimation(characterLayer, characterMeta, undefined, currentTime, timeline.sequenceId, timeline.openingMode, introDuration, idleMode !== "none", recordingIdleOverride)
     : characterLayer
       ? characterLayer.animation || characterMeta?.idleAnimation || ""
     : "";
@@ -130,9 +132,11 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
       ? Math.max(currentTime, openingIdleStart)
       : currentTime;
   const mainAnimationState = characterLayer && characterMeta
-    ? timelineMainAnimation(characterLayer, characterMeta, effectiveCurrentTime, timeline.sequenceId, timeline.openingMode, introDuration, mainAnimationDuration, idleMode !== "none")
+    ? recordingIdleAnimation
+      ? { animation: recordingIdleAnimation, time: idleAnimationTimeRef.current, loop: true, useIntro: false }
+      : timelineMainAnimation(characterLayer, characterMeta, effectiveCurrentTime, timeline.sequenceId, timeline.openingMode, introDuration, mainAnimationDuration, idleMode !== "none")
     : null;
-  const characterHidden = timelineSceneHidesCharacter(timeline, effectiveCurrentTime);
+  const characterHidden = !recordingIdleOverride && timelineSceneHidesCharacter(timeline, effectiveCurrentTime);
   const progressAnimation = mainAnimationState?.animation ?? null;
   // Do not consume an opening while the saved composition is still loading.
   // The page starts in autoplay mode, so advancing the shared playhead before
@@ -525,6 +529,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
               mainAnimationTime={mainAnimationState?.time}
               mainAnimationLoop={mainAnimationState?.loop}
               idleAnimationTime={idleAnimationTimeRef.current}
+              recordingIdleOverride={recordingIdleOverride}
               sequenceId={timeline.sequenceId}
               openingMode={timeline.openingMode}
               idleMode={idleMode}

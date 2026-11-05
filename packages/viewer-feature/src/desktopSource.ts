@@ -46,8 +46,22 @@ export interface DesktopFfmpegVideoStream {
 
 export interface DesktopFfmpegVideoStatus {
   phase: "rendering" | "encoding" | "saving";
-  progress: number;
+  progress?: number;
   encoder?: string;
+  encoderHardware?: boolean;
+  encoderAttempt?: number;
+  encoderAttempts?: number;
+  framesEncoded?: number;
+  totalFrames?: number;
+  encodedTimeSeconds?: number;
+  totalTimeSeconds?: number;
+  fps?: number;
+  speed?: number;
+  elapsedSeconds?: number;
+  etaSeconds?: number;
+  saveOperation?: "finalizing" | "copying" | "verifying";
+  saveBytesCopied?: number;
+  saveTotalBytes?: number;
 }
 
 export function isDesktopHost(): boolean {
@@ -210,25 +224,46 @@ export async function addDesktopFfmpegAudioTrack(sessionId: string, track: {
 export async function getDesktopFfmpegVideoStatus(sessionId: string): Promise<DesktopFfmpegVideoStatus> {
   const query = new URLSearchParams({ sessionId });
   const status = await request(`/__spine/video/ffmpeg/status?${query}`).then((response) => response.json()) as Partial<DesktopFfmpegVideoStatus>;
-  if ((status.phase !== "rendering" && status.phase !== "encoding" && status.phase !== "saving")
-    || typeof status.progress !== "number" || !Number.isFinite(status.progress)) {
+  if (status.phase !== "rendering" && status.phase !== "encoding" && status.phase !== "saving") {
     throw new Error("The Viewer returned an invalid FFmpeg export status.");
   }
-  return { phase: status.phase, progress: Math.max(0, Math.min(1, status.progress)) };
+  const parsed: DesktopFfmpegVideoStatus = { phase: status.phase };
+  const numericFields = ["progress", "encoderAttempt", "encoderAttempts", "framesEncoded", "totalFrames", "encodedTimeSeconds", "totalTimeSeconds", "fps", "speed", "elapsedSeconds", "etaSeconds", "saveBytesCopied", "saveTotalBytes"] as const;
+  for (const field of numericFields) {
+    const value = status[field];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      parsed[field] = field === "progress" ? Math.min(1, value) : value;
+    }
+  }
+  if (typeof status.encoder === "string" && status.encoder) parsed.encoder = status.encoder;
+  if (typeof status.encoderHardware === "boolean") parsed.encoderHardware = status.encoderHardware;
+  if (status.saveOperation === "finalizing" || status.saveOperation === "copying" || status.saveOperation === "verifying") parsed.saveOperation = status.saveOperation;
+  return parsed;
 }
 
-export async function finishDesktopFfmpegVideoRecording(sessionId: string, frameCount: number): Promise<{ fileName: string; encoder: string }> {
+export async function finishDesktopFfmpegVideoRecording(sessionId: string, frameCount: number): Promise<{ fileName: string; encoder: string; encoderHardware: boolean; encoderAttempt: number; encoderAttempts: number; outputBytes: number }> {
   const result = await request("/__spine/video/ffmpeg/finish", {
     method: "POST",
     headers: {
       "x-ba-spine-video-session": sessionId,
       "x-ba-spine-video-frames": String(frameCount),
     },
-  }).then((response) => response.json()) as { fileName?: unknown; encoder?: unknown };
-  if (typeof result.fileName !== "string" || !result.fileName || typeof result.encoder !== "string" || !result.encoder) {
+  }).then((response) => response.json()) as { fileName?: unknown; encoder?: unknown; encoderHardware?: unknown; encoderAttempt?: unknown; encoderAttempts?: unknown; outputBytes?: unknown };
+  if (typeof result.fileName !== "string" || !result.fileName || typeof result.encoder !== "string" || !result.encoder
+    || typeof result.encoderHardware !== "boolean"
+    || typeof result.encoderAttempt !== "number" || !Number.isFinite(result.encoderAttempt)
+    || typeof result.encoderAttempts !== "number" || !Number.isFinite(result.encoderAttempts)
+    || typeof result.outputBytes !== "number" || !Number.isFinite(result.outputBytes) || result.outputBytes <= 0) {
     throw new Error("The Viewer did not return the FFmpeg video export result.");
   }
-  return { fileName: result.fileName, encoder: result.encoder };
+  return {
+    fileName: result.fileName,
+    encoder: result.encoder,
+    encoderHardware: result.encoderHardware,
+    encoderAttempt: result.encoderAttempt,
+    encoderAttempts: result.encoderAttempts,
+    outputBytes: result.outputBytes,
+  };
 }
 
 export async function cancelDesktopFfmpegVideoRecording(sessionId: string): Promise<void> {

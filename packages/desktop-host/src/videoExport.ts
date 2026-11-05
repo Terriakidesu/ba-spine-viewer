@@ -41,11 +41,19 @@ export async function saveVideoWithoutOverwrite(directory: string, filename: str
 }
 
 /** Copy an encoded video under an unused name without loading the whole file into memory. */
-export async function saveVideoFileWithoutOverwrite(directory: string, filename: string, sourcePath: string): Promise<string> {
+export async function saveVideoFileWithoutOverwrite(
+  directory: string,
+  filename: string,
+  sourcePath: string,
+  onProgress?: (copiedBytes: number, totalBytes: number) => void,
+): Promise<string> {
   const { stem, extension } = safeVideoFilename(filename);
   const source = await open(sourcePath, "r");
   const buffer = Buffer.allocUnsafe(1024 * 1024);
   try {
+    const totalBytes = (await source.stat()).size;
+    let copiedBytes = 0;
+    onProgress?.(copiedBytes, totalBytes);
     for (let index = 0; index < 10_000; index++) {
       const candidate = `${stem}${index ? ` (${index})` : ""}${extension}`;
       const fullPath = join(directory, candidate);
@@ -65,6 +73,8 @@ export async function saveVideoFileWithoutOverwrite(directory: string, filename:
             const { bytesWritten } = await output.write(buffer, offset, bytesRead - offset, null);
             offset += bytesWritten;
           }
+          copiedBytes += bytesRead;
+          onProgress?.(copiedBytes, totalBytes);
         }
         await output.sync();
         await output.close();

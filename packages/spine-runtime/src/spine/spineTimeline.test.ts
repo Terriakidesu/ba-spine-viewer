@@ -197,6 +197,15 @@ test("clip-based openings resolve a CH0184-style sequence and continue its final
   expect(timelinePlaybackDuration({ sequenceId: "opening", durationMode: "auto", duration: 9, layers: [main], subtitles: [], audio: [] })).toBe(4);
 });
 
+test("recording idle explicitly selects true Idle instead of an opening continuation", () => {
+  const opening = layer({ animationClips: [
+    { id: "opening", animation: "Start_Idle_2", start: 0, end: 3, animationOffset: 0, loop: true, continueAfterOpening: true },
+  ] });
+
+  expect(timelineLayerAnimation(opening, meta, undefined, 8, "opening", "direct", 0, true, true)).toBe("Idle");
+  expect(timelineLayerAnimation(opening, meta, undefined, 8, "opening", "direct", 0, true)).toBe("Start_Idle_2");
+});
+
 test("legacy opening layers synthesize their previous intro-to-idle timing", () => {
   const oldLayer = layer({ start: 1, end: 5, animation: "Idle", animationOffset: 0.25, loop: true });
   expect(timelineLayerAnimation(oldLayer, meta, undefined, 2, "opening", "direct", 2)).toBe("Intro");

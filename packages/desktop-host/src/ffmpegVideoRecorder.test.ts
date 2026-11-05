@@ -3,7 +3,7 @@ import { createWriteStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FfmpegVideoRecorder, ffmpegAudioMixFilterGraph, ffmpegEncoderAttempts, ffmpegVideoColorPipelineArgs } from "./ffmpegVideoRecorder";
+import { FfmpegVideoRecorder, ffmpegAudioMixFilterGraph, ffmpegEncoderAttempts, ffmpegVideoColorPipelineArgs, parseFfmpegProgressMetrics } from "./ffmpegVideoRecorder";
 
 describe("FFmpeg video encoder selection", () => {
   test("prefers available H.264 hardware encoders and keeps a software fallback", () => {
@@ -35,6 +35,22 @@ describe("FFmpeg video encoder selection", () => {
   test("does not advertise an encoder that FFmpeg did not list", () => {
     expect(ffmpegEncoderAttempts("mp4", " V....D h264_nvenc NVENC").map(({ name }) => name)).toEqual(["h264_nvenc"]);
     expect(ffmpegEncoderAttempts("webm", "")).toEqual([]);
+  });
+});
+
+describe("FFmpeg progress parsing", () => {
+  test("extracts encoded frame, media time, rate, and speed from progress records", () => {
+    expect(parseFfmpegProgressMetrics({ frame: "45", out_time_us: "1500000", fps: "27.5", speed: "0.92x" }, 90, 3))
+      .toEqual({ frames: 45, progress: 0.5, timeSeconds: 1.5, fps: 27.5, speed: 0.92 });
+  });
+
+  test("uses FFmpeg's timestamp when available and clamps output to the planned duration", () => {
+    expect(parseFfmpegProgressMetrics({ frame: "150", out_time: "00:00:05.250000", fps: "N/A", speed: "N/A" }, 100, 4))
+      .toEqual({ frames: 100, progress: 1, timeSeconds: 4, fps: null, speed: null });
+  });
+
+  test("falls back to the legacy FFmpeg out_time_ms field when out_time_us is unavailable", () => {
+    expect(parseFfmpegProgressMetrics({ out_time_us: "N/A", out_time_ms: "2750000" }, 100, 5).timeSeconds).toBe(2.75);
   });
 });
 
@@ -80,10 +96,65 @@ describe("FFmpeg recording finalization", () => {
       phase: "encoding" as const,
       encodeProgress: 0.42,
       activeEncoder: "h264_nvenc",
+      activeEncoderHardware: true,
+      encoderAttempt: 1,
+      encoderAttempts: 3,
+      encodeFrames: 42,
+      encodeTotalFrames: 100,
+      encodedTimeSeconds: 1.4,
+      encodeDurationSeconds: 3.33,
+      encodingFps: 30,
+      encodingSpeed: 1.2,
+      encodeStartedAt: null,
+      encoderAttemptStartedAt: null,
+      saveOperation: null,
+      saveStartedAt: null,
+      saveBytesCopied: 0,
+      saveTotalBytes: null,
     };
     (recorder as unknown as { sessions: Map<string, typeof session> }).sessions.set(session.id, session);
 
-    expect(recorder.status(session.id)).toEqual({ phase: "encoding", progress: 0.42, encoder: "h264_nvenc" });
+    expect(recorder.status(session.id)).toEqual({
+      phase: "encoding",
+      progress: 0.42,
+      framesEncoded: 42,
+      totalFrames: 100,
+      encodedTimeSeconds: 1.4,
+      totalTimeSeconds: 3.33,
+      fps: 30,
+      speed: 1.2,
+      encoder: "h264_nvenc",
+      encoderHardware: true,
+      encoderAttempt: 1,
+      encoderAttempts: 3,
+    });
+  });
+
+  test("reports save-copy bytes only when measurable instead of claiming completion", () => {
+    const recorder = new FfmpegVideoRecorder("unused-ffmpeg.exe", () => null);
+    const session = {
+      id: "save-status",
+      phase: "saving" as const,
+      saveOperation: "finalizing" as "finalizing" | "copying" | "verifying",
+      saveStartedAt: null as number | null,
+      saveBytesCopied: 0,
+      saveTotalBytes: null as number | null,
+      activeEncoder: null,
+      activeEncoderHardware: null,
+    };
+    (recorder as unknown as { sessions: Map<string, typeof session> }).sessions.set(session.id, session);
+
+    expect(recorder.status(session.id)).toEqual({ phase: "saving", saveOperation: "finalizing" });
+    session.saveOperation = "copying";
+    session.saveBytesCopied = 256;
+    session.saveTotalBytes = 1024;
+    expect(recorder.status(session.id)).toEqual({
+      phase: "saving",
+      saveOperation: "copying",
+      saveBytesCopied: 256,
+      saveTotalBytes: 1024,
+      progress: 0.25,
+    });
   });
 
   test("coalesces repeated finish requests for the same session", async () => {

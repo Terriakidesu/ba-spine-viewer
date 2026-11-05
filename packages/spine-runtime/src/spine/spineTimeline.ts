@@ -431,7 +431,8 @@ function exactAnimation(animations: readonly string[], requested: string): strin
 }
 
 /** Resolve the animation used by a timeline layer in both the editor and viewer. */
-export function timelineLayerAnimation(layer: SpineTimelineLayer, meta: Pick<SpineMeta, "animations" | "introAnimation" | "idleAnimation">, mainAnimation: string | undefined, currentTime: number, sequenceId: string, openingMode: SpineTimeline["openingMode"], introDuration: number, continueAfterOpening = false): string {
+export function timelineLayerAnimation(layer: SpineTimelineLayer, meta: Pick<SpineMeta, "animations" | "introAnimation" | "idleAnimation">, mainAnimation: string | undefined, currentTime: number, sequenceId: string, openingMode: SpineTimeline["openingMode"], introDuration: number, continueAfterOpening = false, forceIdle = false): string {
+  if (forceIdle && layer.role === "character") return timelineIdleAnimation(meta);
   const activeClip = timelineActiveAnimationClip(layer, meta, currentTime, sequenceId, openingMode, introDuration, continueAfterOpening);
   const clipDriven = Array.isArray(layer.animationClips);
   const fallback = fallbackAnimation(layer, meta);

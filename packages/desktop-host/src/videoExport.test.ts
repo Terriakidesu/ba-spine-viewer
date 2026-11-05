@@ -40,7 +40,8 @@ describe("safe video export", () => {
     await writeFile(sourcePath, Buffer.alloc(1024 * 1024 + 9, 23));
     await writeFile(existingPath, "keep this recording");
 
-    const savedAs = await saveVideoFileWithoutOverwrite(directory, "capture.mp4", sourcePath);
+    const progress: Array<{ copied: number; total: number }> = [];
+    const savedAs = await saveVideoFileWithoutOverwrite(directory, "capture.mp4", sourcePath, (copied, total) => progress.push({ copied, total }));
 
     expect(savedAs).toBe("capture (1).mp4");
     expect(await readFile(existingPath, "utf8")).toBe("keep this recording");
@@ -48,5 +49,7 @@ describe("safe video export", () => {
     expect(copy.byteLength).toBe(1024 * 1024 + 9);
     expect(copy[0]).toBe(23);
     expect(copy.at(-1)).toBe(23);
+    expect(progress[0]).toEqual({ copied: 0, total: 1024 * 1024 + 9 });
+    expect(progress.at(-1)).toEqual({ copied: 1024 * 1024 + 9, total: 1024 * 1024 + 9 });
   });
 });

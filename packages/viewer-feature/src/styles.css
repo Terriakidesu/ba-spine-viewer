@@ -725,6 +725,8 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-summary h3 { margin: 0 0 10px; color: var(--text); font-size: 11px; font-weight: 850; letter-spacing: .04em; }
 .spine-recorder-summary dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; margin: 0; }
 .spine-recorder-summary dl > div { min-width: 0; }
+.spine-recorder-summary dt, .spine-recorder-complete-details dt { color: var(--muted); font-size: 9px; font-weight: 750; }
+.spine-recorder-summary dd, .spine-recorder-complete-details dd { overflow: hidden; margin: 3px 0 0; color: var(--text); font-size: 10px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .spine-recorder-summary dt { margin-bottom: 3px; color: var(--muted); font-size: 9px; font-weight: 750; }
 .spine-recorder-summary dd { overflow: hidden; margin: 0; color: var(--text); font-size: 10px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
 .spine-recorder-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
@@ -761,6 +763,8 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-fallback-note { color: var(--amber, #d3a84a); }
 .spine-recorder-error { margin: 12px 0 0; color: var(--pink); font-size: 12px; line-height: 1.5; }
 .spine-recorder-complete-file { margin: 8px 0 0; overflow-wrap: anywhere; color: var(--text); font-size: 13px; font-weight: 800; line-height: 1.5; }
+.spine-recorder-complete-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 14px; margin: 15px 0 0; padding: 14px; border: 1px solid var(--line); border-radius: 6px; background: color-mix(in srgb, var(--surface-alt) 62%, transparent); }
+.spine-recorder-complete-details > div { min-width: 0; }
 .spine-recorder-footer { flex: none; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .spine-recorder-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .spine-recorder-actions button { min-height: 36px; padding: 7px 13px; border: 1px solid var(--line); border-radius: 5px; font-size: 11px; font-weight: 800; }
@@ -805,6 +809,7 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
   .spine-recorder-fields label { display: grid; grid-template-columns: 1fr 1.15fr; align-items: center; }
   .spine-recorder-full-options { grid-template-columns: minmax(0, 1fr); }
   .spine-recorder-summary dl { grid-template-columns: minmax(0, 1fr); }
+  .spine-recorder-complete-details { grid-template-columns: minmax(0, 1fr); }
   .spine-recorder-metrics.is-frame-export { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .spine-recorder-stages { gap: 1px; margin-top: 19px; }
   .spine-recorder-stages li > span:last-child { font-size: 8px; }
