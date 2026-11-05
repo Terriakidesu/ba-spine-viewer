@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingProgress, videoRecordingResolutionScale } from "./videoRecorder";
+import { createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt } from "./videoRecorder";
 
 describe("Viewer video recording plans", () => {
   test("counts the opening once and stops at the requested idle-loop boundary", () => {
@@ -14,6 +14,56 @@ describe("Viewer video recording plans", () => {
     const plan = createVideoRecordingPlan("idle-only", 7, 1.25, 99);
     expect(plan).toEqual({ mode: "idle-only", openingDuration: 7, idleDuration: 1.25, idleLoops: 20, totalDuration: 25 });
     expect(videoRecordingProgress(plan, 2.5)).toMatchObject({ phase: "idle", idleLoopsCompleted: 2, total: 25 });
+  });
+
+  test("full-sequence plans opening, initial idle, Talks, bridges, and a final idle", () => {
+    const plan = createFullSequenceRecordingPlan({
+      openingDuration: 4,
+      idleDuration: 3,
+      openingSequenceId: "opening",
+      idleSequenceId: "opening",
+      includeOpening: true,
+      initialIdleLoops: 1,
+      betweenTalkIdleSeconds: 0.5,
+      finalIdleLoops: 1,
+      talks: [
+        { sequenceId: "talk-10", duration: 10 },
+        { sequenceId: "talk-2", duration: 9 },
+        { sequenceId: "talk-1", duration: 8 },
+      ],
+      selectedTalkSequenceIds: ["talk-1", "talk-2", "talk-10"],
+    });
+    expect(plan.totalDuration).toBe(38);
+    expect(plan.segments?.map(({ kind, sequenceId }) => [kind, sequenceId])).toEqual([
+      ["opening", "opening"],
+      ["initial-idle", "opening"],
+      ["talk", "talk-1"],
+      ["between-idle", "opening"],
+      ["talk", "talk-2"],
+      ["between-idle", "opening"],
+      ["talk", "talk-10"],
+      ["final-idle", "opening"],
+    ]);
+    expect(videoRecordingSegmentAt(plan, 7.25)).toMatchObject({ index: 2, segment: { kind: "talk", sequenceId: "talk-1" }, elapsed: 0.25 });
+    expect(videoRecordingProgress(plan, 36)).toMatchObject({ phase: "final-idle", segmentElapsed: 1, finished: false });
+  });
+
+  test("full-sequence omits unavailable opening, filters unselected Talks, and enforces a settled final idle", () => {
+    const plan = createFullSequenceRecordingPlan({
+      openingDuration: 5,
+      idleDuration: 0.4,
+      openingSequenceId: null,
+      idleSequenceId: "talk-1",
+      includeOpening: true,
+      initialIdleLoops: 1,
+      betweenTalkIdleSeconds: 0.5,
+      finalIdleLoops: 1,
+      talks: [{ sequenceId: "talk-1", duration: 3 }, { sequenceId: "talk-2", duration: 4 }],
+      selectedTalkSequenceIds: ["talk-1"],
+    });
+    expect(plan.segments?.map(({ kind }) => kind)).toEqual(["initial-idle", "talk", "final-idle"]);
+    expect(plan.segments?.at(-1)?.duration).toBe(1);
+    expect(plan.totalDuration).toBe(4.4);
   });
 
   test("advertises only encoder MIME types reported by the WebView", () => {

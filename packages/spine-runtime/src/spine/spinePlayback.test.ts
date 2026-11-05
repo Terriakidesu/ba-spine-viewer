@@ -44,6 +44,32 @@ test("authored talks sample both moving body and face while preserving interacti
   expect(state.getCurrent(2)).toBeNull();
 });
 
+test("an authored Talk transition keeps the underlying idle clock running", () => {
+  const data = new SkeletonData();
+  data.bones.push(new BoneData(0, "root", null));
+  data.animations.push(
+    new Animation("Idle_01", [], 3),
+    new Animation("Talk_01_M", [], 2),
+    new Animation("Talk_02_M", [], 2),
+  );
+  const skeleton = new Skeleton(data);
+  const state = new AnimationState(new AnimationStateData(data));
+  const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
+    bundle: { skeleton, state, meta: { idleAnimation: "Idle_01", introAnimation: null } },
+    restoreInteractionPose: () => {},
+    motionState: () => ({ target: null }),
+  }) as SpineRenderer;
+
+  renderer.sampleEditorAnimation("Talk_01_M", "", 1.9, false, true, true, 1, 1, 2.5);
+  expect(state.getCurrent(0)?.trackTime).toBeCloseTo(2.5);
+  expect(state.getCurrent(9)?.animation?.name).toBe("Talk_01_M");
+  renderer.sampleEditorAnimation("Talk_02_M", "", 0, false, true, true, 0, 0, 2.6);
+
+  expect(state.getCurrent(0)?.trackTime).toBeCloseTo(2.6);
+  expect(state.getCurrent(9)?.animation?.name).toBe("Talk_02_M");
+  expect(state.getCurrent(9)?.alpha).toBe(0);
+});
+
 test("auto-play starts the next Talk by crossfading from the finished Talk tracks", () => {
   const data = new SkeletonData();
   data.bones.push(new BoneData(0, "root", null));

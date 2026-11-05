@@ -1,4 +1,4 @@
-export type VideoRecordingMode = "opening-idle" | "idle-only";
+export type VideoRecordingMode = "full-sequence" | "opening-idle" | "idle-only";
 export type VideoRecordingFormat = "webm" | "mp4";
 export type VideoRecordingResolution = 720 | 1080 | 1440 | 2160;
 export type VideoRecordingFrameRate = 30 | 60;
@@ -6,6 +6,11 @@ export type VideoRecordingFrameRate = 30 | 60;
 export interface VideoRecordingSettings {
   mode: VideoRecordingMode;
   idleLoops: number;
+  includeOpening: boolean;
+  talkSequenceIds: string[];
+  initialIdleLoops: number;
+  betweenTalkIdleSeconds: number;
+  finalIdleLoops: number;
   resolution: VideoRecordingResolution;
   frameRate: VideoRecordingFrameRate;
   framing: "current" | "saved";
@@ -20,6 +25,15 @@ export interface VideoRecordingPlan {
   idleDuration: number;
   idleLoops: number;
   totalDuration: number;
+  segments?: VideoRecordingSegment[];
+}
+
+export interface VideoRecordingSegment {
+  kind: "opening" | "initial-idle" | "between-idle" | "talk" | "final-idle" | "idle";
+  duration: number;
+  sequenceId?: string;
+  talkNumber?: number;
+  talkCount?: number;
 }
 
 export interface VideoRecordingAudioSchedule {
@@ -29,12 +43,15 @@ export interface VideoRecordingAudioSchedule {
 }
 
 export interface VideoRecordingProgress {
-  phase: "opening" | "idle";
+  phase: "opening" | "idle" | "talk" | "final-idle";
   elapsed: number;
   total: number;
   idleLoopsCompleted: number;
   fraction: number;
   finished: boolean;
+  segmentIndex?: number;
+  segment?: VideoRecordingSegment;
+  segmentElapsed?: number;
 }
 
 export interface SupportedVideoFormat {
@@ -76,7 +93,7 @@ export function detectSupportedVideoFormats(recorder: MediaRecorderSupport | nul
 }
 
 export function createVideoRecordingPlan(
-  mode: VideoRecordingMode,
+  mode: "opening-idle" | "idle-only",
   openingDuration: number,
   idleDuration: number,
   idleLoops: number,
@@ -93,8 +110,111 @@ export function createVideoRecordingPlan(
   };
 }
 
+/** Build a deterministic recording order for an opening, selected Talks, and a required final idle. */
+export function createFullSequenceRecordingPlan(options: {
+  openingDuration: number;
+  idleDuration: number;
+  openingSequenceId?: string | null;
+  idleSequenceId?: string | null;
+  includeOpening: boolean;
+  initialIdleLoops: number;
+  betweenTalkIdleSeconds: number;
+  finalIdleLoops: number;
+  talks: readonly { sequenceId: string; duration: number }[];
+  selectedTalkSequenceIds: readonly string[];
+}): VideoRecordingPlan {
+  const openingDuration = Number.isFinite(options.openingDuration) ? Math.max(0, options.openingDuration) : 0;
+  const idleDuration = Number.isFinite(options.idleDuration) ? Math.max(0.01, options.idleDuration) : 0.01;
+  const safeLoops = (value: number) => Math.max(1, Math.min(20, Math.floor(Number.isFinite(value) ? value : 1)));
+  const initialIdleLoops = safeLoops(options.initialIdleLoops);
+  const finalIdleLoops = safeLoops(options.finalIdleLoops);
+  const betweenDuration = Number.isFinite(options.betweenTalkIdleSeconds)
+    ? Math.max(0, Math.min(30, options.betweenTalkIdleSeconds))
+    : 0;
+  const selected = new Set(options.selectedTalkSequenceIds);
+  const talks = options.talks
+    .filter((talk) => selected.has(talk.sequenceId) && Number.isFinite(talk.duration) && talk.duration > 0)
+    .sort((a, b) => {
+      const aNumber = Number(a.sequenceId.match(/\d+$/)?.[0] ?? Number.NaN);
+      const bNumber = Number(b.sequenceId.match(/\d+$/)?.[0] ?? Number.NaN);
+      if (Number.isFinite(aNumber) && Number.isFinite(bNumber) && aNumber !== bNumber) return aNumber - bNumber;
+      return a.sequenceId.localeCompare(b.sequenceId, undefined, { numeric: true, sensitivity: "base" });
+    });
+  const segments: VideoRecordingSegment[] = [];
+  if (options.includeOpening && options.openingSequenceId && openingDuration > 0) {
+    segments.push({ kind: "opening", sequenceId: options.openingSequenceId, duration: openingDuration });
+  }
+  const idleSequenceId = options.idleSequenceId ?? options.openingSequenceId ?? talks[0]?.sequenceId;
+  const initialDuration = idleDuration * initialIdleLoops;
+  segments.push({ kind: "initial-idle", ...(idleSequenceId ? { sequenceId: idleSequenceId } : {}), duration: initialDuration });
+  talks.forEach((talk, index) => {
+    segments.push({
+      kind: "talk",
+      sequenceId: talk.sequenceId,
+      talkNumber: index + 1,
+      talkCount: talks.length,
+      duration: talk.duration,
+    });
+    if (index < talks.length - 1 && betweenDuration > 0) {
+      segments.push({ kind: "between-idle", ...(idleSequenceId ? { sequenceId: idleSequenceId } : {}), duration: betweenDuration });
+    }
+  });
+  // Keep the last pose from being a Talk frame, even when the idle loop itself is short.
+  segments.push({
+    kind: "final-idle",
+    ...(idleSequenceId ? { sequenceId: idleSequenceId } : {}),
+    duration: Math.max(1, idleDuration * finalIdleLoops),
+  });
+  return {
+    mode: "full-sequence",
+    openingDuration: options.includeOpening && options.openingSequenceId ? openingDuration : 0,
+    idleDuration,
+    idleLoops: finalIdleLoops,
+    totalDuration: segments.reduce((total, segment) => total + segment.duration, 0),
+    segments,
+  };
+}
+
+/** Resolve the active segment and its local clock from the linear recording time. */
+export function videoRecordingSegmentAt(plan: VideoRecordingPlan, elapsedSeconds: number): { index: number; segment: VideoRecordingSegment; elapsed: number } | null {
+  const segments = plan.segments;
+  if (!segments?.length) return null;
+  const elapsed = Math.max(0, Number.isFinite(elapsedSeconds) ? elapsedSeconds : 0);
+  let start = 0;
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index]!;
+    const end = start + segment.duration;
+    if (elapsed < end || index === segments.length - 1) {
+      return { index, segment, elapsed: Math.max(0, Math.min(segment.duration, elapsed - start)) };
+    }
+    start = end;
+  }
+  return null;
+}
+
 export function videoRecordingProgress(plan: VideoRecordingPlan, elapsedSeconds: number): VideoRecordingProgress {
   const elapsed = Math.max(0, Number.isFinite(elapsedSeconds) ? elapsedSeconds : 0);
+  if (plan.segments?.length) {
+    const active = videoRecordingSegmentAt(plan, elapsed);
+    const boundedElapsed = Math.min(plan.totalDuration, elapsed);
+    const segment = active?.segment;
+    const phase = segment?.kind === "opening" ? "opening"
+      : segment?.kind === "talk" ? "talk"
+        : segment?.kind === "final-idle" ? "final-idle"
+          : "idle";
+    const loopsCompleted = segment && (segment.kind === "initial-idle" || segment.kind === "final-idle")
+      ? Math.min(segment.kind === "final-idle" ? plan.idleLoops : 20, Math.floor((active?.elapsed ?? 0) / plan.idleDuration))
+      : 0;
+    return {
+      phase,
+      elapsed: boundedElapsed,
+      total: plan.totalDuration,
+      idleLoopsCompleted: loopsCompleted,
+      fraction: plan.totalDuration > 0 ? Math.min(1, elapsed / plan.totalDuration) : 1,
+      finished: elapsed >= plan.totalDuration,
+      ...(active ? { segmentIndex: active.index, segment: active.segment, segmentElapsed: active.elapsed } : {}),
+    };
+  }
   const idleElapsed = Math.max(0, elapsed - (plan.mode === "opening-idle" ? plan.openingDuration : 0));
   const idleLoopsCompleted = Math.min(plan.idleLoops, Math.floor(idleElapsed / plan.idleDuration));
   return {
