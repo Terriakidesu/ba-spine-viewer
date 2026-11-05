@@ -3567,13 +3567,34 @@ export function Spine() {
                 <div><dt>{t("spine.recorder.includeSubtitles")}</dt><dd>{t(recorderSettings.includeSubtitles ? "spine.recorder.on" : "spine.recorder.off")}</dd></div>
               </dl>
             </section>}
+            {videoRecorderDialog.phase === "settings" && <section className="spine-recorder-settings-section spine-recorder-output-settings">
+              <h3>{t("spine.recorder.outputSettings")}</h3>
+              <div className="spine-recorder-fields">
+                <label><span>{t("spine.recorder.resolution")}</span><select value={videoRecorderDialog.settings.resolution} onChange={(event) => updateVideoRecorderSettings({ resolution: Number(event.target.value) as VideoRecordingSettings["resolution"] })}>
+                  <option value="720">720p</option><option value="1080">1080p</option><option value="1440">2K (1440p)</option><option value="2160">4K UHD (2160p)</option>
+                </select></label>
+                <label><span>{t("spine.recorder.frameRate")}</span><select value={videoRecorderDialog.settings.frameRate} onChange={(event) => updateVideoRecorderSettings({ frameRate: Number(event.target.value) as VideoRecordingSettings["frameRate"] })}>
+                  <option value="30">30 FPS</option><option value="60">60 FPS</option>
+                </select></label>
+                <label><span>{t("spine.recorder.framing")}</span><select value={videoRecorderDialog.settings.framing} onChange={(event) => updateVideoRecorderSettings({ framing: event.target.value as VideoRecordingSettings["framing"] })}>
+                  <option value="current">{t("spine.recorder.framing.current")}</option><option value="saved">{t("spine.recorder.framing.saved")}</option>
+                </select></label>
+                <label><span>{t("spine.recorder.format")}</span><select value={videoRecorderDialog.settings.format} onChange={(event) => updateVideoRecorderSettings({ format: event.target.value as VideoRecordingFormat })} disabled={videoRecorderFormats.length === 0}>
+                  {videoRecorderFormats.map(({ format }) => <option key={format} value={format}>{format === "webm" ? "WebM" : "MP4"}</option>)}
+                </select></label>
+              </div>
+              <div className="spine-recorder-toggles">
+                <label><input type="checkbox" checked={videoRecorderDialog.settings.includeAudio} onChange={(event) => updateVideoRecorderSettings({ includeAudio: event.target.checked })} />{t("spine.recorder.includeAudio")}</label>
+                <label><input type="checkbox" checked={videoRecorderDialog.settings.includeSubtitles} onChange={(event) => updateVideoRecorderSettings({ includeSubtitles: event.target.checked })} />{t("spine.recorder.includeSubtitles")}</label>
+              </div>
+            </section>}
           </div>
           <div className="spine-recorder-body">
             {videoRecorderDialog.phase === "settings" ? <>
               <section className="spine-recorder-settings-section">
                 <h3>{t("spine.recorder.mode")}</h3>
                 <div className="spine-recorder-fields">
-                  <label><span>{t("spine.recorder.mode")}</span><select value={videoRecorderDialog.settings.mode} onChange={(event) => updateVideoRecorderSettings({ mode: event.target.value as VideoRecordingSettings["mode"] })}>
+                  <label><span className="spine-visually-hidden">{t("spine.recorder.mode")}</span><select aria-label={t("spine.recorder.mode")} value={videoRecorderDialog.settings.mode} onChange={(event) => updateVideoRecorderSettings({ mode: event.target.value as VideoRecordingSettings["mode"] })}>
                     <option value="full-sequence" disabled={!compositionActive || authoredTalkSequenceIds.length === 0}>{t("spine.recorder.mode.fullSequence")}</option>
                   <option value="opening-idle">{t("spine.recorder.mode.openingIdle")}</option>
                   <option value="idle-only">{t("spine.recorder.mode.idleOnly")}</option>
@@ -3590,8 +3611,8 @@ export function Spine() {
                     <label><span>{t("spine.recorder.betweenTalkIdle")}</span><input type="number" min="0" max="30" step="0.1" value={videoRecorderDialog.settings.betweenTalkIdleSeconds} onChange={(event) => updateVideoRecorderSettings({ betweenTalkIdleSeconds: Math.max(0, Math.min(30, Number(event.target.value) || 0)) })} /></label>
                     <label><span>{t("spine.recorder.finalIdleLoops")}</span><input type="number" min="1" max="20" step="1" value={videoRecorderDialog.settings.finalIdleLoops} onChange={(event) => updateVideoRecorderSettings({ finalIdleLoops: Math.max(1, Math.min(20, Math.floor(Number(event.target.value) || 1))) })} /></label>
                   </div>
-                  <div className="spine-recorder-talk-list" role="group" aria-label={t("spine.recorder.talksToInclude")}>
-                    <strong>{t("spine.recorder.talksToInclude")}</strong>
+                  <fieldset className="spine-recorder-talk-list">
+                    <legend>{t("spine.recorder.talksToInclude")}</legend>
                     {recorderTalkOptions.map((talk) => {
                       const number = talk.sequenceId.match(/\d+$/)?.[0] ?? talk.sequenceId;
                       const checked = videoRecorderDialog.settings.talkSequenceIds.includes(talk.sequenceId);
@@ -3604,10 +3625,15 @@ export function Spine() {
                         {!talk.missingReason && <small>{formatSeconds(talk.duration)}s</small>}
                       </label>;
                     })}
-                  </div>
+                  </fieldset>
                   {selectedMissingTalks.length > 0 && <p className="spine-recorder-error" role="alert">{selectedMissingTalks.map((talk) => `${talk.sequenceId}: ${talk.missingReason}`).join(" · ")}</p>}
-                  <section className="spine-recorder-sequence-preview">
-                    <h3>{t("spine.recorder.sequencePreview")}</h3>
+                  <details className="spine-recorder-sequence-preview">
+                    <summary>
+                      <span>{t("spine.recorder.sequencePreview")}</span>
+                      <small>{recorderEstimate?.segments?.length
+                        ? `${t("spine.recorder.segmentCount", { count: recorderEstimate.segments.length })} · ${formatSeconds(recorderEstimate.totalDuration)}s`
+                        : t("spine.recorder.estimateLoading")}</small>
+                    </summary>
                     {recorderEstimate?.segments?.length
                       ? <ol>{recorderEstimate.segments.map((segment, index) => {
                         const label = segment.kind === "opening" ? t("spine.recorder.segment.opening")
@@ -3620,29 +3646,8 @@ export function Spine() {
                       })}</ol>
                       : <p className="spine-recorder-note">{t("spine.recorder.estimateLoading")}</p>}
                     <p className="spine-recorder-note">{t("spine.recorder.finalIdleNote")}</p>
-                  </section>
+                  </details>
                 </>}
-              </section>
-              <section className="spine-recorder-settings-section">
-                <h3>{t("spine.recorder.outputSettings")}</h3>
-                <div className="spine-recorder-fields">
-                  <label><span>{t("spine.recorder.resolution")}</span><select value={videoRecorderDialog.settings.resolution} onChange={(event) => updateVideoRecorderSettings({ resolution: Number(event.target.value) as VideoRecordingSettings["resolution"] })}>
-                    <option value="720">720p</option><option value="1080">1080p</option><option value="1440">2K (1440p)</option><option value="2160">4K UHD (2160p)</option>
-                  </select></label>
-                  <label><span>{t("spine.recorder.frameRate")}</span><select value={videoRecorderDialog.settings.frameRate} onChange={(event) => updateVideoRecorderSettings({ frameRate: Number(event.target.value) as VideoRecordingSettings["frameRate"] })}>
-                    <option value="30">30 FPS</option><option value="60">60 FPS</option>
-                  </select></label>
-                  <label><span>{t("spine.recorder.framing")}</span><select value={videoRecorderDialog.settings.framing} onChange={(event) => updateVideoRecorderSettings({ framing: event.target.value as VideoRecordingSettings["framing"] })}>
-                    <option value="current">{t("spine.recorder.framing.current")}</option><option value="saved">{t("spine.recorder.framing.saved")}</option>
-                  </select></label>
-                  <label><span>{t("spine.recorder.format")}</span><select value={videoRecorderDialog.settings.format} onChange={(event) => updateVideoRecorderSettings({ format: event.target.value as VideoRecordingFormat })} disabled={videoRecorderFormats.length === 0}>
-                    {videoRecorderFormats.map(({ format }) => <option key={format} value={format}>{format === "webm" ? "WebM" : "MP4"}</option>)}
-                  </select></label>
-                </div>
-                <div className="spine-recorder-toggles">
-                  <label><input type="checkbox" checked={videoRecorderDialog.settings.includeAudio} onChange={(event) => updateVideoRecorderSettings({ includeAudio: event.target.checked })} />{t("spine.recorder.includeAudio")}</label>
-                  <label><input type="checkbox" checked={videoRecorderDialog.settings.includeSubtitles} onChange={(event) => updateVideoRecorderSettings({ includeSubtitles: event.target.checked })} />{t("spine.recorder.includeSubtitles")}</label>
-                </div>
               </section>
               <p className="spine-recorder-estimate">{recorderEstimate
                 ? t("spine.recorder.estimate", { duration: recorderEstimate.totalDuration.toFixed(1), frames: recorderEstimateFrames })
@@ -3650,23 +3655,11 @@ export function Spine() {
               <p className="spine-recorder-note">{t("spine.recorder.note")}</p>
               {!recorderUsesFfmpeg && <p className="spine-recorder-fallback-note">{t("spine.recorder.fallback")}</p>}
               {videoRecorderFormats.length === 0 && <p className="spine-recorder-error" role="alert">{t("spine.recorder.unsupported")}</p>}
-              <div className="spine-recorder-actions">
-                <button type="button" className="spine-recorder-secondary" onClick={() => setVideoRecorderDialog(null)}>{t("spine.recorder.cancel")}</button>
-                <button type="button" className="spine-recorder-primary" disabled={!videoRecorderFormats.length || !meta || !recorderMetrics?.ready || (videoRecorderDialog.settings.mode === "full-sequence" && (!compositionActive || !selectedInteractionProject || !fullSequenceMetrics?.ready || authoredTalkSequenceIds.length === 0 || selectedMissingTalks.length > 0))} onClick={() => void startVideoRecording()}>{t("spine.recorder.start")}</button>
-              </div>
             </> : videoRecorderDialog.phase === "error" ? <>
               <p className="spine-recorder-error" role="alert">{videoRecorderDialog.error}</p>
-              <div className="spine-recorder-actions">
-                <button type="button" className="spine-recorder-secondary" onClick={() => setVideoRecorderDialog({ phase: "settings", settings: videoRecorderSettings, elapsed: 0 })}>{t("spine.recorder.recordAgain")}</button>
-                <button type="button" className="spine-recorder-primary" onClick={() => setVideoRecorderDialog(null)}>{t("spine.recorder.close")}</button>
-              </div>
             </> : videoRecorderDialog.phase === "complete" ? <>
               <p className="spine-recorder-complete-file" role="status">{t("spine.recorder.savedAs", { name: videoRecorderDialog.savedFileName ?? "" })}</p>
               {videoRecorderDialog.encoder && <p className="spine-recorder-note">{t("spine.recorder.encoder", { name: videoRecorderDialog.encoder })}</p>}
-              <div className="spine-recorder-actions">
-                <button type="button" className="spine-recorder-secondary" onClick={() => setVideoRecorderDialog({ phase: "settings", settings: videoRecorderSettings, elapsed: 0 })}>{t("spine.recorder.recordAgain")}</button>
-                <button type="button" className="spine-recorder-primary" onClick={() => setVideoRecorderDialog(null)}>{t("spine.recorder.close")}</button>
-              </div>
             </> : <div className="spine-recorder-dashboard" aria-live="polite">
               <div className="spine-recorder-dashboard-heading">
                 <div>
@@ -3705,11 +3698,25 @@ export function Spine() {
                 </div>)}
               </div>
               {videoRecorderDialog.encoder && <p className="spine-recorder-encoder">{t("spine.recorder.encoder", { name: videoRecorderDialog.encoder })}</p>}
-              <div className="spine-recorder-actions">
-                <button type="button" className="spine-recorder-secondary" disabled={videoRecorderDialog.phase !== "preparing" && videoRecorderDialog.phase !== "recording" && videoRecorderDialog.phase !== "rendering" && videoRecorderDialog.phase !== "mixing"} onClick={() => stopVideoRecording(false)}>{t("spine.recorder.cancelExport")}</button>
-              </div>
             </div>}
           </div>
+        </div>
+        <div className="spine-recorder-footer">
+          {videoRecorderDialog.phase === "settings" && <div className="spine-recorder-actions">
+            <button type="button" className="spine-recorder-secondary" onClick={() => setVideoRecorderDialog(null)}>{t("spine.recorder.cancel")}</button>
+            <button type="button" className="spine-recorder-primary" disabled={!videoRecorderFormats.length || !meta || !recorderMetrics?.ready || (videoRecorderDialog.settings.mode === "full-sequence" && (!compositionActive || !selectedInteractionProject || !fullSequenceMetrics?.ready || authoredTalkSequenceIds.length === 0 || selectedMissingTalks.length > 0))} onClick={() => void startVideoRecording()}>{t("spine.recorder.start")}</button>
+          </div>}
+          {videoRecorderDialog.phase === "error" && <div className="spine-recorder-actions">
+            <button type="button" className="spine-recorder-secondary" onClick={() => setVideoRecorderDialog({ phase: "settings", settings: videoRecorderSettings, elapsed: 0 })}>{t("spine.recorder.recordAgain")}</button>
+            <button type="button" className="spine-recorder-primary" onClick={() => setVideoRecorderDialog(null)}>{t("spine.recorder.close")}</button>
+          </div>}
+          {videoRecorderDialog.phase === "complete" && <div className="spine-recorder-actions">
+            <button type="button" className="spine-recorder-secondary" onClick={() => setVideoRecorderDialog({ phase: "settings", settings: videoRecorderSettings, elapsed: 0 })}>{t("spine.recorder.recordAgain")}</button>
+            <button type="button" className="spine-recorder-primary" onClick={() => setVideoRecorderDialog(null)}>{t("spine.recorder.close")}</button>
+          </div>}
+          {isExportProgressPhase && <div className="spine-recorder-actions">
+            <button type="button" className="spine-recorder-secondary" disabled={videoRecorderDialog.phase !== "preparing" && videoRecorderDialog.phase !== "recording" && videoRecorderDialog.phase !== "rendering" && videoRecorderDialog.phase !== "mixing"} onClick={() => stopVideoRecording(false)}>{t("spine.recorder.cancelExport")}</button>
+          </div>}
         </div>
       </section>
     </div>}

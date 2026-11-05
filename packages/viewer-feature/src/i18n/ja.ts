@@ -500,6 +500,7 @@ export const ja: Record<keyof typeof en, string> = {
   "spine.recorder.mode": "シーケンス",
   "spine.recorder.outputSettings": "出力設定",
   "spine.recorder.sequencePreview": "シーケンスのプレビュー",
+  "spine.recorder.segmentCount": "{count} セグメント",
   "spine.recorder.mode.fullSequence": "全シーケンス",
   "spine.recorder.mode.openingIdle": "オープニング＋待機ループ",
   "spine.recorder.mode.idleOnly": "待機のみをループ",

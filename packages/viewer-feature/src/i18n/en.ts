@@ -516,6 +516,7 @@ export const en = {
   "spine.recorder.mode": "Sequence",
   "spine.recorder.outputSettings": "Output settings",
   "spine.recorder.sequencePreview": "Sequence preview",
+  "spine.recorder.segmentCount": "{count} segments",
   "spine.recorder.mode.fullSequence": "Full sequence",
   "spine.recorder.mode.openingIdle": "Opening + idle loops",
   "spine.recorder.mode.idleOnly": "Looping idle only",

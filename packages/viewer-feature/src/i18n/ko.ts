@@ -500,6 +500,7 @@ export const ko: Record<keyof typeof en, string> = {
   "spine.recorder.mode": "시퀀스",
   "spine.recorder.outputSettings": "출력 설정",
   "spine.recorder.sequencePreview": "시퀀스 미리보기",
+  "spine.recorder.segmentCount": "구간 {count}개",
   "spine.recorder.mode.fullSequence": "전체 시퀀스",
   "spine.recorder.mode.openingIdle": "오프닝 + 대기 반복",
   "spine.recorder.mode.idleOnly": "대기만 반복",

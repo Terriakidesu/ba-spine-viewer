@@ -702,25 +702,25 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-record-video-button > svg { color: #ef5673; }
 .spine-recorder-background { display: contents; }
 .spine-recorder-backdrop { position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 20px; background: #071018c9; backdrop-filter: blur(6px); }
-.spine-recorder-dialog { display: flex; width: min(880px, 100%); max-height: min(800px, calc(100dvh - 40px)); flex-direction: column; overflow: hidden; box-sizing: border-box; padding: 22px; border: 1px solid color-mix(in srgb, var(--cyan) 35%, var(--line)); border-top: 3px solid var(--cyan); border-radius: 9px; background: var(--surface); color: var(--text); box-shadow: 0 24px 80px #0008; }
+.spine-recorder-dialog { display: flex; width: min(1000px, 100%); min-width: 0; max-height: min(800px, calc(100dvh - 40px)); flex-direction: column; overflow: hidden; box-sizing: border-box; padding: 22px; border: 1px solid color-mix(in srgb, var(--cyan) 35%, var(--line)); border-top: 3px solid var(--cyan); border-radius: 9px; background: var(--surface); color: var(--text); box-shadow: 0 24px 80px #0008; }
 .spine-recorder-dialog.is-progress { width: min(1120px, 100%); padding: 25px 28px; }
 .spine-recorder-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 17px; }
 .spine-recorder-heading > div > span { color: var(--cyan); font-size: 9px; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
 .spine-recorder-heading h2 { margin: 5px 0 0; font-size: 21px; }
 .spine-recorder-heading > button { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-alt); color: var(--muted); }
 .spine-recorder-heading > button svg { width: 16px; height: 16px; }
-.spine-recorder-content { display: grid; min-height: 0; flex: 1 1 auto; overflow: auto; grid-template-columns: minmax(230px, .8fr) minmax(0, 1.2fr); gap: 22px; align-items: start; }
+.spine-recorder-content { display: grid; min-width: 0; min-height: 0; flex: 1 1 auto; overflow-x: hidden; overflow-y: auto; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 20px; align-items: start; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .spine-recorder-content.is-progress { grid-template-columns: minmax(280px, .78fr) minmax(0, 1.22fr); gap: 28px; align-items: center; }
-.spine-recorder-visual { min-width: 0; }
+.spine-recorder-visual, .spine-recorder-body { min-width: 0; }
 .spine-recorder-preview { position: relative; display: grid; min-width: 0; aspect-ratio: 16 / 9; place-items: center; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: #102432; }
 .spine-recorder-preview[data-aspect-ratio="4:3"] { aspect-ratio: 4 / 3; }
 .spine-recorder-preview[data-aspect-ratio="1:1"] { aspect-ratio: 1; }
 .spine-recorder-preview img { width: 100%; height: 100%; object-fit: contain; }
 .spine-recorder-preview-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; color: #b8ccd5; font-size: 10px; }
 .spine-recorder-preview-label { position: absolute; left: 9px; bottom: 9px; padding: 4px 7px; border: 1px solid #ffffff27; border-radius: 3px; background: #071018bb; color: #f3f8fa; font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
-.spine-recorder-body { min-width: 0; }
 .spine-recorder-settings-section { display: grid; gap: 12px; margin-bottom: 17px; padding: 13px; border: 1px solid var(--line); border-radius: 7px; background: color-mix(in srgb, var(--surface-alt) 46%, transparent); }
-.spine-recorder-settings-section > h3, .spine-recorder-sequence-preview > h3 { margin: 0; color: var(--text); font-size: 11px; font-weight: 850; letter-spacing: .04em; }
+.spine-recorder-visual .spine-recorder-settings-section { margin: 14px 0 0; }
+.spine-recorder-settings-section > h3 { margin: 0; color: var(--text); font-size: 11px; font-weight: 850; letter-spacing: .04em; }
 .spine-recorder-summary { margin-top: 15px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 7px; background: color-mix(in srgb, var(--surface-alt) 60%, transparent); }
 .spine-recorder-summary h3 { margin: 0 0 10px; color: var(--text); font-size: 11px; font-weight: 850; letter-spacing: .04em; }
 .spine-recorder-summary dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; margin: 0; }
@@ -739,14 +739,21 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-full-options input:not([type="checkbox"]) { width: 100%; min-height: 34px; box-sizing: border-box; padding: 6px 8px; }
 .spine-recorder-full-options input[type="checkbox"], .spine-recorder-talk-list input { accent-color: var(--cyan); }
 .spine-recorder-warning { grid-column: 1 / -1; margin: 0; color: var(--amber, #d3a84a); font-size: 10px; line-height: 1.45; }
-.spine-recorder-talk-list { display: grid; max-height: 190px; gap: 5px; overflow: auto; padding-top: 10px; border-top: 1px solid var(--line); }
-.spine-recorder-talk-list > strong { margin-bottom: 2px; color: var(--text); font-size: 10px; }
+.spine-recorder-talk-list { display: grid; min-width: 0; min-inline-size: 0; gap: 5px; margin: 0; padding: 10px 0 0; border: 0; border-top: 1px solid var(--line); }
+.spine-recorder-talk-list legend { padding: 0 0 3px; color: var(--text); font-size: 10px; font-weight: 850; }
 .spine-recorder-talk-list > label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 0; padding: 6px 7px; border-radius: 4px; background: color-mix(in srgb, var(--surface) 78%, transparent); color: var(--text); font-size: 10px; }
 .spine-recorder-talk-list > label.has-warning { grid-template-columns: auto minmax(0, 1fr); }
-.spine-recorder-talk-list > label small { grid-column: 2 / -1; overflow-wrap: anywhere; color: var(--amber, #d3a84a); font-size: 9px; }
-.spine-recorder-talk-list > label:not(.has-warning) small { color: var(--muted); }
-.spine-recorder-sequence-preview { display: grid; gap: 8px; }
-.spine-recorder-sequence-preview ol { display: grid; gap: 4px; max-height: 150px; overflow: auto; margin: 0; padding: 0; list-style: none; }
+.spine-recorder-talk-list > label small { min-width: 0; overflow-wrap: anywhere; color: var(--muted); font-size: 9px; text-align: right; }
+.spine-recorder-talk-list > label.has-warning small { grid-column: 2 / -1; color: var(--amber, #d3a84a); text-align: left; }
+.spine-recorder-sequence-preview { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: color-mix(in srgb, var(--surface-alt) 46%, transparent); }
+.spine-recorder-sequence-preview > summary { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; color: var(--text); cursor: pointer; font-size: 10px; font-weight: 850; list-style: none; }
+.spine-recorder-sequence-preview > summary::-webkit-details-marker { display: none; }
+.spine-recorder-sequence-preview > summary::after { flex: none; color: var(--cyan); content: "＋"; font-size: 13px; }
+.spine-recorder-sequence-preview[open] > summary { border-bottom: 1px solid var(--line); }
+.spine-recorder-sequence-preview[open] > summary::after { content: "−"; }
+.spine-recorder-sequence-preview > summary small { overflow: hidden; margin-left: auto; color: var(--muted); font-size: 9px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.spine-recorder-sequence-preview > ol { display: grid; gap: 4px; margin: 0; padding: 9px; list-style: none; }
+.spine-recorder-sequence-preview > .spine-recorder-note { margin: 0; padding: 0 9px 9px; }
 .spine-recorder-sequence-preview li { display: flex; justify-content: space-between; gap: 8px; padding: 5px 7px; border-radius: 4px; background: var(--surface-alt); color: var(--text); font-size: 10px; }
 .spine-recorder-sequence-preview li small { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
 .spine-recorder-estimate { margin: 0; padding: 9px 11px; border-left: 2px solid var(--cyan); background: var(--surface-alt); color: var(--text); font-size: 11px; font-weight: 800; }
@@ -754,7 +761,8 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-fallback-note { color: var(--amber, #d3a84a); }
 .spine-recorder-error { margin: 12px 0 0; color: var(--pink); font-size: 12px; line-height: 1.5; }
 .spine-recorder-complete-file { margin: 8px 0 0; overflow-wrap: anywhere; color: var(--text); font-size: 13px; font-weight: 800; line-height: 1.5; }
-.spine-recorder-actions { position: sticky; bottom: 0; z-index: 2; display: flex; justify-content: flex-end; gap: 8px; margin: 16px -2px -2px; padding: 12px 2px 2px; background: var(--surface); }
+.spine-recorder-footer { flex: none; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.spine-recorder-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .spine-recorder-actions button { min-height: 36px; padding: 7px 13px; border: 1px solid var(--line); border-radius: 5px; font-size: 11px; font-weight: 800; }
 .spine-recorder-actions button:disabled { cursor: not-allowed; opacity: .45; }
 .spine-recorder-secondary { background: var(--surface-alt); color: var(--text); }
@@ -786,7 +794,7 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-progress > span { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: inherit; background: var(--cyan); transition: width 120ms linear; }
 .spine-recorder-progress.is-indeterminate > span { width: 32%; animation: spine-load-sweep 1.2s ease-in-out infinite; }
 @media (max-width: 760px) {
-  .spine-recorder-content { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .spine-recorder-content, .spine-recorder-content.is-progress { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .spine-recorder-preview { width: min(100%, 440px); justify-self: center; }
 }
 @media (max-width: 520px) {
