@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { ffmpegAudioMixFilterGraph, ffmpegEncoderAttempts } from "./ffmpegVideoRecorder";
+import { createWriteStream } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FfmpegVideoRecorder, ffmpegAudioMixFilterGraph, ffmpegEncoderAttempts } from "./ffmpegVideoRecorder";
 
 describe("FFmpeg video encoder selection", () => {
   test("prefers available H.264 hardware encoders and keeps a software fallback", () => {
@@ -49,5 +53,50 @@ describe("FFmpeg timestamped audio mixing", () => {
 
   test("does not add an audio stream when no audio tracks were scheduled", () => {
     expect(ffmpegAudioMixFilterGraph([], 5)).toBeNull();
+  });
+});
+
+describe("FFmpeg recording finalization", () => {
+  test("coalesces repeated finish requests for the same session", async () => {
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), "ba-spine-video-finish-"));
+    const framesPath = join(temporaryDirectory, "frames.mjpg");
+    const frameWriter = createWriteStream(framesPath, { flags: "wx" });
+    await new Promise<void>((resolve, reject) => {
+      frameWriter.once("open", resolve);
+      frameWriter.once("error", reject);
+    });
+    const recorder = new FfmpegVideoRecorder("unused-ffmpeg.exe", () => null);
+    const session = {
+      id: "repeat-finish",
+      exportDirectory: temporaryDirectory,
+      temporaryDirectory,
+      filename: "recording.mp4",
+      width: 1280,
+      height: 720,
+      frameRate: 30,
+      format: "mp4" as const,
+      framesPath,
+      frameWriter,
+      frameCount: 1,
+      frameBytes: 0,
+      audioTracks: [],
+      audioBytes: 0,
+      phase: "rendering" as const,
+      encodeProgress: 0,
+      socket: null,
+      socketClaimed: false,
+      finishing: false,
+      failure: new Error("Synthetic recording failure."),
+    };
+    (recorder as unknown as { sessions: Map<string, typeof session> }).sessions.set(session.id, session);
+
+    try {
+      const firstFinish = recorder.finish(session.id, 1);
+      const repeatedFinish = recorder.finish(session.id, 1);
+      expect(repeatedFinish).toBe(firstFinish);
+      await expect(firstFinish).rejects.toThrow("Synthetic recording failure.");
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
   });
 });

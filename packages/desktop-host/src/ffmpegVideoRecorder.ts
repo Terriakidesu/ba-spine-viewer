@@ -155,6 +155,7 @@ function safeRecordingDimensions(width: number, height: number): boolean {
 
 export class FfmpegVideoRecorder {
   private readonly sessions = new Map<string, FfmpegVideoSession>();
+  private readonly finishPromises = new Map<string, Promise<{ fileName: string; encoder: string }>>();
   private supportPromise: Promise<FfmpegVideoSupport> | null = null;
 
   constructor(
@@ -302,10 +303,27 @@ export class FfmpegVideoRecorder {
     return session ? { phase: session.phase, progress: session.phase === "encoding" ? session.encodeProgress : session.phase === "saving" ? 1 : 0 } : null;
   }
 
-  async finish(sessionId: string, expectedFrameCount: number): Promise<{ fileName: string; encoder: string }> {
+  finish(sessionId: string, expectedFrameCount: number): Promise<{ fileName: string; encoder: string }> {
+    const existingFinish = this.finishPromises.get(sessionId);
+    if (existingFinish) return existingFinish;
     const session = this.sessions.get(sessionId);
-    if (!session || session.finishing) throw new Error("The Viewer recording session is unavailable.");
+    if (!session) return Promise.reject(new Error("The Viewer recording session is unavailable."));
+    if (session.finishing) return Promise.reject(new Error("The Viewer recording session is already finalizing."));
     session.finishing = true;
+    const finishPromise = this.finishSession(sessionId, session, expectedFrameCount);
+    this.finishPromises.set(sessionId, finishPromise);
+    while (this.finishPromises.size > 64) {
+      const oldestSessionId = this.finishPromises.keys().next().value;
+      if (oldestSessionId === undefined) break;
+      this.finishPromises.delete(oldestSessionId);
+    }
+    void finishPromise.catch(() => {
+      if (this.finishPromises.get(sessionId) === finishPromise) this.finishPromises.delete(sessionId);
+    });
+    return finishPromise;
+  }
+
+  private async finishSession(sessionId: string, session: FfmpegVideoSession, expectedFrameCount: number): Promise<{ fileName: string; encoder: string }> {
     try {
       if (session.socket) {
         session.socket.close(1000, "Recording complete.");
