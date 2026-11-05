@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { saveVideoWithoutOverwrite } from "./videoExport";
+import { saveVideoFileWithoutOverwrite, saveVideoWithoutOverwrite } from "./videoExport";
 
 const temporaryDirectories: string[] = [];
 
@@ -30,5 +30,23 @@ describe("safe video export", () => {
 
     await expect(saveVideoWithoutOverwrite(directory, "capture.avi", new Uint8Array([1]))).rejects.toThrow("Only WebM and MP4");
     expect(await saveVideoWithoutOverwrite(directory, "../unsafe/capture.mp4", new Uint8Array([2]))).toBe("..-unsafe-capture.mp4");
+  });
+
+  test("copies encoded videos without replacing existing files or buffering the source", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ba-spine-video-export-"));
+    temporaryDirectories.push(directory);
+    const sourcePath = join(directory, "encoded.mp4");
+    const existingPath = join(directory, "capture.mp4");
+    await writeFile(sourcePath, Buffer.alloc(1024 * 1024 + 9, 23));
+    await writeFile(existingPath, "keep this recording");
+
+    const savedAs = await saveVideoFileWithoutOverwrite(directory, "capture.mp4", sourcePath);
+
+    expect(savedAs).toBe("capture (1).mp4");
+    expect(await readFile(existingPath, "utf8")).toBe("keep this recording");
+    const copy = await readFile(join(directory, savedAs));
+    expect(copy.byteLength).toBe(1024 * 1024 + 9);
+    expect(copy[0]).toBe(23);
+    expect(copy.at(-1)).toBe(23);
   });
 });

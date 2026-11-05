@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoRecordingDimensions, videoRecordingProgress } from "./videoRecorder";
+import { createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoFrameTargetCount, videoRecordingDimensions, videoRecordingProgress } from "./videoRecorder";
 
 describe("Viewer video recording plans", () => {
   test("counts the opening once and stops at the requested idle-loop boundary", () => {
@@ -28,6 +28,14 @@ describe("Viewer video recording plans", () => {
     expect(videoRecordingDimensions(1080, "16:9")).toEqual({ width: 1920, height: 1080 });
     expect(videoRecordingDimensions(720, "4:3")).toEqual({ width: 960, height: 720 });
     expect(videoRecordingDimensions(1080, "1:1")).toEqual({ width: 1080, height: 1080 });
+  });
+
+  test("keeps FFmpeg frame output on an exact fixed-rate frame count", () => {
+    expect(videoFrameTargetCount(0, 30, 300)).toBe(1);
+    expect(videoFrameTargetCount(0.1, 30, 300)).toBe(4);
+    expect(videoFrameTargetCount(1, 60, 60)).toBe(60);
+    expect(videoFrameTargetCount(Number.NaN, 30, 300)).toBe(0);
+    expect(videoFrameTargetCount(10, 30, 30)).toBe(30);
   });
 
   test("sanitizes generated export names without touching the chosen folder", () => {

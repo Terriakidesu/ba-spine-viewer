@@ -1,4 +1,8 @@
 import type { ElectrobunConfig } from "electrobun";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
+const bundledFfmpeg = existsSync(join(import.meta.dir, "build", "ffmpeg", "ffmpeg.exe"));
 
 export default {
   app: {
@@ -14,6 +18,7 @@ export default {
     },
     copy: {
       "build/viewer": "views/viewer",
+      ...(bundledFfmpeg ? { "build/ffmpeg": "views/ffmpeg" } : {}),
     },
   },
   runtime: {

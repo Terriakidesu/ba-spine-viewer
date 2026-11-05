@@ -4,7 +4,7 @@ import { LanguageSwitch } from "./components/LanguageSwitch";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { setLanguage, t, useLanguage, type LangKey } from "./i18n";
 import { normalizeVoiceVolume, readViewerVoiceVolume, restoreViewerHandoffState, writeViewerVoiceVolume, type ViewerHandoffRestoreState, type ViewerReloadSnapshot } from "./handoffState";
-import { acknowledgeDesktopHandoff, chooseDesktopSource, chooseDesktopSourceAt, chooseDesktopVideoDirectory, getDesktopFullscreen, isDesktopHost, loadDesktopSource, readDesktopDraftSnapshot, receiveDesktopHandoffs, saveDesktopVideo, sendDesktopHandoff, setDesktopFullscreen, type DesktopAssetSource } from "./desktopSource";
+import { acknowledgeDesktopHandoff, cancelDesktopFfmpegVideoRecording, chooseDesktopSource, chooseDesktopSourceAt, chooseDesktopVideoDirectory, finishDesktopFfmpegVideoRecording, getDesktopFfmpegVideoSupport, getDesktopFullscreen, isDesktopHost, loadDesktopSource, openDesktopFfmpegVideoStream, readDesktopDraftSnapshot, receiveDesktopHandoffs, saveDesktopVideo, sendDesktopHandoff, setDesktopFullscreen, startDesktopFfmpegVideoRecording, type DesktopAssetSource, type DesktopFfmpegVideoStream } from "./desktopSource";
 import { libraryIdentityForPath, type SpineDraftSnapshot, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
 import {
   INTRO_ANIMATION,
@@ -53,7 +53,7 @@ import {
 import { SpineCompositionViewport, type SpineCompositionViewportHandle } from "@ba-spine/spine-runtime/ui/SpineCompositionViewport";
 import { timelineForSequence, timelinePlaybackDuration, timelineSequenceIds, timelineTalkInProgress, timelineTalkSequenceIds, type SpineTimeline } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import { readViewerAspectRatio, writeViewerAspectRatio, type ViewerAspectRatio } from "./viewerPresentation";
-import { createCanvasRecordingCapture, createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoRecordingDimensions, videoRecordingProgress, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
+import { createAudioRecordingCapture, createCanvasFrameCapture, createCanvasRecordingCapture, createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoFrameTargetCount, videoRecordingDimensions, videoRecordingProgress, type AudioRecordingCapture, type CanvasFrameCapture, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
 
 type ViewerDraftPreview = Omit<SpineDraftSnapshot, "project"> & { project: SpineInteractionProject };
 
@@ -174,12 +174,23 @@ interface ViewerPlaybackSnapshot {
 
 interface VideoRecordingRun {
   settings: VideoRecordingSettings;
+  useFfmpeg: boolean;
   destination: VideoDestination;
   snapshot: ViewerPlaybackSnapshot;
   phase: "preparing" | "opening" | "idle" | "stopping";
   plan: VideoRecordingPlan | null;
   recorder: MediaRecorder | null;
   capture: CanvasRecordingCapture | null;
+  audioCapture: AudioRecordingCapture | null;
+  desktopSessionId: string | null;
+  desktopStream: DesktopFfmpegVideoStream | null;
+  desktopFrameCapture: CanvasFrameCapture | null;
+  desktopFrameRequest: number | null;
+  desktopFrameTask: Promise<void> | null;
+  desktopFrameStart: number | null;
+  desktopFrameCount: number;
+  desktopTotalFrames: number;
+  desktopLastFrame: Blob | null;
   chunks: Blob[];
   saveWhenStopped: boolean;
   stopRequested: boolean;
@@ -510,7 +521,8 @@ export function Spine() {
   const [voicePlaying, setVoicePlaying] = useState(false);
   const [talkAutoplay, setTalkAutoplay] = useState(false);
   const [idleMode, setIdleMode] = useState<"none" | "persistent" | "bridge">("none");
-  const [videoRecorderFormats] = useState<SupportedVideoFormat[]>(() => detectSupportedVideoFormats());
+  const [videoRecorderFormats, setVideoRecorderFormats] = useState<SupportedVideoFormat[]>(() => detectSupportedVideoFormats());
+  const [desktopFfmpegFormats, setDesktopFfmpegFormats] = useState<VideoRecordingFormat[]>([]);
   const [videoRecorderSettings, setVideoRecorderSettings] = useState<VideoRecordingSettings>(() => ({
     mode: "opening-idle",
     idleLoops: 3,
@@ -564,6 +576,23 @@ export function Spine() {
     if (videoRecorderFormats.length === 0 || videoRecorderFormats.some(({ format }) => format === videoRecorderSettings.format)) return;
     setVideoRecorderSettings((current) => ({ ...current, format: videoRecorderFormats[0]!.format }));
   }, [videoRecorderFormats, videoRecorderSettings.format]);
+
+  useEffect(() => {
+    let live = true;
+    void getDesktopFfmpegVideoSupport().then((support) => {
+      if (!live || !support) return;
+      setDesktopFfmpegFormats(support.available ? support.formats : []);
+      if (!support.available) return;
+      setVideoRecorderFormats((current) => {
+        const supported = new Map(current.map((format) => [format.format, format]));
+        for (const format of support.formats) {
+          if (!supported.has(format)) supported.set(format, { format, mimeType: format === "webm" ? "video/webm" : "video/mp4" });
+        }
+        return (["webm", "mp4"] as const).flatMap((format) => supported.has(format) ? [supported.get(format)!] : []);
+      });
+    }).catch(() => undefined);
+    return () => { live = false; };
+  }, []);
 
   const sourceRootPath = source && "rootPath" in source && typeof source.rootPath === "string" ? source.rootPath : null;
   const navigationRootKey = sourceRootPath ?? (source ? "ephemeral-local-preview" : null);
@@ -1213,9 +1242,14 @@ export function Spine() {
     audio.currentTime = 0;
     voiceAudioRef.current = audio;
     const recording = videoRecordingRunRef.current;
-    if (recording?.capture && recording.settings.includeAudio) {
+    const recordingAudioCapture = recording?.audioCapture ?? recording?.capture;
+    if (recording?.settings.includeAudio && !recordingAudioCapture) {
+      stopVideoRecording(false, "This WebView cannot mix the selected audio sources.");
+      return;
+    }
+    if (recordingAudioCapture && recording?.settings.includeAudio) {
       try {
-        recording.capture.addAudioElement(audio);
+        recordingAudioCapture.addAudioElement(audio);
       } catch (error) {
         stopVideoRecording(false, errorMessage(error));
         return;
@@ -1930,8 +1964,11 @@ export function Spine() {
   const restoreVideoRecording = (run: VideoRecordingRun, failure?: string) => {
     if (videoRecordingRunRef.current !== run) return;
     stopVoice();
+    if (run.desktopFrameRequest !== null) cancelAnimationFrame(run.desktopFrameRequest);
+    run.desktopFrameRequest = null;
     run.capture?.stopDrawing();
     run.capture?.stopTracks();
+    run.audioCapture?.stopTracks();
     pendingVideoRestoreRef.current = run.snapshot;
     videoRecordingRunRef.current = null;
     setPlaying(false);
@@ -1954,17 +1991,80 @@ export function Spine() {
     run.finalized = true;
     let failure = run.failureMessage;
     try {
-      if (failure) throw new Error(failure);
-      if (run.saveWhenStopped) {
-        const mimeType = run.recorder?.mimeType || (run.settings.format === "webm" ? "video/webm" : "video/mp4");
-        const blob = new Blob(run.chunks, { type: mimeType });
-        if (blob.size === 0) throw new Error("The WebView exported an empty video.");
-        await run.destination.save(blob);
+      await run.desktopFrameTask?.catch(() => undefined);
+      if (run.useFfmpeg) {
+        await run.desktopStream?.close();
+        run.desktopStream = null;
+        let audio: Blob | null = null;
+        if (run.audioCapture) {
+          try { audio = await run.audioCapture.stop(); }
+          catch (error) { if (run.saveWhenStopped) throw error; }
+          finally { run.audioCapture.stopTracks(); }
+        }
+        if (failure || run.failureMessage) throw new Error(failure ?? run.failureMessage);
+        if (run.saveWhenStopped) {
+          if (!run.desktopSessionId) throw new Error("The Viewer FFmpeg session was not started.");
+          await finishDesktopFfmpegVideoRecording(run.desktopSessionId, run.desktopFrameCount, audio);
+          run.desktopSessionId = null;
+        } else if (run.desktopSessionId) {
+          await cancelDesktopFfmpegVideoRecording(run.desktopSessionId);
+          run.desktopSessionId = null;
+        }
+      } else {
+        if (failure) throw new Error(failure);
+        if (run.saveWhenStopped) {
+          const mimeType = run.recorder?.mimeType || (run.settings.format === "webm" ? "video/webm" : "video/mp4");
+          const blob = new Blob(run.chunks, { type: mimeType });
+          if (blob.size === 0) throw new Error("The WebView exported an empty video.");
+          await run.destination.save(blob);
+        }
       }
     } catch (error) {
       failure = errorMessage(error);
+    } finally {
+      if (run.desktopSessionId) {
+        await cancelDesktopFfmpegVideoRecording(run.desktopSessionId).catch(() => undefined);
+        run.desktopSessionId = null;
+      }
     }
     restoreVideoRecording(run, failure);
+  };
+
+  const startDesktopFfmpegFrameLoop = (run: VideoRecordingRun) => {
+    const drawNextFrame = (now: number) => {
+      run.desktopFrameRequest = null;
+      if (run.stopRequested) return;
+      if (run.desktopFrameCount >= run.desktopTotalFrames) {
+        stopVideoRecording(true);
+        return;
+      }
+      const elapsed = (now - (run.desktopFrameStart ?? now)) / 1000;
+      const targetCount = videoFrameTargetCount(elapsed, run.settings.frameRate, run.desktopTotalFrames);
+      if (targetCount <= run.desktopFrameCount) {
+        run.desktopFrameRequest = requestAnimationFrame(drawNextFrame);
+        return;
+      }
+      const task = (async () => {
+        while (!run.stopRequested && run.desktopFrameCount < targetCount) {
+          const nextCount = run.desktopFrameCount + 1;
+          const isNewestDueFrame = nextCount === targetCount;
+          const frame = isNewestDueFrame || !run.desktopLastFrame
+            ? await run.desktopFrameCapture!.captureFrame()
+            : run.desktopLastFrame;
+          if (run.stopRequested) return;
+          run.desktopStream!.sendFrame(frame);
+          run.desktopLastFrame = frame;
+          run.desktopFrameCount = nextCount;
+        }
+      })();
+      run.desktopFrameTask = task;
+      void task.then(() => {
+        if (run.stopRequested) return;
+        if (run.desktopFrameCount >= run.desktopTotalFrames) stopVideoRecording(true);
+        else run.desktopFrameRequest = requestAnimationFrame(drawNextFrame);
+      }).catch((error: unknown) => stopVideoRecording(false, errorMessage(error)));
+    };
+    run.desktopFrameRequest = requestAnimationFrame(drawNextFrame);
   };
 
   const stopVideoRecording = (save: boolean, failure?: string) => {
@@ -1979,6 +2079,8 @@ export function Spine() {
       ? { ...current, phase: failure ? "saving" : save ? "saving" : "canceling" }
       : current);
     run.capture?.stopDrawing();
+    if (run.desktopFrameRequest !== null) cancelAnimationFrame(run.desktopFrameRequest);
+    run.desktopFrameRequest = null;
     if (!run.recorder || run.recorder.state === "inactive") {
       void finalizeVideoRecording(run);
       return;
@@ -1993,9 +2095,11 @@ export function Spine() {
 
   const handleViewerProgress = (next: SpineProgress, sourceKind: "composition" | "runtime") => {
     progressRef.current = next;
-    setProgress(next);
     const run = videoRecordingRunRef.current;
-    if (!run || run.phase === "preparing" || run.phase === "stopping" || run.source !== sourceKind || !run.plan) return;
+    if (!run || run.phase === "preparing" || run.phase === "stopping" || run.source !== sourceKind || !run.plan) {
+      setProgress(next);
+      return;
+    }
 
     const now = performance.now();
     let elapsed: number;
@@ -2019,11 +2123,16 @@ export function Spine() {
     }
 
     const recordingProgress = videoRecordingProgress(run.plan, elapsed);
+    // Composition time is an input back into its synchronized renderers, so
+    // keep that clock current. Runtime playback is internally clocked and only
+    // needs occasional React updates for the inert recording dialog.
+    if (sourceKind === "composition") setProgress(next);
     if (now - run.lastUiUpdate >= 180 || recordingProgress.finished) {
       run.lastUiUpdate = now;
+      if (sourceKind === "runtime") setProgress(next);
       setVideoRecorderDialog((current) => current ? { ...current, elapsed: recordingProgress.elapsed } : current);
     }
-    if (recordingProgress.finished) stopVideoRecording(true);
+    if (recordingProgress.finished && !run.useFfmpeg) stopVideoRecording(true);
   };
 
   const openVideoRecorder = () => {
@@ -2076,12 +2185,23 @@ export function Spine() {
     };
     const run: VideoRecordingRun = {
       settings,
+      useFfmpeg: isDesktopHost() && desktopFfmpegFormats.includes(settings.format),
       destination,
       snapshot,
       phase: "preparing",
       plan: null,
       recorder: null,
       capture: null,
+      audioCapture: null,
+      desktopSessionId: null,
+      desktopStream: null,
+      desktopFrameCapture: null,
+      desktopFrameRequest: null,
+      desktopFrameTask: null,
+      desktopFrameStart: null,
+      desktopFrameCount: 0,
+      desktopTotalFrames: 0,
+      desktopLastFrame: null,
       chunks: [],
       saveWhenStopped: false,
       stopRequested: false,
@@ -2182,38 +2302,101 @@ export function Spine() {
         ...Array.from(stageFrame?.querySelectorAll<HTMLMediaElement>("audio") ?? []),
         ...(voiceAudioRef.current ? [voiceAudioRef.current] : []),
       ];
-      const capture = await createCanvasRecordingCapture({
-        stage,
-        width: dimensions.width,
-        height: dimensions.height,
-        frameRate: run.settings.frameRate,
-        includeAudio: run.settings.includeAudio,
-        includeSubtitles: run.settings.includeSubtitles,
-        audioElements,
-        mimeType: selectedFormat.mimeType,
-      });
-      if (videoRecordingRunRef.current !== run || run.stopRequested) {
-        capture.stopDrawing();
-        capture.stopTracks();
-        return;
+      if (run.useFfmpeg) {
+        const sessionId = await startDesktopFfmpegVideoRecording({
+          filename: run.destination.filename,
+          width: dimensions.width,
+          height: dimensions.height,
+          frameRate: run.settings.frameRate,
+          format: run.settings.format,
+        });
+        if (videoRecordingRunRef.current !== run || run.stopRequested) {
+          await cancelDesktopFfmpegVideoRecording(sessionId);
+          return;
+        }
+        run.desktopSessionId = sessionId;
+        const stream = await openDesktopFfmpegVideoStream(sessionId);
+        if (videoRecordingRunRef.current !== run || run.stopRequested) {
+          await stream.close();
+          await cancelDesktopFfmpegVideoRecording(sessionId);
+          run.desktopSessionId = null;
+          return;
+        }
+        run.desktopStream = stream;
+        run.desktopFrameCapture = createCanvasFrameCapture({
+          stage,
+          width: dimensions.width,
+          height: dimensions.height,
+          includeSubtitles: run.settings.includeSubtitles,
+        });
+        const audioCapture = await createAudioRecordingCapture({ includeAudio: run.settings.includeAudio, audioElements });
+        if (videoRecordingRunRef.current !== run || run.stopRequested) {
+          audioCapture?.stopTracks();
+          await stream.close();
+          await cancelDesktopFfmpegVideoRecording(sessionId);
+          run.desktopStream = null;
+          run.desktopSessionId = null;
+          return;
+        }
+        run.audioCapture = audioCapture;
+        if (audioCapture) {
+          audioCapture.recorder.onerror = (event) => {
+            const recorderError = (event as Event & { error?: DOMException }).error;
+            stopVideoRecording(false, recorderError?.message || t("spine.recorder.encodeError"));
+          };
+        }
+        const firstFrame = await run.desktopFrameCapture.captureFrame();
+        if (videoRecordingRunRef.current !== run || run.stopRequested) {
+          audioCapture?.stopTracks();
+          await stream.close();
+          await cancelDesktopFfmpegVideoRecording(sessionId);
+          run.desktopStream = null;
+          run.desktopSessionId = null;
+          return;
+        }
+        stream.sendFrame(firstFrame);
+        run.desktopLastFrame = firstFrame;
+        run.desktopFrameCount = 1;
+      } else {
+        const capture = await createCanvasRecordingCapture({
+          stage,
+          width: dimensions.width,
+          height: dimensions.height,
+          frameRate: run.settings.frameRate,
+          includeAudio: run.settings.includeAudio,
+          includeSubtitles: run.settings.includeSubtitles,
+          audioElements,
+          mimeType: selectedFormat.mimeType,
+        });
+        if (videoRecordingRunRef.current !== run || run.stopRequested) {
+          capture.stopDrawing();
+          capture.stopTracks();
+          return;
+        }
+        run.capture = capture;
+        run.recorder = capture.recorder;
+        capture.recorder.ondataavailable = (event) => { if (event.data.size > 0) run.chunks.push(event.data); };
+        capture.recorder.onerror = (event) => {
+          const recorderError = (event as Event & { error?: DOMException }).error;
+          stopVideoRecording(false, recorderError?.message || t("spine.recorder.encodeError"));
+        };
+        capture.recorder.onstop = () => { void finalizeVideoRecording(run); };
       }
-      run.capture = capture;
-      run.recorder = capture.recorder;
-      capture.recorder.ondataavailable = (event) => { if (event.data.size > 0) run.chunks.push(event.data); };
-      capture.recorder.onerror = (event) => {
-        const recorderError = (event as Event & { error?: DOMException }).error;
-        stopVideoRecording(false, recorderError?.message || t("spine.recorder.encodeError"));
-      };
-      capture.recorder.onstop = () => { void finalizeVideoRecording(run); };
       run.phase = run.settings.mode === "opening-idle" && run.plan.openingDuration > 0 ? "opening" : "idle";
-      capture.recorder.start(1000);
+      run.recorder?.start(1000);
       setVideoRecorderDialog({ phase: "recording", settings: run.settings, elapsed: 0 });
       await nextFrame();
       await nextFrame();
       if (videoRecordingRunRef.current === run && !run.stopRequested) {
+        run.audioCapture?.start();
         run.startedAt = performance.now();
         if (run.phase === "idle") run.idleStartedAt = run.startedAt;
+        if (run.useFfmpeg) {
+          run.desktopFrameStart = run.startedAt;
+          run.desktopTotalFrames = Math.max(1, Math.ceil(run.plan!.totalDuration * run.settings.frameRate));
+        }
         setPlaying(true);
+        if (run.useFfmpeg) startDesktopFfmpegFrameLoop(run);
       }
     })().catch((error: unknown) => stopVideoRecording(false, errorMessage(error)));
   }, [animation, backgroundAudioLoading, compositionActive, compositionLoadProgress, compositionSequenceId, isLoading, meta, outputAspectRatio, selectedDirectoryName, videoRecorderFormats, videoRecorderDialog?.phase]);

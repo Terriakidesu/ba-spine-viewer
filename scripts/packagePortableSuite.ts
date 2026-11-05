@@ -102,12 +102,16 @@ try {
     "Manual update: close both applications, extract the new ZIP elsewhere, then replace Editor.exe, Viewer.exe, suite.json, README.txt, licenses\\, and apps\\ as a coordinated set. Do not replace or delete the existing data\\ folder.",
     "The portable ZIP contains no authored asset library. Copy your own library into data\\ after extraction.",
     "",
+    "Viewer video recording includes FFmpeg 9.0.1 under GPLv3. See licenses\\FFmpeg-LICENSE.txt and licenses\\FFmpeg-NOTICE.txt.",
+    "",
     "On Windows x64, both apps enforce a native 760 x 560 logical-pixel resize minimum, scaled for the display DPI and reduced to the monitor work area on smaller screens.",
     "",
   ].join("\r\n"), "utf8");
 
   const electrobunLicense = join(repositoryRoot, "apps", "editor", "desktop", "node_modules", "electrobun", "LICENSE");
   await copyFile(electrobunLicense, join(stage, "licenses", "Electrobun-LICENSE.txt"));
+  await copyFile(join(repositoryRoot, "apps", "viewer", "desktop", "resources", "FFmpeg-LICENSE.txt"), join(stage, "licenses", "FFmpeg-LICENSE.txt"));
+  await copyFile(join(repositoryRoot, "apps", "viewer", "desktop", "resources", "FFmpeg-NOTICE.txt"), join(stage, "licenses", "FFmpeg-NOTICE.txt"));
 
   const launcherDirectory = join(repositoryRoot, "scripts", "portable-launcher");
   const goEnvironment = { GOOS: "windows", GOARCH: "amd64", CGO_ENABLED: "0" };

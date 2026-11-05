@@ -193,13 +193,23 @@ function drawSubtitle(context: CanvasRenderingContext2D, element: HTMLElement, s
   context.restore();
 }
 
-/** Draw all visible Spine canvases/color layers and optional subtitle DOM into one output canvas. */
-export function drawSpineStageFrame(
+interface StageFramePlan {
+  subtitleRoot: Element;
+}
+
+function createStageFramePlan(stageElement: HTMLElement): StageFramePlan {
+  return {
+    subtitleRoot: stageElement.closest(".spine-stage-frame") ?? stageElement.parentElement ?? stageElement,
+  };
+}
+
+function drawStageFrame(
   context: CanvasRenderingContext2D,
   stageElement: HTMLElement,
   width: number,
   height: number,
   includeSubtitles: boolean,
+  plan: StageFramePlan,
 ): boolean {
   const stage = stageElement.getBoundingClientRect();
   if (stage.width <= 0 || stage.height <= 0) return false;
@@ -209,7 +219,6 @@ export function drawSpineStageFrame(
   const offsetX = (width - outputWidth) / 2;
   const offsetY = (height - outputHeight) / 2;
   const stageStyle = getComputedStyle(stageElement);
-
   context.save();
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
@@ -252,12 +261,27 @@ export function drawSpineStageFrame(
   context.restore();
 
   if (includeSubtitles) {
-    const subtitleRoot = stageElement.closest(".spine-stage-frame") ?? stageElement.parentElement ?? stageElement;
-    for (const element of subtitleRoot.querySelectorAll<HTMLElement>(".spine-dialogue")) {
+    for (const element of plan.subtitleRoot.querySelectorAll<HTMLElement>(".spine-dialogue")) {
       drawSubtitle(context, element, stage, scale, offsetX, offsetY);
     }
   }
   return true;
+}
+
+/** Draw all visible Spine canvases/color layers and optional subtitle DOM into one output canvas. */
+export function drawSpineStageFrame(
+  context: CanvasRenderingContext2D,
+  stageElement: HTMLElement,
+  width: number,
+  height: number,
+  includeSubtitles: boolean,
+): boolean {
+  return drawStageFrame(context, stageElement, width, height, includeSubtitles, createStageFramePlan(stageElement));
+}
+
+function createStageFrameRenderer(stageElement: HTMLElement, width: number, height: number, includeSubtitles: boolean) {
+  const plan = createStageFramePlan(stageElement);
+  return (context: CanvasRenderingContext2D) => drawStageFrame(context, stageElement, width, height, includeSubtitles, plan);
 }
 
 export interface CanvasRecordingCapture {
@@ -269,6 +293,20 @@ export interface CanvasRecordingCapture {
   stopTracks: () => void;
 }
 
+export interface CanvasFrameCapture {
+  canvas: HTMLCanvasElement;
+  captureFrame: () => Promise<Blob>;
+}
+
+export interface AudioRecordingCapture {
+  recorder: MediaRecorder;
+  mimeType: string;
+  addAudioElement: (audio: HTMLMediaElement) => void;
+  start: () => void;
+  stop: () => Promise<Blob>;
+  stopTracks: () => void;
+}
+
 function getSharedAudioContext(): AudioContext | null {
   if (sharedAudioContext && sharedAudioContext.state !== "closed") return sharedAudioContext;
   const AudioContextConstructor = window.AudioContext
@@ -276,6 +314,122 @@ function getSharedAudioContext(): AudioContext | null {
   if (!AudioContextConstructor) return null;
   sharedAudioContext = new AudioContextConstructor();
   return sharedAudioContext;
+}
+
+/** The number of fixed-rate output frames due at a given elapsed time. */
+export function videoFrameTargetCount(elapsedSeconds: number, frameRate: number, totalFrames: number): number {
+  if (!Number.isFinite(elapsedSeconds) || !Number.isFinite(frameRate) || frameRate <= 0 || !Number.isFinite(totalFrames) || totalFrames <= 0) return 0;
+  return Math.min(Math.floor(totalFrames), Math.max(0, Math.floor(Math.max(0, elapsedSeconds) * frameRate) + 1));
+}
+
+/** Capture one composited JPEG frame at a time for the native FFmpeg pipeline. */
+export function createCanvasFrameCapture(options: {
+  stage: HTMLElement;
+  width: number;
+  height: number;
+  includeSubtitles: boolean;
+}): CanvasFrameCapture {
+  const canvas = document.createElement("canvas");
+  canvas.width = options.width;
+  canvas.height = options.height;
+  const context = canvas.getContext("2d", { alpha: false, desynchronized: true });
+  if (!context) throw new Error("The Viewer could not create a video capture canvas.");
+  const draw = createStageFrameRenderer(options.stage, options.width, options.height, options.includeSubtitles);
+  if (!draw(context)) throw new Error("The Viewer stage is not ready to record.");
+  return {
+    canvas,
+    captureFrame: () => new Promise<Blob>((resolve, reject) => {
+      if (!draw(context)) {
+        reject(new Error("The Viewer stage is no longer ready to record."));
+        return;
+      }
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("The Viewer could not encode a video frame.")), "image/jpeg", 0.86);
+    }),
+  };
+}
+
+/** Record the selected WebView audio mix separately so FFmpeg can mux it after video capture. */
+export async function createAudioRecordingCapture(options: {
+  includeAudio: boolean;
+  audioElements: readonly HTMLMediaElement[];
+}): Promise<AudioRecordingCapture | null> {
+  if (!options.includeAudio) return null;
+  if (typeof MediaRecorder === "undefined") throw new Error("Audio recording is not supported in this WebView.");
+  const audioContext = getSharedAudioContext();
+  if (!audioContext) {
+    if (options.audioElements.some((audio) => Boolean(audio.currentSrc || audio.src))) throw new Error("This WebView cannot mix the selected audio sources.");
+    return null;
+  }
+
+  const destination = audioContext.createMediaStreamDestination();
+  const attachedAudioSources = new Set<SharedMediaAudioSource>();
+  const addAudioElement = (audio: HTMLMediaElement) => {
+    const existingSource = sharedMediaAudioSources.get(audio);
+    if (existingSource && attachedAudioSources.has(existingSource)) return;
+    if (!audio.currentSrc && !audio.src) return;
+    let shared = existingSource;
+    if (!shared) {
+      const source = audioContext.createMediaElementSource(audio);
+      const gain = audioContext.createGain();
+      source.connect(gain);
+      gain.connect(audioContext.destination);
+      shared = { source, gain };
+      sharedMediaAudioSources.set(audio, shared);
+    }
+    shared.gain.gain.value = audio.muted ? 0 : audio.volume;
+    shared.gain.connect(destination);
+    attachedAudioSources.add(shared);
+  };
+
+  try {
+    options.audioElements.forEach(addAudioElement);
+    await audioContext.resume();
+  } catch (error) {
+    for (const source of attachedAudioSources) source.gain.disconnect(destination);
+    throw error;
+  }
+
+  const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4;codecs=mp4a.40.2", "audio/mp4"]
+    .find((candidate) => {
+      try { return MediaRecorder.isTypeSupported(candidate); }
+      catch { return false; }
+    });
+  let recorder: MediaRecorder;
+  try {
+    recorder = new MediaRecorder(destination.stream, mimeType ? { mimeType } : undefined);
+  } catch (error) {
+    destination.stream.getTracks().forEach((track) => track.stop());
+    for (const source of attachedAudioSources) source.gain.disconnect(destination);
+    throw error;
+  }
+  const chunks: Blob[] = [];
+  let tracksStopped = false;
+  recorder.ondataavailable = (event) => { if (event.data.size > 0) chunks.push(event.data); };
+  const actualMimeType = recorder.mimeType || mimeType || "audio/webm";
+  return {
+    recorder,
+    mimeType: actualMimeType,
+    addAudioElement,
+    start: () => {
+      if (recorder.state === "inactive") recorder.start(1000);
+    },
+    stop: () => new Promise<Blob>((resolve, reject) => {
+      if (recorder.state === "inactive") {
+        resolve(new Blob(chunks, { type: actualMimeType }));
+        return;
+      }
+      recorder.addEventListener("stop", () => resolve(new Blob(chunks, { type: actualMimeType })), { once: true });
+      recorder.addEventListener("error", (event) => reject((event as Event & { error?: DOMException }).error ?? new Error("The Viewer could not record audio.")), { once: true });
+      try { recorder.stop(); }
+      catch (error) { reject(error); }
+    }),
+    stopTracks: () => {
+      if (tracksStopped) return;
+      tracksStopped = true;
+      destination.stream.getTracks().forEach((track) => track.stop());
+      for (const source of attachedAudioSources) source.gain.disconnect(destination);
+    },
+  };
 }
 
 /** Create a real-time canvas recording and attach any capturable audio elements. */
@@ -295,8 +449,8 @@ export async function createCanvasRecordingCapture(options: {
   canvas.height = options.height;
   const context = canvas.getContext("2d", { alpha: false });
   if (!context) throw new Error("The Viewer could not create a video capture canvas.");
-  const draw = () => drawSpineStageFrame(context, options.stage, options.width, options.height, options.includeSubtitles);
-  if (!draw()) throw new Error("The Viewer stage is not ready to record.");
+  const draw = createStageFrameRenderer(options.stage, options.width, options.height, options.includeSubtitles);
+  if (!draw(context)) throw new Error("The Viewer stage is not ready to record.");
   const videoStream = canvas.captureStream(options.frameRate);
   const stream = new MediaStream(videoStream.getVideoTracks());
   const audioContext = options.includeAudio ? getSharedAudioContext() : null;
@@ -352,7 +506,7 @@ export async function createCanvasRecordingCapture(options: {
   }
   let frame = 0;
   const drawLoop = () => {
-    draw();
+    draw(context);
     frame = requestAnimationFrame(drawLoop);
   };
   frame = requestAnimationFrame(drawLoop);

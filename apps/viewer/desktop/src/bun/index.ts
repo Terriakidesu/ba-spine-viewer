@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { watch, type FSWatcher } from "node:fs";
+import { existsSync, watch, type FSWatcher } from "node:fs";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { ApplicationMenu, BrowserWindow, Screen, Utils } from "electrobun/main";
 import { normalizeLibraryRelativePath, resolveLibraryPath } from "@ba-spine/desktop-host/pathPolicy";
@@ -19,6 +19,7 @@ import { restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-
 import { discoverPortableSuite, firstRecognizableLibraryPath } from "@ba-spine/desktop-host/portableSuite";
 import { installWindowsNativeWindowMinimum } from "@ba-spine/desktop-host/windowsWindowMinimum";
 import { saveVideoWithoutOverwrite } from "@ba-spine/desktop-host/videoExport";
+import { FfmpegVideoRecorder } from "@ba-spine/desktop-host/ffmpegVideoRecorder";
 
 const viewerLibraryPreferencePath = join(Utils.paths.appData, "BA Spine Suite", "Viewer", "library.json");
 const portableSuite = process.env.BA_SPINE_SUITE_ROOT
@@ -50,6 +51,14 @@ let libraryChangeDebouncer: ReturnType<typeof createDebouncedAction> | null = nu
 const pendingLibraryPaths = new Set<string | null>();
 const MAX_VIEWER_VIDEO_BYTES = 1_073_741_824;
 let videoSaveDirectory: string | null = null;
+const ffmpegExecutableCandidates = [
+  resolve(import.meta.dir, "../views/ffmpeg/ffmpeg.exe"),
+  resolve(import.meta.dir, "../../build/ffmpeg/ffmpeg.exe"),
+];
+const ffmpegVideoRecorder = new FfmpegVideoRecorder(
+  ffmpegExecutableCandidates.find((candidate) => existsSync(candidate)) ?? ffmpegExecutableCandidates[0]!,
+  () => videoSaveDirectory,
+);
 
 function launchPlanFor(app: "viewer" | "editor") {
   return defaultCompanionLaunchPlan(app, {
@@ -364,6 +373,44 @@ async function api(request: Request, url: URL): Promise<Response> {
       videoSaveDirectory = null;
       return json({ fileName: savedAs });
     }
+    if (url.pathname === "/__spine/video/ffmpeg/support" && request.method === "GET") {
+      return json(await ffmpegVideoRecorder.support());
+    }
+    if (url.pathname === "/__spine/video/ffmpeg/start" && request.method === "POST") {
+      if (!videoSaveDirectory) return errorResponse("Choose a video export folder before recording.");
+      const body = await request.json() as Record<string, unknown>;
+      if (typeof body.filename !== "string" || typeof body.width !== "number" || typeof body.height !== "number"
+        || typeof body.frameRate !== "number" || (body.format !== "webm" && body.format !== "mp4")) {
+        return errorResponse("The FFmpeg recording settings are invalid.");
+      }
+      const sessionId = await ffmpegVideoRecorder.start({
+        filename: body.filename,
+        width: body.width,
+        height: body.height,
+        frameRate: body.frameRate as 30 | 60,
+        format: body.format,
+      });
+      return json({ sessionId });
+    }
+    if (url.pathname === "/__spine/video/ffmpeg/finish" && request.method === "POST") {
+      const sessionId = request.headers.get("x-ba-spine-video-session") ?? "";
+      const frameCount = Number(request.headers.get("x-ba-spine-video-frames"));
+      const audioType = request.headers.get("x-ba-spine-audio-type") ?? "";
+      const contentType = request.headers.get("content-type")?.split(";")[0]?.trim().toLocaleLowerCase() ?? "";
+      if (contentType && contentType !== "application/octet-stream" && !contentType.startsWith("audio/")) {
+        return errorResponse("The Viewer recording audio is invalid.");
+      }
+      const audioBytes = contentType ? await readBoundedBytes(request, 256 * 1024 * 1024) : null;
+      const result = await ffmpegVideoRecorder.finish(sessionId, frameCount, audioBytes, audioType || contentType);
+      videoSaveDirectory = null;
+      return json(result);
+    }
+    if (url.pathname === "/__spine/video/ffmpeg/cancel" && request.method === "POST") {
+      const body = await request.json() as { sessionId?: unknown };
+      if (typeof body.sessionId !== "string" || !body.sessionId) return errorResponse("The FFmpeg recording session is invalid.");
+      await ffmpegVideoRecorder.cancel(body.sessionId);
+      return json({ canceled: true });
+    }
     if (url.pathname === "/__spine/companion/pending" && request.method === "GET") return json({ messages: companionInbox.pending() });
     if (url.pathname === "/__spine/companion/ack" && request.method === "POST") {
       const body = await request.json() as { requestIds?: unknown };
@@ -488,9 +535,28 @@ const apiToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
-  async fetch(request) {
+  websocket: {
+    data: {} as { sessionId: string },
+    maxPayloadLength: 8 * 1024 * 1024,
+    idleTimeout: 120,
+    perMessageDeflate: false,
+    open(socket) { ffmpegVideoRecorder.attachSocket(socket.data.sessionId, socket); },
+    message(socket, message) { ffmpegVideoRecorder.writeFrame(socket.data.sessionId, socket, message); },
+    close(socket) { ffmpegVideoRecorder.socketClosed(socket.data.sessionId, socket); },
+  },
+  async fetch(request, host) {
     const url = new URL(request.url);
     if (url.pathname === COMPANION_HANDOFF_PATH || url.pathname === COMPANION_HEALTH_PATH || url.pathname === COMPANION_ACTIVATE_PATH) return companionInbox.handle(request);
+    if (url.pathname === "/__spine/video/ffmpeg/stream") {
+      if (url.searchParams.get("token") !== apiToken) return errorResponse("Unauthorized video stream.", 403);
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      if (!ffmpegVideoRecorder.claimSocket(sessionId)) return errorResponse("The FFmpeg recording session is unavailable.", 404);
+      if (!host.upgrade(request, { data: { sessionId } })) {
+        ffmpegVideoRecorder.releaseSocketClaim(sessionId);
+        return errorResponse("Could not open the Viewer video stream.", 400);
+      }
+      return;
+    }
     if (url.pathname.startsWith("/__spine/")) {
       if (request.headers.get("x-ba-spine-token") !== apiToken) return errorResponse("Unauthorized viewer request.", 403);
       return api(request, url);

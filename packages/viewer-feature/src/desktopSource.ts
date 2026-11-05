@@ -32,6 +32,18 @@ export interface DesktopAssetSource extends AssetSource {
   refreshLibrary: (signal?: AbortSignal) => Promise<DesktopAssetSource>;
 }
 
+export interface DesktopFfmpegVideoSupport {
+  available: boolean;
+  formats: Array<"webm" | "mp4">;
+  version: string | null;
+  hardwareEncoders: string[];
+}
+
+export interface DesktopFfmpegVideoStream {
+  sendFrame: (frame: Blob) => void;
+  close: () => Promise<void>;
+}
+
 export function isDesktopHost(): boolean {
   return typeof window !== "undefined" && Boolean(window.__BA_SPINE_HOST_TOKEN__);
 }
@@ -81,6 +93,115 @@ export async function saveDesktopVideo(blob: Blob, filename: string, format: "we
   }).then((response) => response.json()) as { fileName?: unknown };
   if (typeof result.fileName !== "string" || !result.fileName) throw new Error("The Viewer did not return the saved video filename.");
   return result.fileName;
+}
+
+export async function getDesktopFfmpegVideoSupport(): Promise<DesktopFfmpegVideoSupport | null> {
+  if (!isDesktopHost()) return null;
+  const support = await request("/__spine/video/ffmpeg/support").then((response) => response.json()) as Partial<DesktopFfmpegVideoSupport>;
+  if (typeof support.available !== "boolean" || !Array.isArray(support.formats)) throw new Error("The Viewer returned invalid FFmpeg recording support.");
+  return {
+    available: support.available,
+    formats: support.formats.filter((format): format is "webm" | "mp4" => format === "webm" || format === "mp4"),
+    version: typeof support.version === "string" ? support.version : null,
+    hardwareEncoders: Array.isArray(support.hardwareEncoders) ? support.hardwareEncoders.filter((encoder): encoder is string => typeof encoder === "string") : [],
+  };
+}
+
+export async function startDesktopFfmpegVideoRecording(options: {
+  filename: string;
+  width: number;
+  height: number;
+  frameRate: number;
+  format: "webm" | "mp4";
+}): Promise<string> {
+  const result = await request("/__spine/video/ffmpeg/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(options),
+  }).then((response) => response.json()) as { sessionId?: unknown };
+  if (typeof result.sessionId !== "string" || !result.sessionId) throw new Error("The Viewer did not start an FFmpeg recording session.");
+  return result.sessionId;
+}
+
+export async function openDesktopFfmpegVideoStream(sessionId: string): Promise<DesktopFfmpegVideoStream> {
+  if (!isDesktopHost() || !window.__BA_SPINE_HOST_TOKEN__) throw new Error("The native video stream is unavailable.");
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const query = new URLSearchParams({ sessionId, token: window.__BA_SPINE_HOST_TOKEN__ });
+  const socket = new WebSocket(`${protocol}//${window.location.host}/__spine/video/ffmpeg/stream?${query}`);
+  socket.binaryType = "arraybuffer";
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("error", onError);
+      socket.removeEventListener("close", onClose);
+    };
+    const onOpen = () => { cleanup(); resolve(); };
+    const onError = () => { cleanup(); reject(new Error("Could not connect to the Viewer FFmpeg recording stream.")); };
+    const onClose = () => { cleanup(); reject(new Error("The Viewer FFmpeg recording stream closed before it was ready.")); };
+    socket.addEventListener("open", onOpen, { once: true });
+    socket.addEventListener("error", onError, { once: true });
+    socket.addEventListener("close", onClose, { once: true });
+  });
+  return {
+    sendFrame(frame) {
+      if (socket.readyState !== WebSocket.OPEN) throw new Error("The Viewer FFmpeg recording stream is closed.");
+      if (socket.bufferedAmount > 32 * 1024 * 1024) throw new Error("The Viewer could not send video frames fast enough.");
+      socket.send(frame);
+    },
+    async close() {
+      if (socket.readyState === WebSocket.CLOSED) return;
+      if (socket.readyState === WebSocket.CONNECTING) {
+        await new Promise<void>((resolve, reject) => {
+          const cleanup = () => {
+            socket.removeEventListener("open", onOpen);
+            socket.removeEventListener("error", onError);
+            socket.removeEventListener("close", onClose);
+          };
+          const onOpen = () => { cleanup(); resolve(); };
+          const onError = () => { cleanup(); reject(new Error("Could not connect to the Viewer FFmpeg recording stream.")); };
+          const onClose = () => { cleanup(); resolve(); };
+          socket.addEventListener("open", onOpen, { once: true });
+          socket.addEventListener("error", onError, { once: true });
+          socket.addEventListener("close", onClose, { once: true });
+        });
+      }
+      while (socket.readyState === WebSocket.OPEN && socket.bufferedAmount > 0) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 8));
+      }
+      await new Promise<void>((resolve) => {
+        socket.addEventListener("close", () => resolve(), { once: true });
+        socket.close(1000, "Recording complete.");
+        if (socket.readyState === WebSocket.CLOSED) resolve();
+      });
+    },
+  };
+}
+
+export async function finishDesktopFfmpegVideoRecording(sessionId: string, frameCount: number, audio: Blob | null): Promise<{ fileName: string; encoder: string }> {
+  const headers = new Headers({
+    "x-ba-spine-video-session": sessionId,
+    "x-ba-spine-video-frames": String(frameCount),
+    "content-type": audio?.type || "application/octet-stream",
+  });
+  if (audio?.type) headers.set("x-ba-spine-audio-type", audio.type);
+  const result = await request("/__spine/video/ffmpeg/finish", {
+    method: "POST",
+    headers,
+    body: audio,
+  }).then((response) => response.json()) as { fileName?: unknown; encoder?: unknown };
+  if (typeof result.fileName !== "string" || !result.fileName || typeof result.encoder !== "string" || !result.encoder) {
+    throw new Error("The Viewer did not return the FFmpeg video export result.");
+  }
+  return { fileName: result.fileName, encoder: result.encoder };
+}
+
+export async function cancelDesktopFfmpegVideoRecording(sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  await request("/__spine/video/ffmpeg/cancel", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId }),
+  });
 }
 
 export async function loadDesktopSource(): Promise<DesktopAssetSource | null> {
