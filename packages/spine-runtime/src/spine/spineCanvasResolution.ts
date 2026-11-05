@@ -1,4 +1,5 @@
-export const MAX_CANVAS_RESOLUTION_PIXELS = 8_000_000;
+// Leaves room for one 3840 × 2160 UHD export canvas (8,294,400 pixels).
+export const MAX_CANVAS_RESOLUTION_PIXELS = 8_500_000;
 
 /** Match device resolution, then spend a bounded pixel budget on deliberate magnification. */
 export function spineCanvasBackingSize(

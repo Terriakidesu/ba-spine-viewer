@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingProgress } from "./videoRecorder";
+import { createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingProgress, videoRecordingResolutionScale } from "./videoRecorder";
 
 describe("Viewer video recording plans", () => {
   test("counts the opening once and stops at the requested idle-loop boundary", () => {
@@ -26,8 +26,17 @@ describe("Viewer video recording plans", () => {
 
   test("uses even-sized dimensions for the chosen aspect ratio", () => {
     expect(videoRecordingDimensions(1080, "16:9")).toEqual({ width: 1920, height: 1080 });
+    expect(videoRecordingDimensions(1440, "16:9")).toEqual({ width: 2560, height: 1440 });
+    expect(videoRecordingDimensions(2160, "16:9")).toEqual({ width: 3840, height: 2160 });
     expect(videoRecordingDimensions(720, "4:3")).toEqual({ width: 960, height: 720 });
     expect(videoRecordingDimensions(1080, "1:1")).toEqual({ width: 1080, height: 1080 });
+  });
+
+  test("scales Spine backing pixels to export density after device pixel ratio", () => {
+    expect(videoRecordingResolutionScale(960, 540, 3840, 2160, 2)).toBe(2);
+    expect(videoRecordingResolutionScale(960, 540, 1920, 1080, 2)).toBe(1);
+    expect(videoRecordingResolutionScale(960, 540, 1280, 720, 1)).toBeCloseTo(4 / 3);
+    expect(videoRecordingResolutionScale(0, 540, 3840, 2160, 1)).toBe(1);
   });
 
   test("keeps FFmpeg frame output on an exact fixed-rate frame count", () => {

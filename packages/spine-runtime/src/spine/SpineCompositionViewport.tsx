@@ -5,10 +5,11 @@ import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration, type SpineInt
 import { spineAudioPathCandidates } from "./spineAudio";
 import { advanceSpineTimeline, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineLayerAnimation, timelineLayerAnimationClips, timelineMainAnimation, timelineOpeningContinuationStart, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimeline, type SpineTimelineAudioPreloadState } from "./spineTimeline";
 import { SpineTimelineLayerCanvas } from "./SpineTimelineLayerCanvas";
-import { cameraAspectValue, evaluateSpineCameraTrack, type SpineCameraAspectRatio } from "./spineCameraMotion";
+import { cameraAspectValue, changeSpineCameraAspectRatio, evaluateSpineCameraTrack, type SpineCameraAspectRatio } from "./spineCameraMotion";
 
 export interface SpineCompositionViewportHandle {
   resetCamera: () => void;
+  setResolutionScale: (scale: number, includeLayerScale?: boolean) => void;
   getCameraPose: () => SpineCameraPose | null;
   setCameraPose: (pose: SpineCameraPose | null) => void;
   toggleFullscreen: () => Promise<void>;
@@ -81,6 +82,9 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   const [audioPreloadStates, setAudioPreloadStates] = useState<Record<string, SpineTimelineAudioPreloadState>>({});
   const audioElementsRef = useRef<Record<string, HTMLAudioElement | null>>({});
   const talkRendererRef = useRef<SpineRenderer | null>(null);
+  const layerRenderersRef = useRef(new Map<string, SpineRenderer>());
+  const resolutionScaleRef = useRef(1);
+  const includeLayerScaleRef = useRef(false);
   const audioStartedRef = useRef<Record<string, boolean>>({});
   const audioPreviousTimeRef = useRef<Record<string, number | undefined>>({});
   const fileCacheRef = useRef(new Map<string, Promise<SpineFiles | null>>());
@@ -140,8 +144,13 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   const audioReady = audioPreloadIdentityRef.current.audioKey === audioKey
     && audioPreloadIdentityRef.current.source === source
     && timelineAudioPreloadsReady(timeline.audio, audioPreloadStates);
-  const effectiveCameraTrack = timeline.camera ?? null;
-  const cameraArtworkAspect = cameraAspectValue(cameraMode === "authored" && timeline.camera?.enabled ? timeline.camera.aspectRatio : aspectRatio);
+  // The Viewer output frame can use a different ratio from the authored shot.
+  // Reframe the track for that output instead of letting the stage clip it.
+  const effectiveCameraTrack = useMemo(
+    () => timeline.camera ? changeSpineCameraAspectRatio(timeline.camera, aspectRatio) : null,
+    [aspectRatio, timeline.camera],
+  );
+  const cameraArtworkAspect = cameraAspectValue(cameraMode === "authored" && effectiveCameraTrack?.enabled ? effectiveCameraTrack.aspectRatio : aspectRatio);
   const solvedCamera = cameraMode === "authored" && effectiveCameraTrack
     ? evaluateSpineCameraTrack(effectiveCameraTrack, effectiveCurrentTime, 1600, 900, referenceArtworkFrame, activeCameraBoundRef.current)
     : null;
@@ -393,6 +402,14 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
 
   useImperativeHandle(ref, () => ({
     resetCamera: () => setResetCameraSignal((value) => value + 1),
+    setResolutionScale: (scale, includeLayerScale = false) => {
+      resolutionScaleRef.current = scale;
+      includeLayerScaleRef.current = includeLayerScale;
+      for (const [id, renderer] of layerRenderersRef.current) {
+        const layerScale = includeLayerScale ? Math.max(1, timeline.layers.find((layer) => layer.id === id)?.scale ?? 1) : 1;
+        renderer.setResolutionScale(scale * layerScale);
+      }
+    },
     getCameraPose: () => talkRendererRef.current?.getCameraPose() ?? sharedCameraPose,
     setCameraPose: (pose) => {
       pendingCameraPoseRef.current = pose;
@@ -496,6 +513,13 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
               onAnimationDuration={(id, animation, duration) => setAnimationDurations((current) => current[`${id}:${animation}`] === duration ? current : { ...current, [`${id}:${animation}`]: duration })}
               onInteractionPoints={(id, value) => { if (id === referenceLayerId) setInteractionOverlay(value); }}
               onRenderer={(id, value) => {
+                if (value) {
+                  layerRenderersRef.current.set(id, value);
+                  const layerScale = includeLayerScaleRef.current ? Math.max(1, timeline.layers.find((layer) => layer.id === id)?.scale ?? 1) : 1;
+                  value.setResolutionScale(resolutionScaleRef.current * layerScale);
+                } else {
+                  layerRenderersRef.current.delete(id);
+                }
                 if (id !== referenceLayerId) return;
                 if (!value) {
                   pendingCameraPoseRef.current = talkRendererRef.current?.getCameraPose() ?? sharedCameraPose;

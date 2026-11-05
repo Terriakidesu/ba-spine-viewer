@@ -55,6 +55,7 @@ interface FfmpegVideoSession {
   audioBytes: number;
   phase: "rendering" | "encoding" | "saving";
   encodeProgress: number;
+  activeEncoder: string | null;
   socket: RecordingSocket | null;
   socketClaimed: boolean;
   finishing: boolean;
@@ -263,6 +264,7 @@ export class FfmpegVideoRecorder {
       audioBytes: 0,
       phase: "rendering",
       encodeProgress: 0,
+      activeEncoder: null,
       socket: null,
       socketClaimed: false,
       finishing: false,
@@ -298,9 +300,13 @@ export class FfmpegVideoRecorder {
     session.audioBytes += track.bytes.byteLength;
   }
 
-  status(sessionId: string): { phase: "rendering" | "encoding" | "saving"; progress: number } | null {
+  status(sessionId: string): { phase: "rendering" | "encoding" | "saving"; progress: number; encoder?: string } | null {
     const session = this.sessions.get(sessionId);
-    return session ? { phase: session.phase, progress: session.phase === "encoding" ? session.encodeProgress : session.phase === "saving" ? 1 : 0 } : null;
+    return session ? {
+      phase: session.phase,
+      progress: session.phase === "encoding" ? session.encodeProgress : session.phase === "saving" ? 1 : 0,
+      ...(session.activeEncoder ? { encoder: session.activeEncoder } : {}),
+    } : null;
   }
 
   finish(sessionId: string, expectedFrameCount: number): Promise<{ fileName: string; encoder: string }> {
@@ -376,6 +382,8 @@ export class FfmpegVideoRecorder {
       .filter((track) => track.start < durationSeconds && track.duration > 0);
     let lastError = "FFmpeg could not encode the recording.";
     for (const attempt of attempts) {
+      session.activeEncoder = attempt.name;
+      session.encodeProgress = 0;
       await rm(outputPath, { force: true });
       const args = [
         this.executablePath,

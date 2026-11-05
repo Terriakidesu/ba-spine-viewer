@@ -53,7 +53,7 @@ import {
 import { SpineCompositionViewport, type SpineCompositionViewportHandle } from "@ba-spine/spine-runtime/ui/SpineCompositionViewport";
 import { timelineForSequence, timelinePlaybackDuration, timelineSequenceIds, timelineTalkInProgress, timelineTalkSequenceIds, type SpineTimeline } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import { readViewerAspectRatio, writeViewerAspectRatio, type ViewerAspectRatio } from "./viewerPresentation";
-import { createCanvasFrameCapture, createCanvasRecordingCapture, createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingProgress, type AudioRecordingCapture, type CanvasFrameCapture, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
+import { createCanvasFrameCapture, createCanvasRecordingCapture, createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingProgress, videoRecordingResolutionScale, type AudioRecordingCapture, type CanvasFrameCapture, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
 
 type ViewerDraftPreview = Omit<SpineDraftSnapshot, "project"> & { project: SpineInteractionProject };
 
@@ -104,8 +104,9 @@ function videoFileExtension(format: VideoRecordingFormat): ".webm" | ".mp4" {
 async function chooseVideoDestination(format: VideoRecordingFormat, name: string): Promise<VideoDestination | null> {
   const filename = `${videoFilenameStem(name)}${videoFileExtension(format)}`;
   if (isDesktopHost()) {
-    if (!await chooseDesktopVideoDirectory()) return null;
-    return { filename, save: (blob) => saveDesktopVideo(blob, filename, format) };
+    const locationName = await chooseDesktopVideoDirectory();
+    if (!locationName) return null;
+    return { filename, locationName, save: (blob) => saveDesktopVideo(blob, filename, format) };
   }
 
   const picker = window as VideoPickerWindow;
@@ -137,6 +138,7 @@ async function chooseVideoDestination(format: VideoRecordingFormat, name: string
     const uniqueName = `${videoFilenameStem(name)}-${crypto.randomUUID()}${videoFileExtension(format)}`;
     return {
       filename: uniqueName,
+      locationName: directory.name,
       save: async (blob) => {
         const handle = await directory.getFileHandle(uniqueName, { create: true });
         const writable = await handle.createWritable();
@@ -155,6 +157,7 @@ async function chooseVideoDestination(format: VideoRecordingFormat, name: string
 
 interface VideoDestination {
   filename: string;
+  locationName?: string;
   save: (blob: Blob) => Promise<string | void>;
 }
 
@@ -191,6 +194,7 @@ interface VideoRecordingRun {
   desktopFrameTask: Promise<void> | null;
   desktopFrameCount: number;
   desktopTotalFrames: number;
+  renderStartedAt: number | null;
   chunks: Blob[];
   saveWhenStopped: boolean;
   stopRequested: boolean;
@@ -213,6 +217,10 @@ interface VideoRecorderDialogState {
   totalAudioTracks?: number;
   encodeProgress?: number;
   encoder?: string;
+  renderFps?: number;
+  renderEtaSeconds?: number;
+  renderElapsedSeconds?: number;
+  wallElapsedSeconds?: number;
   savedFileName?: string;
   error?: string;
 }
@@ -224,6 +232,7 @@ function errorMessage(value: unknown): string {
 
 export interface SpineViewportHandle {
   resetCamera: () => void;
+  setResolutionScale: (scale: number, includeLayerScale?: boolean) => void;
   toggleFullscreen: () => Promise<void>;
   setAnimation: (animation: string) => void;
   setPlaying: (playing: boolean) => void;
@@ -301,6 +310,7 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<SpineRenderer | null>(null);
+  const resolutionScaleRef = useRef(1);
   const [interactionOverlay, setInteractionOverlay] = useState<SpineInteractionOverlay>({ canvasWidth: 0, canvasHeight: 0, points: [] });
   const callbacks = useRef({ onMeta, onProgress, onLoading, onLoadProgress, onError, onCameraMode, onTalk, onTalkClip, onIntro, onIntroClip });
   callbacks.current = { onMeta, onProgress, onLoading, onLoadProgress, onError, onCameraMode, onTalk, onTalkClip, onIntro, onIntroClip };
@@ -326,6 +336,7 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
       }, { preserveDrawingBuffer });
       renderer.setCameraMode(cameraMode);
       renderer.setInteractionMode(interactionMode);
+      renderer.setResolutionScale(resolutionScaleRef.current);
       renderer.setSkipIntro(skipIntro);
       renderer.setEffectsStrength(effectsStrength);
       renderer.setShowInteractionPoints(showInteractionPoints);
@@ -363,6 +374,10 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
 
   useImperativeHandle(ref, () => ({
     resetCamera: () => rendererRef.current?.resetCamera(),
+    setResolutionScale: (scale) => {
+      resolutionScaleRef.current = scale;
+      rendererRef.current?.setResolutionScale(scale);
+    },
     toggleFullscreen: async () => {
       const layout = stageRef.current?.closest<HTMLElement>(".spine-layout");
       if (layout && rendererRef.current) await rendererRef.current.toggleFullscreen(layout);
@@ -416,6 +431,17 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
 
 function formatSeconds(value: number) {
   return value.toFixed(2);
+}
+
+function formatRecorderDuration(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return "—";
+  const totalSeconds = Math.ceil(value);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 const RECORDING_AUDIO_EXTENSIONS = new Set(["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "webm"]);
@@ -2119,6 +2145,7 @@ export function Spine() {
     run.capture?.stopDrawing();
     run.capture?.stopTracks();
     run.audioCapture?.stopTracks();
+    (run.source === "composition" ? compositionRef.current : viewportRef.current)?.setResolutionScale(1);
     pendingVideoRestoreRef.current = run.snapshot;
     videoRecordingRunRef.current = null;
     setPlaying(false);
@@ -2164,7 +2191,13 @@ export function Spine() {
             if (status.phase === "encoding" || status.phase === "saving") {
               const phase = status.phase === "saving" || status.progress >= 1 ? "saving" : "encoding";
               run.phase = phase;
-              setVideoRecorderDialog((current) => current ? { ...current, phase, encodeProgress: status.progress } : current);
+              setVideoRecorderDialog((current) => current ? {
+                ...current,
+                phase,
+                encodeProgress: status.progress,
+                wallElapsedSeconds: Math.max(0, (performance.now() - (run.startedAt ?? performance.now())) / 1000),
+                ...(status.encoder ? { encoder: status.encoder } : {}),
+              } : current);
             }
           }
           const result = await finish;
@@ -2202,6 +2235,8 @@ export function Spine() {
     const waitForPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     run.desktopTotalFrames = videoRecordingFrameCount(plan.totalDuration, run.settings.frameRate);
     if (run.desktopTotalFrames < 1) throw new Error("The video export has no frames to render.");
+    run.renderStartedAt = performance.now();
+    run.startedAt ??= run.renderStartedAt;
     run.phase = "rendering";
     setVideoRecorderDialog((current) => current ? { ...current, phase: "rendering", framesRendered: 0, totalFrames: run.desktopTotalFrames } : current);
 
@@ -2240,12 +2275,18 @@ export function Spine() {
       if (index === 0 || index % run.settings.frameRate === 0 || index === run.desktopTotalFrames - 1) updateVideoRecorderPreview(frame);
       if (index % Math.max(1, Math.floor(run.settings.frameRate / 4)) === 0 || index === run.desktopTotalFrames - 1) {
         const elapsed = Math.min(plan.totalDuration, time);
+        const renderElapsedSeconds = Math.max(0, (performance.now() - run.renderStartedAt!) / 1000);
+        const renderFps = renderElapsedSeconds >= 0.25 ? run.desktopFrameCount / renderElapsedSeconds : undefined;
         setVideoRecorderDialog((current) => current ? {
           ...current,
           phase: "rendering",
           elapsed,
           framesRendered: run.desktopFrameCount,
           totalFrames: run.desktopTotalFrames,
+          renderFps,
+          renderEtaSeconds: renderFps && renderFps > 0 ? (run.desktopTotalFrames - run.desktopFrameCount) / renderFps : undefined,
+          renderElapsedSeconds,
+          wallElapsedSeconds: Math.max(0, (performance.now() - (run.startedAt ?? run.renderStartedAt!)) / 1000),
         } : current);
       }
     }
@@ -2265,14 +2306,23 @@ export function Spine() {
       if (run.stopRequested) return;
       const track = run.desktopAudioTracks[index]!;
       await addDesktopFfmpegAudioTrack(run.desktopSessionId!, track);
-      setVideoRecorderDialog((current) => current ? { ...current, audioTracksMixed: index + 1 } : current);
+      setVideoRecorderDialog((current) => current ? {
+        ...current,
+        audioTracksMixed: index + 1,
+        wallElapsedSeconds: Math.max(0, (performance.now() - (run.startedAt ?? performance.now())) / 1000),
+      } : current);
     }
     if (run.stopRequested) return;
     run.phase = "encoding";
     run.saveWhenStopped = true;
     run.stopRequested = true;
     setPlaying(false);
-    setVideoRecorderDialog((current) => current ? { ...current, phase: "encoding", encodeProgress: 0 } : current);
+    setVideoRecorderDialog((current) => current ? {
+      ...current,
+      phase: "encoding",
+      encodeProgress: 0,
+      wallElapsedSeconds: Math.max(0, (performance.now() - (run.startedAt ?? performance.now())) / 1000),
+    } : current);
   };
 
   const startDesktopFfmpegFrameRender = (run: VideoRecordingRun) => {
@@ -2352,7 +2402,11 @@ export function Spine() {
     if (now - run.lastUiUpdate >= 180 || recordingProgress.finished) {
       run.lastUiUpdate = now;
       if (sourceKind === "runtime") setProgress(next);
-      setVideoRecorderDialog((current) => current ? { ...current, elapsed: recordingProgress.elapsed } : current);
+      setVideoRecorderDialog((current) => current ? {
+        ...current,
+        elapsed: recordingProgress.elapsed,
+        wallElapsedSeconds: Math.max(0, (now - (run.startedAt ?? now)) / 1000),
+      } : current);
     }
     if (recordingProgress.finished) stopVideoRecording(true);
   };
@@ -2426,6 +2480,7 @@ export function Spine() {
       lastRuntimeSubtitleClip: null,
       desktopFrameCount: 0,
       desktopTotalFrames: 0,
+      renderStartedAt: null,
       chunks: [],
       saveWhenStopped: false,
       stopRequested: false,
@@ -2525,15 +2580,24 @@ export function Spine() {
       const stage = stageFrame?.querySelector<HTMLElement>(".spine-stage");
       if (!stage) throw new Error(t("spine.recorder.stageUnavailable"));
       const dimensions = videoRecordingDimensions(run.settings.resolution, outputAspectRatio);
+      const stageBounds = stage.getBoundingClientRect();
+      const resolutionScale = videoRecordingResolutionScale(
+        stageBounds.width,
+        stageBounds.height,
+        dimensions.width,
+        dimensions.height,
+        window.devicePixelRatio || 1,
+      );
+      const viewport = run.source === "composition" ? compositionRef.current : viewportRef.current;
+      viewport?.setResolutionScale(resolutionScale, true);
+      await nextFrame();
+      await nextFrame();
+      if (videoRecordingRunRef.current !== run || run.stopRequested) return;
       const audioElements = [
         ...Array.from(stageFrame?.querySelectorAll<HTMLMediaElement>("audio") ?? []),
         ...(voiceAudioRef.current ? [voiceAudioRef.current] : []),
       ];
       if (run.useFfmpeg) {
-        if (run.settings.framing === "current") {
-          const viewport = run.source === "composition" ? compositionRef.current : viewportRef.current;
-          viewport?.setCameraPose(run.snapshot.cameraPose);
-        }
         await nextFrame();
         await nextFrame();
         if (videoRecordingRunRef.current !== run || run.stopRequested) return;
@@ -2825,6 +2889,74 @@ export function Spine() {
     : null;
   const recorderEstimateFrames = recorderEstimate ? videoRecordingFrameCount(recorderEstimate.totalDuration, recorderSettings.frameRate) : 0;
   const recorderUsesFfmpeg = isDesktopHost() && desktopFfmpegFormats.includes(recorderSettings.format);
+  const activeExportRun = videoRecordingRunRef.current;
+  const isExportProgressPhase = Boolean(videoRecorderDialog
+    && videoRecorderDialog.phase !== "settings"
+    && videoRecorderDialog.phase !== "error"
+    && videoRecorderDialog.phase !== "complete");
+  const activeExportUsesFfmpeg = activeExportRun?.useFfmpeg ?? recorderUsesFfmpeg;
+  const recorderOutputDimensions = videoRecordingDimensions(recorderSettings.resolution, outputAspectRatio);
+  const recorderStageItems = activeExportUsesFfmpeg
+    ? [
+      { id: "prepare", label: t("spine.recorder.stage.prepare") },
+      { id: "render", label: t("spine.recorder.stage.render") },
+      { id: "audio", label: t("spine.recorder.stage.audio") },
+      { id: "encode", label: t("spine.recorder.stage.encode") },
+      { id: "save", label: t("spine.recorder.stage.save") },
+    ]
+    : [
+      { id: "prepare", label: t("spine.recorder.stage.prepare") },
+      { id: "capture", label: t("spine.recorder.stage.capture") },
+      { id: "save", label: t("spine.recorder.stage.save") },
+    ];
+  const recorderCurrentStageId = videoRecorderDialog?.phase === "preparing"
+    ? "prepare"
+    : videoRecorderDialog?.phase === "recording" || videoRecorderDialog?.phase === "rendering"
+      ? activeExportUsesFfmpeg ? "render" : "capture"
+      : videoRecorderDialog?.phase === "mixing"
+        ? "audio"
+        : videoRecorderDialog?.phase === "encoding"
+          ? "encode"
+          : "save";
+  const recorderCurrentStageIndex = recorderStageItems.findIndex(({ id }) => id === recorderCurrentStageId);
+  const recorderProgressFraction = videoRecorderDialog?.phase === "rendering" && videoRecorderDialog.totalFrames
+    ? (videoRecorderDialog.framesRendered ?? 0) / videoRecorderDialog.totalFrames
+    : videoRecorderDialog?.phase === "mixing" && videoRecorderDialog.totalAudioTracks
+      ? (videoRecorderDialog.audioTracksMixed ?? 0) / videoRecorderDialog.totalAudioTracks
+      : videoRecorderDialog?.phase === "encoding" && videoRecorderDialog.encodeProgress !== undefined
+        ? videoRecorderDialog.encodeProgress
+        : videoRecorderDialog?.phase === "recording" && activeExportRun?.plan
+          ? videoRecordingProgress(activeExportRun.plan, videoRecorderDialog.elapsed).fraction
+          : null;
+  const recorderProgressPercent = recorderProgressFraction === null
+    ? null
+    : Math.max(0, Math.min(100, Math.round(recorderProgressFraction * 100)));
+  const recorderPlanDuration = activeExportRun?.plan?.totalDuration ?? 0;
+  const recorderVideoTime = `${formatSeconds(videoRecorderDialog?.elapsed ?? 0)}s${recorderPlanDuration > 0 ? ` / ${formatSeconds(recorderPlanDuration)}s` : ""}`;
+  const recorderRenderSpeed = videoRecorderDialog?.renderFps && videoRecorderDialog.renderFps > 0
+    ? `${(Math.round(videoRecorderDialog.renderFps * 10) / 10).toFixed(1)} FPS`
+    : t("spine.recorder.measuring");
+  const recorderWallElapsed = videoRecorderDialog?.wallElapsedSeconds;
+  const recorderRemaining = videoRecorderDialog?.phase === "rendering"
+    ? videoRecorderDialog.renderEtaSeconds
+    : videoRecorderDialog?.phase === "recording" && activeExportRun?.plan
+      ? Math.max(0, activeExportRun.plan.totalDuration - videoRecorderDialog.elapsed)
+      : undefined;
+  const recorderLivePreview = videoRecorderDialog?.phase === "rendering" && activeExportRun?.useFfmpeg;
+  const recorderMetricItems = activeExportUsesFfmpeg
+    ? [
+      { label: t("spine.recorder.frames"), value: `${videoRecorderDialog?.framesRendered ?? 0} / ${videoRecorderDialog?.totalFrames ?? activeExportRun?.desktopTotalFrames ?? 0}` },
+      { label: t("spine.recorder.videoTime"), value: recorderVideoTime },
+      { label: t("spine.recorder.renderSpeed"), value: recorderRenderSpeed },
+      { label: t("spine.recorder.elapsed"), value: formatRecorderDuration(recorderWallElapsed) },
+      { label: t("spine.recorder.timeRemaining"), value: formatRecorderDuration(recorderRemaining) },
+    ]
+    : [
+      { label: t("spine.recorder.captureRate"), value: `${recorderSettings.frameRate} FPS` },
+      { label: t("spine.recorder.videoTime"), value: recorderVideoTime },
+      { label: t("spine.recorder.elapsed"), value: formatRecorderDuration(recorderWallElapsed) },
+      { label: t("spine.recorder.timeRemaining"), value: formatRecorderDuration(recorderRemaining) },
+    ];
 
   return <main className={`spine-page${isDesktopHost() && fullscreen ? " is-native-fullscreen" : ""}`}>
     <div className="spine-recorder-background" inert={Boolean(videoRecorderDialog)} aria-hidden={Boolean(videoRecorderDialog)}>
@@ -3179,17 +3311,35 @@ export function Spine() {
     </div>
     </div>
     {videoRecorderDialog && <div className="spine-recorder-backdrop">
-      <section className="spine-recorder-dialog" role="dialog" aria-modal="true" aria-labelledby="spine-recorder-title">
+      <section className={`spine-recorder-dialog${isExportProgressPhase ? " is-progress" : ""}`} role="dialog" aria-modal="true" aria-labelledby="spine-recorder-title">
         <div className="spine-recorder-heading">
-          <div><span>{t("spine.recorder.eyebrow")}</span><h2 id="spine-recorder-title">{t(videoRecorderDialog.phase === "complete" ? "spine.recorder.complete" : "spine.recorder.title")}</h2></div>
+          <div><span>{t("spine.recorder.eyebrow")}</span><h2 id="spine-recorder-title">{t(videoRecorderDialog.phase === "complete" ? "spine.recorder.complete" : isExportProgressPhase ? "spine.recorder.inProgress" : "spine.recorder.title")}</h2></div>
           {(videoRecorderDialog.phase === "settings" || videoRecorderDialog.phase === "error" || videoRecorderDialog.phase === "complete") && <button type="button" onClick={() => setVideoRecorderDialog(null)} aria-label={t("spine.recorder.close")}><IconClose /></button>}
         </div>
-        <div className="spine-recorder-content">
-          <div className="spine-recorder-preview" data-aspect-ratio={outputAspectRatio} aria-label={t("spine.recorder.preview")}>
-            {videoRecorderPreviewUrl
-              ? <img src={videoRecorderPreviewUrl} alt={t("spine.recorder.preview")} />
-              : <div className="spine-recorder-preview-empty"><span className="spine-recorder-spinner" aria-hidden="true" /><span>{t("spine.recorder.previewLoading")}</span></div>}
-            <span className="spine-recorder-preview-label">{t("spine.recorder.preview")}</span>
+        <div className={`spine-recorder-content${isExportProgressPhase ? " is-progress" : ""}`}>
+          <div className="spine-recorder-visual">
+            <div className="spine-recorder-preview" data-aspect-ratio={outputAspectRatio} aria-label={t(recorderLivePreview ? "spine.recorder.previewLive" : "spine.recorder.previewSnapshot")}>
+              {videoRecorderPreviewUrl
+                ? <img src={videoRecorderPreviewUrl} alt={t(recorderLivePreview ? "spine.recorder.previewLive" : "spine.recorder.previewSnapshot")} />
+                : <div className="spine-recorder-preview-empty"><span className="spine-recorder-spinner" aria-hidden="true" /><span>{t("spine.recorder.previewLoading")}</span></div>}
+              <span className="spine-recorder-preview-label">{t(recorderLivePreview ? "spine.recorder.previewLive" : "spine.recorder.previewSnapshot")}</span>
+            </div>
+            {isExportProgressPhase && <section className="spine-recorder-summary" aria-label={t("spine.recorder.output")}>
+              <h3>{t("spine.recorder.output")}</h3>
+              <dl>
+                <div><dt>{t("spine.recorder.fileName")}</dt><dd title={activeExportRun?.destination.filename}>{activeExportRun?.destination.filename ?? "—"}</dd></div>
+                {activeExportRun?.destination.locationName && <div><dt>{t("spine.recorder.destination")}</dt><dd title={activeExportRun.destination.locationName}>{activeExportRun.destination.locationName}</dd></div>}
+                <div><dt>{t("spine.recorder.character")}</dt><dd>{selectedCharacter}</dd></div>
+                <div><dt>{t("spine.recorder.variant")}</dt><dd>{selectedVariant?.extraType ? extraLabel(selectedVariant.extraType) : selectedVariant?.variant ?? "—"}</dd></div>
+                <div><dt>{t("spine.recorder.resolution")}</dt><dd>{recorderOutputDimensions.width} × {recorderOutputDimensions.height}</dd></div>
+                <div><dt>{t("spine.recorder.frameRate")}</dt><dd>{recorderSettings.frameRate} FPS</dd></div>
+                <div><dt>{t("spine.recorder.format")}</dt><dd>{recorderSettings.format.toUpperCase()} · {outputAspectRatio}</dd></div>
+                <div><dt>{t("spine.recorder.sequence")}</dt><dd>{t(recorderSettings.mode === "opening-idle" ? "spine.recorder.mode.openingIdle" : "spine.recorder.mode.idleOnly")}</dd></div>
+                <div><dt>{t("spine.recorder.lightFx")}</dt><dd>{Math.round(effectsStrength * 100)}%</dd></div>
+                <div><dt>{t("spine.recorder.includeAudio")}</dt><dd>{t(recorderSettings.includeAudio ? "spine.recorder.on" : "spine.recorder.off")}</dd></div>
+                <div><dt>{t("spine.recorder.includeSubtitles")}</dt><dd>{t(recorderSettings.includeSubtitles ? "spine.recorder.on" : "spine.recorder.off")}</dd></div>
+              </dl>
+            </section>}
           </div>
           <div className="spine-recorder-body">
             {videoRecorderDialog.phase === "settings" ? <>
@@ -3200,7 +3350,7 @@ export function Spine() {
                 </select></label>
                 <label><span>{t("spine.recorder.idleLoops")}</span><input type="number" min="1" max="20" step="1" value={videoRecorderDialog.settings.idleLoops} onChange={(event) => updateVideoRecorderSettings({ idleLoops: Math.max(1, Math.min(20, Math.floor(Number(event.target.value) || 1))) })} /></label>
                 <label><span>{t("spine.recorder.resolution")}</span><select value={videoRecorderDialog.settings.resolution} onChange={(event) => updateVideoRecorderSettings({ resolution: Number(event.target.value) as VideoRecordingSettings["resolution"] })}>
-                  <option value="720">720p</option><option value="1080">1080p</option>
+                  <option value="720">720p</option><option value="1080">1080p</option><option value="1440">2K (1440p)</option><option value="2160">4K UHD (2160p)</option>
                 </select></label>
                 <label><span>{t("spine.recorder.frameRate")}</span><select value={videoRecorderDialog.settings.frameRate} onChange={(event) => updateVideoRecorderSettings({ frameRate: Number(event.target.value) as VideoRecordingSettings["frameRate"] })}>
                   <option value="30">30 FPS</option><option value="60">60 FPS</option>
@@ -3233,44 +3383,46 @@ export function Spine() {
               <p className="spine-recorder-complete-file" role="status">{t("spine.recorder.savedAs", { name: videoRecorderDialog.savedFileName ?? "" })}</p>
               {videoRecorderDialog.encoder && <p className="spine-recorder-note">{t("spine.recorder.encoder", { name: videoRecorderDialog.encoder })}</p>}
               <div className="spine-recorder-actions"><button type="button" className="spine-recorder-primary" onClick={() => setVideoRecorderDialog(null)}>{t("spine.recorder.close")}</button></div>
-            </> : <>
-              <div className="spine-recorder-status" role="status" aria-live="polite">
-                {videoRecorderDialog.phase === "preparing" && <><span className="spine-recorder-spinner" aria-hidden="true" /><strong>{t("spine.recorder.preparing")}</strong><span>{t("spine.recorder.waiting")}</span></>}
-                {videoRecorderDialog.phase === "recording" && <>
-                  <span className="spine-recorder-live-dot" aria-hidden="true" />
-                  <strong>{t("spine.recorder.recording")}</strong>
-                  <span>{videoRecorderDialog.elapsed.toFixed(1)}s{videoRecordingRunRef.current?.plan ? ` / ${videoRecordingRunRef.current.plan.totalDuration.toFixed(1)}s` : ""}</span>
-                  {videoRecordingRunRef.current?.plan && <span>{t("spine.recorder.loopProgress", { completed: videoRecordingProgress(videoRecordingRunRef.current.plan, videoRecorderDialog.elapsed).idleLoopsCompleted, total: videoRecordingRunRef.current.plan.idleLoops })}</span>}
-                </>}
-                {videoRecorderDialog.phase === "rendering" && <><strong>{t("spine.recorder.rendering")}</strong><span>{t("spine.recorder.frameProgress", { rendered: videoRecorderDialog.framesRendered ?? 0, total: videoRecorderDialog.totalFrames ?? 0 })}</span></>}
-                {videoRecorderDialog.phase === "mixing" && <><strong>{t("spine.recorder.mixing")}</strong><span>{t("spine.recorder.audioProgress", { mixed: videoRecorderDialog.audioTracksMixed ?? 0, total: videoRecorderDialog.totalAudioTracks ?? 0 })}</span></>}
-                {videoRecorderDialog.phase === "encoding" && <><span className="spine-recorder-spinner" aria-hidden="true" /><strong>{t("spine.recorder.encoding")}</strong>{videoRecorderDialog.encodeProgress !== undefined && <span>{Math.round(videoRecorderDialog.encodeProgress * 100)}%</span>}</>}
-                {videoRecorderDialog.phase === "saving" && <><span className="spine-recorder-spinner" aria-hidden="true" /><strong>{t("spine.recorder.saving")}</strong></>}
-                {videoRecorderDialog.phase === "canceling" && <><span className="spine-recorder-spinner" aria-hidden="true" /><strong>{t("spine.recorder.canceling")}</strong></>}
+            </> : <div className="spine-recorder-dashboard" aria-live="polite">
+              <div className="spine-recorder-dashboard-heading">
+                <div>
+                  <span className="spine-recorder-current-label">{t("spine.recorder.currentStage")}</span>
+                  <strong>{videoRecorderDialog.phase === "preparing" ? t("spine.recorder.preparing")
+                    : videoRecorderDialog.phase === "recording" ? t("spine.recorder.recording")
+                      : videoRecorderDialog.phase === "rendering" ? t("spine.recorder.rendering")
+                        : videoRecorderDialog.phase === "mixing" ? t("spine.recorder.mixing")
+                          : videoRecorderDialog.phase === "encoding" ? t("spine.recorder.encoding")
+                            : videoRecorderDialog.phase === "canceling" ? t("spine.recorder.canceling")
+                              : t("spine.recorder.saving")}</strong>
+                  <span className="spine-recorder-current-detail">
+                    {videoRecorderDialog.phase === "preparing" && t("spine.recorder.waiting")}
+                    {videoRecorderDialog.phase === "recording" && activeExportRun?.plan && t("spine.recorder.loopProgress", { completed: videoRecordingProgress(activeExportRun.plan, videoRecorderDialog.elapsed).idleLoopsCompleted, total: activeExportRun.plan.idleLoops })}
+                    {videoRecorderDialog.phase === "rendering" && t("spine.recorder.frameProgress", { rendered: videoRecorderDialog.framesRendered ?? 0, total: videoRecorderDialog.totalFrames ?? 0 })}
+                    {videoRecorderDialog.phase === "mixing" && t("spine.recorder.audioProgress", { mixed: videoRecorderDialog.audioTracksMixed ?? 0, total: videoRecorderDialog.totalAudioTracks ?? 0 })}
+                    {videoRecorderDialog.phase === "encoding" && videoRecorderDialog.encoder && t("spine.recorder.encoder", { name: videoRecorderDialog.encoder })}
+                  </span>
+                </div>
+                <strong className="spine-recorder-percent">{recorderProgressPercent === null ? "—" : `${recorderProgressPercent}%`}</strong>
               </div>
-              <div className={`spine-recorder-progress${videoRecorderDialog.phase === "preparing" || (videoRecorderDialog.phase === "encoding" && videoRecorderDialog.encodeProgress === undefined) || videoRecorderDialog.phase === "saving" || videoRecorderDialog.phase === "canceling" ? " is-indeterminate" : ""}`} role="progressbar" aria-label={t("spine.recorder.progressAria")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={videoRecorderDialog.phase === "rendering" && videoRecorderDialog.totalFrames
-                ? Math.round(((videoRecorderDialog.framesRendered ?? 0) / videoRecorderDialog.totalFrames) * 100)
-                : videoRecorderDialog.phase === "mixing" && videoRecorderDialog.totalAudioTracks
-                  ? Math.round(((videoRecorderDialog.audioTracksMixed ?? 0) / videoRecorderDialog.totalAudioTracks) * 100)
-                  : videoRecorderDialog.phase === "encoding" && videoRecorderDialog.encodeProgress !== undefined
-                    ? Math.round(videoRecorderDialog.encodeProgress * 100)
-                    : videoRecorderDialog.phase === "recording" && videoRecordingRunRef.current?.plan
-                      ? Math.round(videoRecordingProgress(videoRecordingRunRef.current.plan, videoRecorderDialog.elapsed).fraction * 100)
-                      : undefined}>
-                <span style={videoRecorderDialog.phase === "rendering" && videoRecorderDialog.totalFrames
-                  ? { width: `${((videoRecorderDialog.framesRendered ?? 0) / videoRecorderDialog.totalFrames) * 100}%` }
-                  : videoRecorderDialog.phase === "mixing" && videoRecorderDialog.totalAudioTracks
-                    ? { width: `${((videoRecorderDialog.audioTracksMixed ?? 0) / videoRecorderDialog.totalAudioTracks) * 100}%` }
-                    : videoRecorderDialog.phase === "encoding" && videoRecorderDialog.encodeProgress !== undefined
-                      ? { width: `${videoRecorderDialog.encodeProgress * 100}%` }
-                      : videoRecorderDialog.phase === "recording" && videoRecordingRunRef.current?.plan
-                        ? { width: `${videoRecordingProgress(videoRecordingRunRef.current.plan, videoRecorderDialog.elapsed).fraction * 100}%` }
-                        : undefined} />
+              <ol className="spine-recorder-stages" aria-label={t("spine.recorder.stages")}>
+                {recorderStageItems.map((stage, index) => <li key={stage.id} className={index < recorderCurrentStageIndex ? "is-complete" : index === recorderCurrentStageIndex ? "is-current" : ""}>
+                  <span className="spine-recorder-stage-marker" aria-hidden="true">{index < recorderCurrentStageIndex ? "✓" : index + 1}</span>
+                  <span>{stage.label}</span>
+                </li>)}
+              </ol>
+              <div className={`spine-recorder-progress${recorderProgressPercent === null ? " is-indeterminate" : ""}`} role="progressbar" aria-label={t("spine.recorder.progressAria")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={recorderProgressPercent ?? undefined}>
+                <span style={recorderProgressPercent === null ? undefined : { width: `${recorderProgressPercent}%` }} />
               </div>
+              <div className={`spine-recorder-metrics${activeExportUsesFfmpeg ? " is-frame-export" : ""}`}>
+                {recorderMetricItems.map((item) => <div className="spine-recorder-metric" key={item.label}>
+                  <span>{item.label}</span><strong>{item.value}</strong>
+                </div>)}
+              </div>
+              {videoRecorderDialog.encoder && <p className="spine-recorder-encoder">{t("spine.recorder.encoder", { name: videoRecorderDialog.encoder })}</p>}
               <div className="spine-recorder-actions">
                 <button type="button" className="spine-recorder-secondary" disabled={videoRecorderDialog.phase !== "preparing" && videoRecorderDialog.phase !== "recording" && videoRecorderDialog.phase !== "rendering" && videoRecorderDialog.phase !== "mixing"} onClick={() => stopVideoRecording(false)}>{t("spine.recorder.cancelExport")}</button>
               </div>
-            </>}
+            </div>}
           </div>
         </div>
       </section>

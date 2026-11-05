@@ -47,6 +47,7 @@ export interface DesktopFfmpegVideoStream {
 export interface DesktopFfmpegVideoStatus {
   phase: "rendering" | "encoding" | "saving";
   progress: number;
+  encoder?: string;
 }
 
 export function isDesktopHost(): boolean {

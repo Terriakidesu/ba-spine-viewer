@@ -14,6 +14,10 @@ describe("Spine canvas backing resolution", () => {
     expect(size.width).toBeGreaterThan(1000);
   });
 
+  test("allows the complete 4K UHD backing size within the pixel budget", () => {
+    expect(spineCanvasBackingSize(960, 540, 1, 4, 4096, 4096)).toEqual({ width: 3840, height: 2160 });
+  });
+
   test("returns empty dimensions for an undisplayed canvas", () => {
     expect(spineCanvasBackingSize(0, 50, 1, 2, 4096, 4096)).toEqual({ width: 0, height: 0 });
   });

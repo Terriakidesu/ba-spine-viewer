@@ -57,6 +57,19 @@ describe("FFmpeg timestamped audio mixing", () => {
 });
 
 describe("FFmpeg recording finalization", () => {
+  test("reports the active encoder during encoding progress", () => {
+    const recorder = new FfmpegVideoRecorder("unused-ffmpeg.exe", () => null);
+    const session = {
+      id: "encoder-status",
+      phase: "encoding" as const,
+      encodeProgress: 0.42,
+      activeEncoder: "h264_nvenc",
+    };
+    (recorder as unknown as { sessions: Map<string, typeof session> }).sessions.set(session.id, session);
+
+    expect(recorder.status(session.id)).toEqual({ phase: "encoding", progress: 0.42, encoder: "h264_nvenc" });
+  });
+
   test("coalesces repeated finish requests for the same session", async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "ba-spine-video-finish-"));
     const framesPath = join(temporaryDirectory, "frames.mjpg");

@@ -1,6 +1,6 @@
 export type VideoRecordingMode = "opening-idle" | "idle-only";
 export type VideoRecordingFormat = "webm" | "mp4";
-export type VideoRecordingResolution = 720 | 1080;
+export type VideoRecordingResolution = 720 | 1080 | 1440 | 2160;
 export type VideoRecordingFrameRate = 30 | 60;
 
 export interface VideoRecordingSettings {
@@ -112,6 +112,21 @@ export function videoRecordingDimensions(resolution: VideoRecordingResolution, a
   const ratio = aspectRatio === "4:3" ? 4 / 3 : aspectRatio === "1:1" ? 1 : 16 / 9;
   const width = Math.round(height * ratio / 2) * 2;
   return { width, height };
+}
+
+/** Extra backing scale after device-pixel ratio so Spine canvases match the export pixel density. */
+export function videoRecordingResolutionScale(
+  stageWidth: number,
+  stageHeight: number,
+  outputWidth: number,
+  outputHeight: number,
+  devicePixelRatio: number,
+): number {
+  if (![stageWidth, stageHeight, outputWidth, outputHeight].every(Number.isFinite)
+    || stageWidth <= 0 || stageHeight <= 0 || outputWidth <= 0 || outputHeight <= 0) return 1;
+  const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const outputScale = Math.min(outputWidth / stageWidth, outputHeight / stageHeight);
+  return Math.max(1, outputScale / dpr);
 }
 
 export function videoFilenameStem(value: string): string {
