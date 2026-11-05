@@ -38,26 +38,52 @@ describe("Spine editor MCP bridge", () => {
     try {
       const enabled = await bridge.handle(new Request(new URL("/__spine/mcp/ui-enabled", bridgeUrl)), new URL("/__spine/mcp/ui-enabled", bridgeUrl));
       expect(await enabled.json()).toEqual({ enabled: true });
-      const posted = await bridge.handle(jsonRequest("/__spine/mcp/ui-state", { workspace: "timeline", directory: "Aru_home" }), new URL("/__spine/mcp/ui-state", bridgeUrl));
+      const posted = await bridge.handle(jsonRequest("/__spine/mcp/ui-state", { workspace: "timeline", directory: "Aru_home", documentRevision: 7 }), new URL("/__spine/mcp/ui-state", bridgeUrl));
       expect(posted.status).toBe(200);
+      await bridge.handle(jsonRequest("/__spine/mcp/ui-state", { workspace: "timeline", directory: "Aru_home", documentRevision: 7 }), new URL("/__spine/mcp/ui-state", bridgeUrl));
 
       const token = JSON.parse(await readFile(connectionFile!, "utf8")).token as string;
       const auth = { authorization: `Bearer ${token}` };
       const stateResponse = await bridge.handle(new Request(new URL("/__spine/mcp/state", bridgeUrl), { headers: auth }), new URL("/__spine/mcp/state", bridgeUrl));
-      const statePayload = await stateResponse.json() as { state: { directory: string; snapshotRevision: number; snapshotAgeMs: number }; revision: number };
+      const statePayload = await stateResponse.json() as { state: { directory: string; snapshotRevision: number; snapshotAgeMs: number; documentRevision: number }; revision: number };
       expect(statePayload.state.directory).toBe("Aru_home");
-      expect(statePayload.state.snapshotRevision).toBe(1);
-      expect(statePayload.revision).toBe(1);
+      expect(statePayload.state.snapshotRevision).toBe(2);
+      expect(statePayload.state.documentRevision).toBe(7);
+      expect(statePayload.revision).toBe(2);
       expect(statePayload.state.snapshotAgeMs).toBeGreaterThanOrEqual(0);
 
-      const pending = bridge.handle(jsonRequest("/__spine/mcp/command", { command: { name: "seek", seconds: 2 } }, auth), new URL("/__spine/mcp/command", bridgeUrl));
+      const pending = bridge.handle(jsonRequest("/__spine/mcp/command", { command: { name: "seek", seconds: 2 }, expectedDocumentRevision: 7 }, auth), new URL("/__spine/mcp/command", bridgeUrl));
       await new Promise((resolve) => setTimeout(resolve, 0));
       const queuedResponse = await bridge.handle(new Request(new URL("/__spine/mcp/ui-command", bridgeUrl)), new URL("/__spine/mcp/ui-command", bridgeUrl));
-      const queued = await queuedResponse.json() as { id: string; command: { name: string; seconds: number } };
+      const queued = await queuedResponse.json() as { id: string; command: { name: string; seconds: number }; expectedDocumentRevision: number; expiresAt: number };
       expect(queued.command).toEqual({ name: "seek", seconds: 2 });
+      expect(queued.expectedDocumentRevision).toBe(7);
+      expect(queued.expiresAt).toBeGreaterThan(Date.now());
       await bridge.handle(jsonRequest("/__spine/mcp/ui-result", { id: queued.id, result: { currentTime: 2 } }), new URL("/__spine/mcp/ui-result", bridgeUrl));
       const commandResponse = await pending;
       expect(await commandResponse.json()).toEqual({ result: { currentTime: 2 } });
+    } finally {
+      bridge.cleanup();
+    }
+  });
+
+  test("rejects stale document revisions and removes timed-out commands from the queue", async () => {
+    const bridge = new SpineEditorMcpBridge(true, { commandTimeoutMs: 60 });
+    const connectionFile = await bridge.start(43210);
+    try {
+      await bridge.handle(jsonRequest("/__spine/mcp/ui-state", { workspace: "timeline", documentRevision: 4 }), new URL("/__spine/mcp/ui-state", bridgeUrl));
+      const token = JSON.parse(await readFile(connectionFile!, "utf8")).token as string;
+      const auth = { authorization: `Bearer ${token}` };
+      const stale = await bridge.handle(jsonRequest("/__spine/mcp/command", { command: { name: "seek", seconds: 1 }, expectedDocumentRevision: 3 }, auth), new URL("/__spine/mcp/command", bridgeUrl));
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({ code: "stale_document_revision", expectedDocumentRevision: 3, actualDocumentRevision: 4 });
+
+      const timedOut = bridge.handle(jsonRequest("/__spine/mcp/command", { command: { name: "seek", seconds: 2 }, expectedDocumentRevision: 4 }, auth), new URL("/__spine/mcp/command", bridgeUrl));
+      const response = await timedOut;
+      expect(response.status).toBe(504);
+      expect((await response.json()).error).toContain("queued command was canceled");
+      const queued = await bridge.handle(new Request(new URL("/__spine/mcp/ui-command", bridgeUrl)), new URL("/__spine/mcp/ui-command", bridgeUrl));
+      expect(await queued.json()).toBeNull();
     } finally {
       bridge.cleanup();
     }

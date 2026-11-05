@@ -25,6 +25,24 @@ describe("editor MCP command validation", () => {
     expect(normalizeEditorMcpCommand({ name: "stop_waveform_profile" })).toEqual({ name: "stop_waveform_profile" });
   });
 
+  test("validates clip editing and revision-safe subtitle import commands", () => {
+    expect(normalizeEditorMcpCommand({ name: "add_animation_clip", layerId: "character", animation: "Talk_01_M", start: 2, faceAnimation: null })).toEqual({
+      name: "add_animation_clip", layerId: "character", animation: "Talk_01_M", start: 2, faceAnimation: null,
+    });
+    expect(normalizeEditorMcpCommand({ name: "update_animation_clip", clipId: "clip-1", patch: { faceAnimation: "", end: 4 } })).toEqual({
+      name: "update_animation_clip", clipId: "clip-1", patch: { faceAnimation: "", end: 4 },
+    });
+    expect(normalizeEditorMcpCommand({ name: "move_animation_clip", clipId: "clip-1", start: 5, ripple: false })).toEqual({
+      name: "move_animation_clip", clipId: "clip-1", start: 5, ripple: false,
+    });
+    expect(normalizeEditorMcpCommand({ name: "update_subtitle_cue", cueId: "cue-1", patch: { text: { ja: "こんにちは" } } })).toEqual({
+      name: "update_subtitle_cue", cueId: "cue-1", patch: { text: { ja: "こんにちは" } },
+    });
+    expect(normalizeEditorMcpCommand({ name: "preview_subtitle_import", path: "lobbies/Aru_home/subtitles.json", policy: "merge-missing-translations" })).toEqual({
+      name: "preview_subtitle_import", path: "lobbies/Aru_home/subtitles.json", policy: "merge-missing-translations",
+    });
+  });
+
   test("rejects unsupported fields, malformed values, and unknown commands", () => {
     expect(() => normalizeEditorMcpCommand({ name: "seek", seconds: -1 })).toThrow();
     expect(() => normalizeEditorMcpCommand({ name: "seek", seconds: 1, script: "alert(1)" })).toThrow();
@@ -38,5 +56,10 @@ describe("editor MCP command validation", () => {
     expect(() => normalizeEditorMcpCommand({ name: "capture_preview", mode: "desktop" })).toThrow();
     expect(() => normalizeEditorMcpCommand({ name: "execute_javascript", source: "alert(1)" })).toThrow();
     expect(() => normalizeEditorMcpCommand({ name: "start_waveform_profile", source: "alert(1)" })).toThrow();
+    expect(() => normalizeEditorMcpCommand({ name: "move_animation_clip", clipId: "clip-1", start: 2 })).toThrow();
+    expect(() => normalizeEditorMcpCommand({ name: "add_animation_clip", layerId: "character", animation: "Talk_01_M", start: 2, end: 2 })).toThrow();
+    expect(() => normalizeEditorMcpCommand({ name: "update_subtitle_cue", cueId: "cue-1", patch: { text: { en: 2 } } })).toThrow();
+    expect(() => normalizeEditorMcpCommand({ name: "preview_subtitle_import", path: "../../outside.json", policy: "replace-imported-cues" })).toThrow();
+    expect(() => normalizeEditorMcpCommand({ name: "preview_subtitle_import", path: "C:/outside.json", policy: "replace-imported-cues" })).toThrow();
   });
 });

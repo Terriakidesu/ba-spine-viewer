@@ -1,5 +1,6 @@
 import { STAGE_VIEW_MAX_SCALE, STAGE_VIEW_MIN_SCALE } from "./stageView";
 import type { EditorWaveformProfileSnapshot } from "./waveformProfileDiagnostics";
+import type { EditorTimeline } from "./editorModel";
 
 export type EditorMcpBlendMode = "normal" | "multiply" | "screen" | "additive";
 export type EditorMcpPreviewCaptureMode = "composition" | "viewport";
@@ -63,6 +64,13 @@ export interface EditorMcpTimelineSnapshot {
   }>;
   subtitles: Array<{ id: string; start: number; end: number; enabled: boolean; text: string }>;
   audio: Array<{ id: string; path: string; start: number; end: number; enabled: boolean }>;
+  /** Full authored data for the active sequence; playback-only state remains separate. */
+  sequence: EditorTimeline;
+  animationInfo: Array<{
+    layerId: string;
+    directory: string;
+    animations: Array<{ name: string; duration: number | null }>;
+  }>;
   renderedLayers: Array<{
     id: string;
     kind: "spine" | "color";
@@ -77,6 +85,8 @@ export interface EditorMcpTimelineSnapshot {
 
 export interface EditorMcpState {
   snapshotRevision?: number;
+  /** Advances only when the authored project document changes, not on playback heartbeats. */
+  documentRevision: number;
   snapshotUpdatedAt?: string;
   snapshotAgeMs?: number;
   workspace: "interaction" | "timeline" | "camera";
@@ -110,6 +120,15 @@ export type EditorMcpCommand =
   | { name: "reset_preview"; mode?: "pan" | "fit" }
   | { name: "select_visual"; kind: "spine-layer" | "color-layer" | "color-clip"; id: string }
   | { name: "update_spine_layer"; layerId: string; patch: { name?: string; enabled?: boolean; locked?: boolean; blendMode?: EditorMcpBlendMode; animation?: string; faceAnimation?: string; followMainAnimation?: boolean; start?: number; end?: number; endMode?: "auto" | "manual"; animationOffset?: number; loop?: boolean; x?: number; y?: number; scale?: number; opacity?: number } }
+  | { name: "add_animation_clip"; layerId: string; animation: string; start: number; end?: number; loop?: boolean; faceAnimation?: string | null; continueAfterOpening?: boolean }
+  | { name: "update_animation_clip"; clipId: string; patch: { animation?: string; faceAnimation?: string | null; start?: number; end?: number; endMode?: "auto" | "manual"; animationOffset?: number; loop?: boolean; enabled?: boolean; continueAfterOpening?: boolean; hideCharacter?: boolean } }
+  | { name: "move_animation_clip"; clipId: string; start: number; ripple: boolean }
+  | { name: "delete_animation_clip"; clipId: string; ripple: boolean }
+  | { name: "add_subtitle_cue"; start: number; end: number; text: Partial<Record<"en" | "ja" | "ko", string>> }
+  | { name: "update_subtitle_cue"; cueId: string; patch: { start?: number; end?: number; enabled?: boolean; text?: Partial<Record<"en" | "ja" | "ko", string>> } }
+  | { name: "delete_subtitle_cue"; cueId: string }
+  | { name: "preview_subtitle_import"; path: string; policy: "replace-imported-cues" | "merge-missing-translations" | "update-text-only" }
+  | { name: "apply_subtitle_import"; changeSetId: string }
   | { name: "reorder_visual_layer"; layerId: string; targetLayerId: string }
   | { name: "add_color_layer"; nameHint?: string }
   | { name: "add_color_clip"; preset?: EditorMcpColorClipPreset; layerId?: string }
@@ -161,6 +180,22 @@ function optionalNumber(value: unknown, field: string, min: number, max = Number
 function validatePatch(value: unknown, allowed: readonly string[], required: string): Record<string, unknown> {
   if (!isRecord(value) || !onlyKeys(value, allowed) || Object.keys(value).length === 0) throw new Error(`${required} must contain only supported fields.`);
   return value;
+}
+
+function validateSubtitleText(value: unknown, field: string): Partial<Record<"en" | "ja" | "ko", string>> {
+  if (!isRecord(value) || !onlyKeys(value, ["en", "ja", "ko"])) throw new Error(`${field} must contain only en, ja, and ko strings.`);
+  for (const language of ["en", "ja", "ko"] as const) {
+    if (value[language] !== undefined && typeof value[language] !== "string") throw new Error(`${field}.${language} must be a string.`);
+  }
+  return value as Partial<Record<"en" | "ja" | "ko", string>>;
+}
+
+function safeRelativePath(value: unknown, field: string): string {
+  const path = stringField(value, field).replaceAll("\\", "/");
+  if (path.startsWith("/") || /^[a-z]:/i.test(path) || path.split("/").some((part) => part === "..")) {
+    throw new Error(`${field} must be a relative path contained in the current asset root.`);
+  }
+  return path;
 }
 
 /** Parse the untrusted JSON command crossing the localhost MCP/UI boundary. */
@@ -241,6 +276,68 @@ export function normalizeEditorMcpCommand(value: unknown): EditorMcpCommand {
       if (patch.opacity !== undefined) optionalNumber(patch.opacity, "patch.opacity", 0, 1);
       return { name: value.name, layerId: stringField(value.layerId, "layerId"), patch: patch as Extract<EditorMcpCommand, { name: "update_spine_layer" }>['patch'] };
     }
+    case "add_animation_clip": {
+      if (!onlyKeys(value, ["name", "layerId", "animation", "start", "end", "loop", "faceAnimation", "continueAfterOpening"])) throw new Error("Unexpected add_animation_clip fields.");
+      const start = optionalNumber(value.start, "start", 0);
+      if (start === undefined) throw new Error("MCP command requires start.");
+      const end = optionalNumber(value.end, "end", 0);
+      if (end !== undefined && end < start + 0.01) throw new Error("end must be at least 0.01 seconds after start.");
+      if (value.faceAnimation !== undefined && value.faceAnimation !== null && typeof value.faceAnimation !== "string") throw new Error("faceAnimation must be an animation name, null (inherit), or an empty string (None).");
+      return {
+        name: value.name,
+        layerId: stringField(value.layerId, "layerId"),
+        animation: stringField(value.animation, "animation"),
+        start,
+        ...(end === undefined ? {} : { end }),
+        ...(value.loop === undefined ? {} : { loop: optionalBoolean(value.loop, "loop") }),
+        ...(value.faceAnimation === undefined ? {} : { faceAnimation: value.faceAnimation as string | null }),
+        ...(value.continueAfterOpening === undefined ? {} : { continueAfterOpening: optionalBoolean(value.continueAfterOpening, "continueAfterOpening") }),
+      };
+    }
+    case "update_animation_clip": {
+      if (!onlyKeys(value, ["name", "clipId", "patch"])) throw new Error("Unexpected update_animation_clip fields.");
+      const patch = validatePatch(value.patch, ["animation", "faceAnimation", "start", "end", "endMode", "animationOffset", "loop", "enabled", "continueAfterOpening", "hideCharacter"], "patch");
+      if (patch.animation !== undefined) stringField(patch.animation, "patch.animation");
+      if (patch.faceAnimation !== undefined && patch.faceAnimation !== null && typeof patch.faceAnimation !== "string") throw new Error("patch.faceAnimation must be an animation name, null (inherit), or an empty string (None).");
+      for (const field of ["start", "end", "animationOffset"] as const) if (patch[field] !== undefined) optionalNumber(patch[field], `patch.${field}`, 0);
+      if (patch.endMode !== undefined && patch.endMode !== "auto" && patch.endMode !== "manual") throw new Error("patch.endMode must be auto or manual.");
+      for (const field of ["loop", "enabled", "continueAfterOpening", "hideCharacter"] as const) if (patch[field] !== undefined) optionalBoolean(patch[field], `patch.${field}`);
+      return { name: value.name, clipId: stringField(value.clipId, "clipId"), patch: patch as Extract<EditorMcpCommand, { name: "update_animation_clip" }>['patch'] };
+    }
+    case "move_animation_clip": {
+      if (!onlyKeys(value, ["name", "clipId", "start", "ripple"])) throw new Error("Unexpected move_animation_clip fields.");
+      const start = optionalNumber(value.start, "start", 0);
+      if (start === undefined || typeof value.ripple !== "boolean") throw new Error("move_animation_clip requires a non-negative start and an explicit ripple boolean.");
+      return { name: value.name, clipId: stringField(value.clipId, "clipId"), start, ripple: value.ripple };
+    }
+    case "delete_animation_clip":
+      if (!onlyKeys(value, ["name", "clipId", "ripple"]) || typeof value.ripple !== "boolean") throw new Error("delete_animation_clip requires a clipId and an explicit ripple boolean.");
+      return { name: value.name, clipId: stringField(value.clipId, "clipId"), ripple: value.ripple };
+    case "add_subtitle_cue": {
+      if (!onlyKeys(value, ["name", "start", "end", "text"])) throw new Error("Unexpected add_subtitle_cue fields.");
+      const start = optionalNumber(value.start, "start", 0);
+      const end = optionalNumber(value.end, "end", 0);
+      if (start === undefined || end === undefined || end < start + 0.01) throw new Error("Subtitle cue end must be at least 0.01 seconds after start.");
+      return { name: value.name, start, end, text: validateSubtitleText(value.text, "text") };
+    }
+    case "update_subtitle_cue": {
+      if (!onlyKeys(value, ["name", "cueId", "patch"])) throw new Error("Unexpected update_subtitle_cue fields.");
+      const patch = validatePatch(value.patch, ["start", "end", "enabled", "text"], "patch");
+      if (patch.start !== undefined) optionalNumber(patch.start, "patch.start", 0);
+      if (patch.end !== undefined) optionalNumber(patch.end, "patch.end", 0);
+      if (patch.enabled !== undefined) optionalBoolean(patch.enabled, "patch.enabled");
+      if (patch.text !== undefined) patch.text = validateSubtitleText(patch.text, "patch.text");
+      return { name: value.name, cueId: stringField(value.cueId, "cueId"), patch: patch as Extract<EditorMcpCommand, { name: "update_subtitle_cue" }>['patch'] };
+    }
+    case "delete_subtitle_cue":
+      if (!onlyKeys(value, ["name", "cueId"])) throw new Error("Unexpected delete_subtitle_cue fields.");
+      return { name: value.name, cueId: stringField(value.cueId, "cueId") };
+    case "preview_subtitle_import":
+      if (!onlyKeys(value, ["name", "path", "policy"]) || !["replace-imported-cues", "merge-missing-translations", "update-text-only"].includes(String(value.policy))) throw new Error("Unsupported subtitle import policy.");
+      return { name: value.name, path: safeRelativePath(value.path, "path"), policy: value.policy as Extract<EditorMcpCommand, { name: "preview_subtitle_import" }>['policy'] };
+    case "apply_subtitle_import":
+      if (!onlyKeys(value, ["name", "changeSetId"])) throw new Error("Unexpected apply_subtitle_import fields.");
+      return { name: value.name, changeSetId: stringField(value.changeSetId, "changeSetId") };
     case "reorder_visual_layer":
       if (!onlyKeys(value, ["name", "layerId", "targetLayerId"])) throw new Error("Unexpected reorder_visual_layer fields.");
       return { name: value.name, layerId: stringField(value.layerId, "layerId"), targetLayerId: stringField(value.targetLayerId, "targetLayerId") };

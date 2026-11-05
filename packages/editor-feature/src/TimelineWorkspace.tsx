@@ -500,6 +500,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const mcpSnapshotCallbackLatestRef = useRef(onMcpSnapshot);
   const createMcpSnapshotLatestRef = useRef<() => EditorMcpTimelineSnapshot | null>(() => null);
   const mcpBridgeRef = useRef<EditorMcpTimelineBridge | null>(null);
+  const mcpSubtitleChangeSetsRef = useRef(new Map<string, { project: EditorProject; sequenceId: string; path: string; policy: "replace-imported-cues" | "merge-missing-translations" | "update-text-only"; before: EditorSubtitleCue[]; after: EditorSubtitleCue[]; duration: number; report: Record<string, unknown> }>());
   projectRef.current = project;
   currentTimeRef.current = currentTime;
   sourceRef.current = source;
@@ -1807,6 +1808,12 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         }),
       subtitles: timeline.subtitles.map((cue) => ({ id: cue.id, start: cue.start, end: cue.end, enabled: cue.enabled, text: cueText(cue, timeline.language) })),
       audio: timeline.audio.map((clip) => ({ id: clip.id, path: clip.path, start: clip.start, end: clip.end, enabled: clip.enabled })),
+      sequence: structuredClone(timeline),
+      animationInfo: timeline.layers.map((layer) => ({
+        layerId: layer.id,
+        directory: layer.directory,
+        animations: (metas[layer.id]?.animations ?? []).map((name) => ({ name, duration: animationDurations[`${layer.id}:${name}`] ?? null })),
+      })),
       renderedLayers,
       preview: {
         view: { ...stageView },
@@ -1959,7 +1966,92 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     };
   }
 
-  function executeMcpCommand(command: EditorMcpCommand): unknown {
+  async function previewMcpSubtitleImport(command: Extract<EditorMcpCommand, { name: "preview_subtitle_import" }>) {
+    if (!timeline || !project || !source) throw new Error("Load a project and open its timeline before previewing subtitle imports.");
+    const sequenceId = timeline.sequenceId ?? "opening";
+    const lineNumber = sequenceId === "opening" ? 0 : Number(sequenceId.match(/^talk-(\d+)$/i)?.[1]);
+    if (!Number.isFinite(lineNumber)) throw new Error("Subtitle import preview supports the opening and numbered Talk sequences.");
+    const content = await source.readText(command.path);
+    if (content === null) throw new Error(`Subtitle source not found in the current asset root: ${command.path}`);
+    if (projectRef.current !== project || (projectRef.current?.timeline.sequenceId ?? "opening") !== sequenceId) throw new Error("The project or active sequence changed while the subtitle source was being read. Preview the import again.");
+    const raw = JSON.parse(content) as Record<string, unknown>;
+    const sourceFile = Array.isArray(raw.characters)
+      ? raw.characters.find((entry) => entry && typeof entry === "object" && (entry as Record<string, unknown>).directory === directory) as Record<string, unknown> | undefined
+      : raw;
+    if (!sourceFile || !Array.isArray(sourceFile.lines)) throw new Error(`No subtitle lines were found for ${directory} in ${command.path}.`);
+    const line = (sourceFile.lines as unknown[]).find((entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      const id = String((entry as Record<string, unknown>).id ?? "");
+      return Number(id.match(/(\d+)$/)?.[1]) === lineNumber;
+    }) as Record<string, unknown> | undefined;
+    if (!line) throw new Error(`No subtitle source line was found for ${sequenceId} in ${command.path}.`);
+    const lineId = String(line.id ?? "");
+    const existing = [...timeline.subtitles].sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+    const imported = importedSubtitleCues({ lines: [line] }).cues;
+    const matching = existing.filter((cue) => cue.lineId === lineId);
+    const linkedCueIds = new Set(timeline.audio.flatMap((clip) => clip.subtitleId ? [clip.subtitleId] : []));
+    let linkedPreserved = 0;
+    const report = {
+      sourcePath: command.path,
+      sequenceId,
+      lineId,
+      policy: command.policy,
+      audioClipCount: timeline.audio.length,
+      audioUnchanged: true,
+      availableTranslations: (Object.keys(imported[0]?.text ?? {}) as TimelineLanguage[]).filter((language) => imported.some((cue) => cue.text[language].trim())),
+    };
+    const replacements = imported.map((cue, index) => {
+      const previous = matching[index];
+      const id = previous?.id ?? `mcp-subtitle-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
+      if (command.policy === "merge-missing-translations" && previous) {
+        return { ...previous, text: {
+          en: previous.text.en.trim() ? previous.text.en : cue.text.en,
+          ja: previous.text.ja.trim() ? previous.text.ja : cue.text.ja,
+          ko: previous.text.ko.trim() ? previous.text.ko : cue.text.ko,
+        }, lineId };
+      }
+      if (command.policy === "update-text-only" && previous) return { ...previous, text: cue.text, lineId };
+      return { ...cue, id, enabled: previous?.enabled ?? true, lineId };
+    });
+    let after: EditorSubtitleCue[];
+    if (command.policy === "replace-imported-cues") {
+      const preservedLinked = matching.filter((cue) => linkedCueIds.has(cue.id) && !replacements.some((replacement) => replacement.id === cue.id));
+      linkedPreserved = preservedLinked.length;
+      after = [...existing.filter((cue) => cue.lineId !== lineId), ...replacements, ...preservedLinked].sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+    } else if (command.policy === "merge-missing-translations") {
+      const translatedById = new Map(matching.map((cue, index) => [cue.id, replacements[index] ?? cue]));
+      after = [...existing.map((cue) => translatedById.get(cue.id) ?? cue), ...replacements.slice(matching.length)].sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+    } else {
+      const updated = new Map(matching.map((cue, index) => [cue.id, replacements[index] ?? cue]));
+      after = existing.map((cue) => updated.get(cue.id) ?? cue);
+    }
+    const beforeById = new Map(existing.map((cue) => [cue.id, cue]));
+    const afterById = new Map(after.map((cue) => [cue.id, cue]));
+    const added = after.filter((cue) => !beforeById.has(cue.id)).length;
+    const removed = existing.filter((cue) => !afterById.has(cue.id)).length;
+    const updated = after.filter((cue) => {
+      const previous = beforeById.get(cue.id);
+      return previous && JSON.stringify(previous) !== JSON.stringify(cue);
+    }).length;
+    const changeSetId = `subtitle-import-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
+    const duration = Math.max(0, ...replacements.map((cue) => cue.end));
+    const changeReport = {
+      ...report,
+      changeSetId,
+      counts: { added, updated, removed, unchanged: Math.max(0, after.length - added - updated), explicitAudioLinksPreserved: linkedPreserved },
+      warnings: command.policy === "update-text-only" && imported.length > matching.length
+        ? [`${imported.length - matching.length} source cue(s) have no existing imported cue; update-text-only does not add them.`]
+        : linkedPreserved > 0 ? [`${linkedPreserved} cue(s) retained because audio clips have explicit links to them.`] : [],
+      beforeCues: matching,
+      afterCues: after.filter((cue) => cue.lineId === lineId),
+    };
+    const changeSets = mcpSubtitleChangeSetsRef.current;
+    changeSets.set(changeSetId, { project, sequenceId, path: command.path, policy: command.policy, before: timeline.subtitles, after, duration, report: changeReport });
+    while (changeSets.size > 20) changeSets.delete(changeSets.keys().next().value!);
+    return changeReport;
+  }
+
+  async function executeMcpCommand(command: EditorMcpCommand): Promise<unknown> {
     if (!timeline) throw new Error("The timeline is not ready.");
     switch (command.name) {
       case "select_sequence":
@@ -2041,6 +2133,122 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         };
         updateLayer(command.layerId, patch);
         return { layerId: command.layerId, updated: Object.keys(patch) };
+      }
+      case "add_animation_clip": {
+        const layer = timeline.layers.find((item) => item.id === command.layerId);
+        if (!layer) throw new Error(`Spine layer not found: ${command.layerId}`);
+        if (layer.locked) throw new Error("The Spine layer is locked.");
+        const meta = metas[layer.id];
+        if (!meta?.animations.includes(command.animation)) throw new Error(`Animation ${command.animation} is not available on layer ${layer.name}.`);
+        if (command.faceAnimation && !meta.animations.includes(command.faceAnimation)) throw new Error(`Secondary animation ${command.faceAnimation} is not available on layer ${layer.name}.`);
+        const animationDuration = animationDurations[`${layer.id}:${command.animation}`] ?? 0;
+        const end = command.end ?? command.start + Math.max(0.01, animationDuration || 2);
+        if (end < command.start + 0.01) throw new Error("Animation clip end must be at least 0.01 seconds after its start.");
+        const clip: EditorAnimationClip = {
+          id: `animation-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`,
+          animation: command.animation,
+          start: command.start,
+          end,
+          endMode: command.end === undefined ? "auto" : "manual",
+          animationOffset: 0,
+          loop: command.loop ?? false,
+          enabled: true,
+          ...(command.faceAnimation === undefined || command.faceAnimation === null ? {} : { faceAnimation: command.faceAnimation }),
+          ...(command.continueAfterOpening === undefined ? {} : { continueAfterOpening: command.continueAfterOpening }),
+        };
+        const clips = insertAnimationClipRipple(layerAnimationClips(layer), clip);
+        updateTimeline((value) => extendTimelineDuration({ ...value, layers: value.layers.map((item) => item.id === layer.id ? { ...item, animationClips: clips } : item), selectedLayerId: layer.id, selectedColorLayerId: null, selectedColorClipId: null }));
+        setSelectedClips([{ kind: "animation", id: clip.id }]);
+        setInspector("animation");
+        return { clipId: clip.id, layerId: layer.id, start: clip.start, end: clip.end, endMode: clip.endMode, animationDuration: animationDuration || null };
+      }
+      case "update_animation_clip": {
+        const found = findAnimationClip(command.clipId);
+        if (!found) throw new Error(`Animation clip not found: ${command.clipId}`);
+        if (found.layer.locked) throw new Error("The Spine layer is locked.");
+        const nextAnimation = command.patch.animation ?? found.clip.animation;
+        if (!metas[found.layer.id]?.animations.includes(nextAnimation)) throw new Error(`Animation ${nextAnimation} is not available on layer ${found.layer.name}.`);
+        const nextStart = command.patch.start ?? found.clip.start;
+        const nextEnd = command.patch.end ?? found.clip.end;
+        if (nextEnd < nextStart + 0.01) throw new Error("Animation clip end must be at least 0.01 seconds after its start.");
+        if (command.patch.faceAnimation && !metas[found.layer.id]?.animations.includes(command.patch.faceAnimation)) throw new Error(`Secondary animation ${command.patch.faceAnimation} is not available on layer ${found.layer.name}.`);
+        const { faceAnimation, ...clipPatch } = command.patch;
+        const patch: Partial<EditorAnimationClip> = {
+          ...clipPatch,
+          ...(faceAnimation === null ? { faceAnimation: undefined } : faceAnimation === undefined ? {} : { faceAnimation }),
+        };
+        if (command.patch.end !== undefined && command.patch.endMode === undefined) patch.endMode = "manual";
+        if (command.patch.animation && command.patch.animation !== found.clip.animation && command.patch.end === undefined && (command.patch.endMode ?? found.clip.endMode) !== "manual") {
+          const duration = animationDurations[`${found.layer.id}:${command.patch.animation}`] ?? 0;
+          if (duration > 0) patch.end = nextStart + Math.max(0.01, duration - (command.patch.animationOffset ?? found.clip.animationOffset));
+        }
+        updateAnimationClip(found.layer.id, command.clipId, patch);
+        return { clipId: command.clipId, layerId: found.layer.id, updated: Object.keys(command.patch) };
+      }
+      case "move_animation_clip": {
+        const found = findAnimationClip(command.clipId);
+        if (!found) throw new Error(`Animation clip not found: ${command.clipId}`);
+        if (found.layer.locked) throw new Error("The Spine layer is locked.");
+        if (command.ripple) moveAnimationClipTo(found.layer.id, command.clipId, command.start);
+        else {
+          const delta = command.start - found.clip.start;
+          updateAnimationClip(found.layer.id, command.clipId, { start: command.start, end: Math.max(command.start + 0.01, found.clip.end + delta) });
+        }
+        return { clipId: command.clipId, layerId: found.layer.id, start: command.start, ripple: command.ripple };
+      }
+      case "delete_animation_clip": {
+        const found = findAnimationClip(command.clipId);
+        if (!found) throw new Error(`Animation clip not found: ${command.clipId}`);
+        if (found.layer.locked) throw new Error("The Spine layer is locked.");
+        updateTimeline((value) => ({ ...value, layers: value.layers.map((layer) => {
+          if (layer.id !== found.layer.id) return layer;
+          const clips = layerAnimationClips(layer, value);
+          const next = command.ripple ? deleteAnimationClipRipple(clips, command.clipId) : clips.filter((clip) => clip.id !== command.clipId);
+          return { ...layer, animationClips: next };
+        }) }));
+        setSelectedClips((items) => items.filter((item) => item.id !== command.clipId));
+        return { clipId: command.clipId, layerId: found.layer.id, ripple: command.ripple };
+      }
+      case "add_subtitle_cue": {
+        const cue: EditorSubtitleCue = {
+          id: `subtitle-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`,
+          start: command.start,
+          end: command.end,
+          enabled: true,
+          text: { en: command.text.en ?? "", ja: command.text.ja ?? "", ko: command.text.ko ?? "" },
+        };
+        updateTimeline((value) => extendTimelineDuration({ ...value, subtitles: [...value.subtitles, cue], selectedCueId: cue.id }));
+        setSelectedClips([{ kind: "cue", id: cue.id }]);
+        setInspector("cue");
+        return { cueId: cue.id };
+      }
+      case "update_subtitle_cue": {
+        const cue = timeline.subtitles.find((item) => item.id === command.cueId);
+        if (!cue) throw new Error(`Subtitle cue not found: ${command.cueId}`);
+        const start = command.patch.start ?? cue.start;
+        const end = command.patch.end ?? cue.end;
+        if (end < start + 0.01) throw new Error("Subtitle cue end must be at least 0.01 seconds after its start.");
+        const { text, ...fields } = command.patch;
+        updateCue(command.cueId, { ...fields, ...(text ? { text: { ...cue.text, ...text } } : {}) });
+        return { cueId: command.cueId, updated: Object.keys(command.patch) };
+      }
+      case "delete_subtitle_cue": {
+        const cue = timeline.subtitles.find((item) => item.id === command.cueId);
+        if (!cue) throw new Error(`Subtitle cue not found: ${command.cueId}`);
+        updateTimeline((value) => ({ ...value, subtitles: value.subtitles.filter((item) => item.id !== cue.id), audio: value.audio.map((clip) => clip.subtitleId === cue.id ? { ...clip, subtitleId: null } : clip), selectedCueId: value.selectedCueId === cue.id ? null : value.selectedCueId }));
+        setSelectedClips((items) => items.filter((item) => item.id !== cue.id));
+        return { cueId: cue.id, explicitAudioLinksCleared: timeline.audio.filter((clip) => clip.subtitleId === cue.id).length };
+      }
+      case "preview_subtitle_import":
+        return previewMcpSubtitleImport(command);
+      case "apply_subtitle_import": {
+        const changeSet = mcpSubtitleChangeSetsRef.current.get(command.changeSetId);
+        if (!changeSet) throw new Error("Subtitle change set is missing or expired; preview the import again.");
+        if (changeSet.project !== projectRef.current || changeSet.sequenceId !== (timeline.sequenceId ?? "opening")) throw new Error("The project or active sequence changed after subtitle preview. Preview again before applying.");
+        if (JSON.stringify(timeline.subtitles) !== JSON.stringify(changeSet.before)) throw new Error("Subtitle cues changed after preview. Preview again before applying.");
+        updateTimeline((value) => extendTimelineDuration({ ...value, subtitles: changeSet.after, duration: Math.max(value.duration, changeSet.duration) }));
+        mcpSubtitleChangeSetsRef.current.delete(command.changeSetId);
+        return { changeSetId: command.changeSetId, applied: true, sequenceId: changeSet.sequenceId, sourcePath: changeSet.path, policy: changeSet.policy, counts: changeSet.report.counts, audioUnchanged: true };
       }
       case "reorder_visual_layer": {
         const sourceTrack = displayVisualTracks.find((track) => track.layer.id === command.layerId);

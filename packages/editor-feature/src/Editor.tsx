@@ -456,7 +456,7 @@ export function Editor() {
   const [waveformProfileRecording, setWaveformProfileRecording] = useState(false);
   const waveformProfileRef = useRef<WaveformProfileRecorder | null>(null);
   const mcpEnabledRef = useRef(false);
-  const mcpCommandRef = useRef<(command: EditorMcpCommand) => Promise<unknown>>(async () => { throw new Error("The editor MCP bridge is not ready."); });
+  const mcpCommandRef = useRef<(command: EditorMcpCommand, expectedDocumentRevision?: number) => Promise<unknown>>(async () => { throw new Error("The editor MCP bridge is not ready."); });
   const mcpTimelineRef = useRef<EditorMcpTimelineBridge | null>(null);
   const mcpTimelineSnapshotRef = useRef<EditorMcpTimelineSnapshot | null>(null);
   const mcpSnapshotRef = useRef<EditorMcpState | null>(null);
@@ -464,8 +464,10 @@ export function Editor() {
   const mcpRuntimeErrorsRef = useRef<Array<{ time: string; message: string }>>([]);
   const saveStateRef = useRef(saveState);
   const cameraEditTransactionRef = useRef<{ project: EditorProject; redo: EditorProject[]; saveState: typeof saveState } | null>(null);
-  const saveResultRef = useRef<{ ok: boolean; error: string | null } | null>(null);
+  const saveResultRef = useRef<{ ok: boolean; error: string | null; savedDocumentRevision?: number; writtenPaths?: string[]; verifiedVersions?: Record<string, string> } | null>(null);
   const recoveryPromptRef = useRef<{ rootPath: string; directory: string; current: EditorProject | null; backups: EditorProject[]; savedAt: number } | null>(null);
+  const mcpDocumentFingerprintRef = useRef<string | null>(null);
+  const mcpDocumentRevisionRef = useRef(0);
 
   projectRef.current = project;
   directoryRef.current = directory;
@@ -477,7 +479,24 @@ export function Editor() {
   mcpEnabledRef.current = mcpEnabled;
   const viewSettingsRef = useRef<EditorViewSettings>(viewSettings);
   viewSettingsRef.current = viewSettings;
+  function currentMcpDocumentRevision(): number {
+    const current = projectRef.current;
+    if (!current) {
+      if (mcpDocumentFingerprintRef.current !== null) {
+        mcpDocumentFingerprintRef.current = null;
+        mcpDocumentRevisionRef.current += 1;
+      }
+      return mcpDocumentRevisionRef.current;
+    }
+    const fingerprint = JSON.stringify(current);
+    if (fingerprint !== mcpDocumentFingerprintRef.current) {
+      mcpDocumentFingerprintRef.current = fingerprint;
+      mcpDocumentRevisionRef.current += 1;
+    }
+    return mcpDocumentRevisionRef.current;
+  }
   mcpSnapshotRef.current = {
+    documentRevision: currentMcpDocumentRevision(),
     workspace,
     assetRoot: source?.rootPath ?? null,
     assetSets: directories,
@@ -500,6 +519,7 @@ export function Editor() {
     const timeline = mcpTimelineRef.current?.snapshot() ?? mcpTimelineSnapshotRef.current;
     const next = {
       ...current,
+      documentRevision: currentMcpDocumentRevision(),
       timeline,
       waveformProfile: __EDITOR_WAVEFORM_PROFILE__ ? waveformProfileRef.current?.snapshot(performance.now()) ?? null : null,
     };
@@ -627,11 +647,12 @@ export function Editor() {
       try {
         const response = await fetch("/__spine/mcp/ui-command", { cache: "no-store" });
         if (response.ok) {
-          const item = await response.json() as { id?: unknown; command?: unknown } | null;
-          if (item && typeof item.id === "string" && item.command && typeof item.command === "object") {
+          const item = await response.json() as { id?: unknown; command?: unknown; expiresAt?: unknown; expectedDocumentRevision?: unknown } | null;
+          if (item && typeof item.id === "string" && item.command && typeof item.command === "object" && (typeof item.expiresAt !== "number" || item.expiresAt > Date.now())) {
             let result: unknown;
             let error: string | undefined;
-            try { result = await mcpCommandRef.current(item.command as EditorMcpCommand); }
+            const expectedDocumentRevision = Number.isInteger(item.expectedDocumentRevision) && (item.expectedDocumentRevision as number) >= 0 ? item.expectedDocumentRevision as number : undefined;
+            try { result = await mcpCommandRef.current(item.command as EditorMcpCommand, expectedDocumentRevision); }
             catch (value) { error = value instanceof Error ? value.message : String(value); }
             await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
             await publishMcpSnapshotNow();
@@ -1327,7 +1348,7 @@ export function Editor() {
     setSaveState("dirty");
   }
 
-  async function saveProject() {
+  async function saveProject(options: { rejectExternalChanges?: boolean } = {}) {
     const save = async () => {
       const current = projectRef.current ?? project;
       const saveSource = sourceRef.current;
@@ -1343,6 +1364,7 @@ export function Editor() {
         const getCurrentProject = () => projectRef.current ?? current;
         const subtitleWrites = await timelineSaveRef.current?.(getCurrentProject) ?? [];
         const latest = getCurrentProject();
+        const savedDocumentRevision = currentMcpDocumentRevision();
         if (sourceRef.current !== saveSource || directoryRef.current !== saveDirectory || latest.assetDirectory !== saveDirectory) return;
         const prepared = await prepareEditorProjectSave(saveSource, latest);
         const writesByPath = new Map<string, EditorSaveFile>();
@@ -1366,11 +1388,19 @@ export function Editor() {
         } catch (value) {
           if (!(value instanceof DesktopSaveConflictError)) throw value;
           const changedPaths = Object.keys(value.currentVersions);
+          if (options.rejectExternalChanges) throw new Error(`Save refused because files changed outside the Editor: ${changedPaths.join(", ")}. Re-read the project and review the conflict before saving.`);
           const decision = window.confirm(
             `These project files changed outside the Editor:\n\n${changedPaths.join("\n")}\n\nOverwrite exactly the versions detected now? Choose Cancel to keep your files unchanged.`,
           );
           if (!decision) throw new Error("Save canceled; external changes were preserved.");
           saveResult = await saveSource.saveBatch(writes, value.currentVersions);
+        }
+        const verifiedVersions: Record<string, string> = {};
+        for (const file of writes) {
+          const written = await saveSource.readText(file.path);
+          const expectedVersion = contentVersion(file.content);
+          if (written === null || contentVersion(written) !== expectedVersion) throw new Error(`Save verification failed for ${file.path}; the written file does not match the reviewed project.`);
+          verifiedVersions[file.path] = expectedVersion;
         }
         const projectPath = prepared.manifestSave?.manifestPath ?? prepared.files[0]?.path ?? "";
         recordRecentFile({ kind: "project", path: projectPath, rootPath: saveSource.rootPath, label: displayName(projectPath), directory: saveDirectory });
@@ -1380,7 +1410,7 @@ export function Editor() {
         const unchangedSinceSave = projectRef.current === latest;
         setSaveState(unchangedSinceSave ? "saved" : "dirty");
         if (unchangedSinceSave) setSavedAt(Date.now());
-        saveResultRef.current = { ok: true, error: null };
+        saveResultRef.current = { ok: true, error: null, savedDocumentRevision, writtenPaths: writes.map((file) => file.path), verifiedVersions };
         if (unchangedSinceSave && draftPreviewSessionRef.current) stopDraftPreview("Draft preview ended after saving; Viewer will return to saved files.");
         const subtitlePaths = subtitleWrites.map((file) => file.path);
         const subtitleMessage = subtitlePaths.length > 0
@@ -1425,7 +1455,11 @@ export function Editor() {
     setStatus(`${label} restored as an unsaved draft. Save explicitly to write it to the library.`);
   }
 
-  mcpCommandRef.current = async (command) => {
+  mcpCommandRef.current = async (command, expectedDocumentRevision) => {
+    if (expectedDocumentRevision !== undefined) {
+      const actual = currentMcpDocumentRevision();
+      if (actual !== expectedDocumentRevision) throw new Error(`MCP_STALE_DOCUMENT_REVISION: expected document revision ${expectedDocumentRevision}, but the Editor is now at ${actual}. Re-read editor_state and review the change before retrying.`);
+    }
     switch (command.name) {
       case "start_waveform_profile": {
         if (!__EDITOR_WAVEFORM_PROFILE__) throw new Error("Waveform profiling is not enabled in this Editor build.");
@@ -1468,10 +1502,10 @@ export function Editor() {
         setWorkspace(command.workspace);
         return { workspace: command.workspace };
       case "save": {
-        await saveProject();
+        await saveProject({ rejectExternalChanges: true });
         const saved = saveResultRef.current;
         if (!saved?.ok) throw new Error(saved?.error ?? "The project could not be saved.");
-        return { ok: true, status: "saved" };
+        return { ok: true, status: "saved", savedDocumentRevision: saved.savedDocumentRevision ?? currentMcpDocumentRevision(), writtenPaths: saved.writtenPaths ?? [], verifiedVersions: saved.verifiedVersions ?? {} };
       }
       default: {
         const timeline = mcpTimelineRef.current;

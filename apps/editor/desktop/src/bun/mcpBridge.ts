@@ -8,11 +8,14 @@ import { normalizeEditorMcpCommand, type EditorMcpCommand, type EditorMcpConnect
 interface PendingCommand {
   resolve: (response: Response) => void;
   timer: ReturnType<typeof setTimeout>;
+  started: boolean;
 }
 
 interface QueuedCommand {
   id: string;
   command: EditorMcpCommand;
+  expiresAt: number;
+  expectedDocumentRevision?: number;
 }
 
 function json(value: unknown, status = 200): Response {
@@ -32,6 +35,7 @@ function record(value: unknown): value is Record<string, unknown> {
 
 export class SpineEditorMcpBridge {
   readonly enabled: boolean;
+  private readonly commandTimeoutMs: number;
   private readonly token: string;
   private readonly pending = new Map<string, PendingCommand>();
   private readonly queue: QueuedCommand[] = [];
@@ -41,8 +45,9 @@ export class SpineEditorMcpBridge {
   private stateUpdatedAt = 0;
   private stateRevision = 0;
 
-  constructor(enabled: boolean) {
+  constructor(enabled: boolean, options: { commandTimeoutMs?: number } = {}) {
     this.enabled = enabled;
+    this.commandTimeoutMs = options.commandTimeoutMs ?? 30_000;
     this.token = randomBytes(32).toString("base64url");
   }
 
@@ -70,6 +75,7 @@ export class SpineEditorMcpBridge {
       pending.resolve(errorResponse("The desktop editor closed before responding to the MCP command.", 503));
       this.pending.delete(id);
     }
+    this.queue.length = 0;
   }
 
   async handle(request: Request, url: URL): Promise<Response> {
@@ -79,7 +85,7 @@ export class SpineEditorMcpBridge {
     if (url.pathname.startsWith("/__spine/mcp/ui-") && !this.trustedUiRequest(request, url)) return errorResponse("Cross-origin editor bridge request rejected.", 403);
     if (url.pathname === "/__spine/mcp/ui-enabled" && request.method === "GET") return json({ enabled: true });
     if (url.pathname === "/__spine/mcp/ui-state" && request.method === "POST") return this.receiveState(request);
-    if (url.pathname === "/__spine/mcp/ui-command" && request.method === "GET") return json(this.queue.shift() ?? null);
+    if (url.pathname === "/__spine/mcp/ui-command" && request.method === "GET") return json(this.nextCommand());
     if (url.pathname === "/__spine/mcp/ui-result" && request.method === "POST") return this.receiveResult(request);
 
     if (!this.authorized(request)) return errorResponse("Unauthorized MCP request.", 401);
@@ -139,8 +145,10 @@ export class SpineEditorMcpBridge {
       if (!pending) return json({ ok: false, ignored: true });
       clearTimeout(pending.timer);
       this.pending.delete(value.id);
-      if (typeof value.error === "string" && value.error) pending.resolve(errorResponse(value.error, 400));
-      else pending.resolve(json({ result: value.result ?? null }));
+      if (typeof value.error === "string" && value.error) {
+        const staleRevision = value.error.startsWith("MCP_STALE_DOCUMENT_REVISION:");
+        pending.resolve(json({ error: value.error, ...(staleRevision ? { code: "stale_document_revision" } : {}) }, staleRevision ? 409 : 400));
+      } else pending.resolve(json({ result: value.result ?? null }));
       return json({ ok: true });
     } catch (value) {
       return errorResponse(value);
@@ -152,22 +160,49 @@ export class SpineEditorMcpBridge {
       const value = await request.json();
       if (!record(value) || !record(value.command) || typeof value.command.name !== "string") return errorResponse("A named editor command is required.");
       const command = normalizeEditorMcpCommand(value.command);
+      const expectedDocumentRevision = value.expectedDocumentRevision;
+      if (expectedDocumentRevision !== undefined && (typeof expectedDocumentRevision !== "number" || !Number.isSafeInteger(expectedDocumentRevision) || expectedDocumentRevision < 0)) return errorResponse("expectedDocumentRevision must be a non-negative safe integer.");
       if (command.name === "open_asset_root" && !isAbsolute(command.rootPath)) return errorResponse("Asset root paths must be absolute.");
       if (this.queue.length >= 32) return errorResponse("The editor command queue is full.", 429);
       if (!this.state || Date.now() - this.stateUpdatedAt >= 5000) return errorResponse("The editor UI is not connected yet.", 503);
+      if (expectedDocumentRevision !== undefined && this.state.documentRevision !== expectedDocumentRevision) {
+        return json({ error: `The project changed after this operation was prepared (expected revision ${expectedDocumentRevision}, current revision ${this.state.documentRevision ?? "unknown"}). Re-read editor_state and review the change.`, code: "stale_document_revision", expectedDocumentRevision, actualDocumentRevision: this.state.documentRevision ?? null }, 409);
+      }
 
       const id = crypto.randomUUID();
+      const expiresAt = Date.now() + this.commandTimeoutMs;
       return await new Promise<Response>((resolve) => {
         const timer = setTimeout(() => {
+          const pending = this.pending.get(id);
+          const started = pending?.started === true;
           this.pending.delete(id);
-          resolve(errorResponse(`The editor did not complete “${command.name}” within 30 seconds.`, 504));
-        }, 30_000);
-        this.pending.set(id, { resolve, timer });
-        this.queue.push({ id, command });
+          if (!started) this.removeQueuedCommand(id);
+          resolve(errorResponse(started
+            ? `The editor started “${command.name}” but did not return within ${Math.round(this.commandTimeoutMs / 1000)} seconds. Its outcome may be unknown; inspect editor_state before retrying.`
+            : `The editor did not start “${command.name}” within ${Math.round(this.commandTimeoutMs / 1000)} seconds. The queued command was canceled and will not execute later.`, 504));
+        }, this.commandTimeoutMs);
+        this.pending.set(id, { resolve, timer, started: false });
+        this.queue.push({ id, command, expiresAt, ...(expectedDocumentRevision === undefined ? {} : { expectedDocumentRevision }) });
       });
     } catch (value) {
       return errorResponse(value);
     }
+  }
+
+  private removeQueuedCommand(id: string): void {
+    const index = this.queue.findIndex((item) => item.id === id);
+    if (index >= 0) this.queue.splice(index, 1);
+  }
+
+  private nextCommand(): QueuedCommand | null {
+    while (this.queue.length > 0) {
+      const item = this.queue.shift()!;
+      const pending = this.pending.get(item.id);
+      if (!pending || item.expiresAt <= Date.now()) continue;
+      pending.started = true;
+      return item;
+    }
+    return null;
   }
 }
 
