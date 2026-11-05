@@ -97,6 +97,24 @@ export function ffmpegEncoderAttempts(format: FfmpegVideoFormat, encoderOutput: 
   return candidates.filter((candidate) => available.has(candidate.name));
 }
 
+/** Convert browser JPEG frames to standard limited-range BT.709 video. */
+export function ffmpegVideoColorPipelineArgs(format: FfmpegVideoFormat): string[] {
+  const args = [
+    "-vf", "scale=in_range=pc:out_range=tv:in_color_matrix=bt470bg:out_color_matrix=bt709",
+    "-pix_fmt:v", "yuv420p",
+    "-color_range:v", "tv",
+    "-colorspace:v", "bt709",
+    "-color_primaries:v", "bt709",
+    "-color_trc:v", "bt709",
+  ];
+  if (format === "mp4") {
+    // Some Windows hardware encoders (notably Media Foundation) omit VUI color
+    // metadata even when the corresponding output options are supplied.
+    args.push("-bsf:v", "h264_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1");
+  }
+  return args;
+}
+
 export function ffmpegAudioMixFilterGraph(
   tracks: readonly Pick<FfmpegVideoAudioTrack, "start" | "duration" | "volume">[],
   videoDuration: number,
@@ -396,7 +414,7 @@ export class FfmpegVideoRecorder {
       if (audioMix) {
         args.push("-filter_complex", audioMix.graph, "-map", audioMix.output);
       }
-      args.push("-frames:v", String(frameCount), "-t", duration, "-c:v", attempt.name, ...attempt.args, "-pix_fmt:v", "yuv420p");
+      args.push("-frames:v", String(frameCount), "-t", duration, "-c:v", attempt.name, ...attempt.args, ...ffmpegVideoColorPipelineArgs(session.format));
       if (audioTracks.length > 0) args.push("-c:a", session.format === "mp4" ? "aac" : "libopus", "-b:a", session.format === "mp4" ? "160k" : "128k");
       if (session.format === "mp4") args.push("-movflags", "+faststart");
       args.push("-progress", "pipe:1", "-nostats");

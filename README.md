@@ -1,94 +1,70 @@
 # BA Spine Suite
 
-Standalone Electrobun apps for viewing and editing Blue Archive Spine assets:
+Two desktop tools for browsing, previewing, and authoring Blue Archive Spine content.
 
-- **BA Spine Viewer** — read-only playback, browsing, dialogue, and composition preview.
-- **BA Spine Editor** — interaction and timeline authoring.
+| App | Purpose |
+| --- | --- |
+| **BA Spine Viewer** | Browse a local asset library and play Spine characters, lobby sequences, dialogue, and effects. |
+| **BA Spine Editor** | Author and preview lobby interactions and timelines. |
 
-Both apps use the shared modules under `packages/`. The viewer and editor have separate native application identities and build outputs.
+## Features
 
-## Local development
+### Viewer
 
-This workspace expects Bun 1.4.x and Windows/macOS/Linux desktop build prerequisites for Electrobun.
+- Search and browse characters, variants, and lobby assets; keep favorites and revisit recent lobbies.
+- Play animations and compositions with playback, camera, voice, subtitle, and Light FX controls.
+- Export video at 720p, 1080p, 2K, or 4K while preserving the selected aspect ratio and visual effects.
+- Send a lobby and playback context to the Editor, or preview an Editor project in the Viewer.
+
+### Editor
+
+- Build and edit lobby interactions and timelines with animation, color, audio, and subtitle tracks.
+- Preview timeline sequences and inspect project diagnostics, including missing or invalid references.
+- Find subtitle cues, copy and paste timeline clips, and use keyboard shortcuts for common editing tasks.
+- Save authored project data with external-change checks and local recovery support.
+
+### Together
+
+- Preview saved work—or an unsaved, read-only draft—in the other app.
+- Keep source skeletons, atlases, textures, and audio separate from authored project files.
+
+## Getting started
+
+### Run from source
+
+Requires [Bun](https://bun.sh/) 1.4.2 and the platform prerequisites for Electrobun.
 
 ```sh
 bun install
-bun run typecheck
-bun test
-bun run build
 bun run dev:viewer
 bun run dev:editor
 ```
 
-`bun run build` builds both native applications (Viewer, then Editor) and audits the packaged outputs—including compressed `.tar.zst` resources—for bundled `data/` directories, catalog paths, source-workspace references, and Windows launcher files/signatures. Archives are streamed and inspected without extraction. `bun run audit:release` reruns that audit; optionally provide OS-delimited `BA_SPINE_FORBIDDEN_PATHS` and `BA_SPINE_BUILD_LOGS` lists to check additional source paths and captured build logs.
+Choose your local asset-library folder when prompted. In development, a recognizable `./data/` folder can also be used.
 
-On Windows x64, `bun run portable:package` builds both apps and creates `release/portable/BA-Spine-Suite-<version>-win-x64.zip` with a SHA-256 sidecar. The archive contains root `Editor.exe`/`Viewer.exe` launchers, both complete Electrobun bundles, a validated `suite.json`, notices, and a data-folder placeholder—never the repository's local library. Run `bun run audit:portable` to verify the ZIP. Portable updates are manual: close both apps and replace the launchers, manifest, docs/notices, and `apps/` together; keep the existing `data/` directory and OS app-data untouched.
+### Build the portable suite
 
-To profile the Editor's timeline waveform path with generated, in-memory audio, run `bun run profile:timeline-waveforms` and open `http://127.0.0.1:5173/?profile=waveforms`. The development-only fixture can mount the production `TimelineWorkspace` audio timeline/inspector (without Spine visual layers) or waveform components alone. It does not load `data/` or use the desktop API; the WAV results do not model OGG decode or the packaged runtime. Run it in a visible foreground window, and treat automation-browser frame/long-task outliers as inconclusive rather than production performance evidence.
+On Windows x64, create a portable ZIP containing both apps with:
 
-For a read-only authored-asset profile, launch the visible standalone Editor with MCP diagnostics explicitly enabled using `bun run profile:editor-waveforms` (or set `BA_SPINE_EDITOR_WAVEFORM_PROFILE=1` in the process environment before `bun run dev:editor -- --mcp`). Start `editor_start_waveform_profile` while the project is loaded in the interaction workspace, switch to its timeline, allow the view to settle in the foreground, then call `editor_stop_waveform_profile`; read `waveformProfile` from `editor_state`. The report contains only in-memory waveform stage durations, frame gaps, visibility, and long-task timings. It sends no telemetry and does not save project data; do not call `editor_save` during profiling.
-
-## Packaged builds
-
-The root build creates separate platform-specific Electrobun outputs under `apps/viewer/desktop/build/` and `apps/editor/desktop/build/`. On Windows, each stable output includes its app's Setup executable, compressed package, and per-user app bundle. The additive portable ZIP keeps those complete bundles together and launches them through suite-aware root executables. The asset library is deliberately not bundled. A release update feed is not configured in this workspace, so local builds do not exercise the in-app update cycle.
-
-In desktop development, `./data/` is offered as the fallback library when recognizable. In a portable suite, both apps discover the adjacent `data/` folder after checking a valid explicit `BA_SPINE_DATA` override and the app's remembered library path. Empty or invalid suite data leaves the app in its library-selection state; discovery does not create or modify assets. In development, the workspace `./data/` fallback remains available. If a remembered drive is unavailable or a library moved, choose its new folder. Only the path is remembered—not an asset copy—and project-relative references remain rooted in the selected library.
-
-## Asset and project data
-
-`data/` is a local, gitignored library. It is not application source, not included in builds, and should never be force-added to Git. The viewer has read-only access. The editor saves only authored project and established workspace files; source Spine skeletons, atlases, textures, and audio remain untouched. Remembered library paths are stored separately per app under OS app data, never in the library.
-
-Viewer library search matches character names, variants, lobby IDs, and asset IDs. Use the character list's arrow keys or Home/End to browse; mark the selected lobby as a favorite or reopen it from recent lobbies. Desktop favorites and recents are stored locally per library identity. Browser-picked folders use session-only navigation preferences because they do not expose a reliable persistent library identity.
-
-The desktop Viewer creates small previews lazily for visible character rows, using a single serialized idle-time WebGL capture lane. Fingerprinted thumbnails are stored in the Viewer’s OS app-data cache (bounded to 256 images / 128 MB), never under the selected library; a changed lobby replaces only that lobby’s cache entries. Thumbnail failures do not block browsing or playback.
-
-The desktop Viewer debounces selected-library filesystem events and marks changes as available without interrupting playback. Use **Refresh library** to reload; the current lobby, sequence, playhead, camera, language, voice volume, and playback settings are retained where still valid. The manual action remains available if filesystem watching is unsupported or unavailable.
-
-Viewer and Editor save their window size, position, and maximized state separately in OS app data. On restart, the saved frame is adjusted for the current display scale and clamped to a connected monitor's work area; invalid state or a disconnected display safely falls back to the default/primary display. First-run defaults are also centered and shrunk to fit. The portable Windows x64 builds enforce a native 760 × 560 logical-pixel minimum through a Win32 window hook, scaled for display DPI and reduced to the monitor work area on smaller screens. Other platforms and unsupported architectures retain the resize correction fallback, which is not a hard OS drag constraint. Window state never touches the asset library.
-
-Automated persistence tests must use synthetic fixtures under `tests/fixtures/` or a disposable copy—not `data/`.
-
-Editor saves stage the project and linked subtitle JSON as one batch, compare each file with its session baseline, and ask before overwriting external edits. Replacements are atomic per file, prior project JSON is kept in a bounded `.editor/backups/` history, and a failed multi-file commit attempts rollback and reports any incomplete rollback. Local recovery snapshots are separate, bounded browser storage; the Editor always prompts before restoring them, and restore marks the project unsaved. Linked subtitle files are not written until **Save to root**.
-
-The timeline inspector provides read-only, navigable diagnostics for unavailable layers, missing manifest-declared files or audio, unknown Spine animations, unsupported manifest versions, invalid/out-of-duration ranges, overlapping or exact same-time duplicate subtitles, missing preview-language translations, and stale audio-to-subtitle links. Unsupported project schemas are rejected with a load error. Diagnostics select the affected item; fixes remain explicit Editor actions.
-
-Use **Find subtitle cue** in the timeline inspector to search English, Japanese, Korean, or all translations. Results are case-insensitive and ordered by cue time; selecting a result selects the cue, stops playback, moves the playhead, and scrolls the timeline to it. Search and navigation do not edit subtitle data.
-
-Timeline selections can be played once or looped between their combined start and end. Pause/resume preserves selection playback; changing the selection or seeking exits the loop. **Fit selection** zooms and scrolls the timeline to the selected items without changing authored timing.
-
-Copy selected animation, color, subtitle, or audio clips with **Ctrl/Cmd+C**, then paste at the playhead with **Ctrl/Cmd+V**. Pasting preserves relative timing, remaps links when both audio and its cue are copied, skips locked tracks, and moves color clips around occupied same-track ranges. Links to cues not copied are cleared. The clipboard stays in memory for the current sequence and does not use the OS clipboard.
-
-Animation fields in the interaction and timeline editors use searchable pickers. Type to filter names, then use the arrow keys and Enter to choose; existing animation names that are missing from the loaded rig remain visible and marked rather than being silently cleared.
-
-## Keyboard shortcuts
-
-The Viewer displays its playback shortcuts below the preview; press `?` in the Editor or choose **Show keyboard shortcuts** from the command palette for context-sensitive Editor bindings. `Ctrl/⌘+K` opens commands, while focused text fields keep their normal editing keys. Timeline help includes copy/paste, undo/redo, frame stepping, fit, and save; interaction help covers selection, pan, draw, test, bones, and project editing.
-
-## Viewer and Editor handoff
-
-**Edit this lobby** in Viewer sends the selected library/lobby and available playback context to Editor. **Preview saved in Viewer** sends the Editor's selected library/lobby and timeline context back to Viewer; save authored changes first. When the Editor project is dirty, **Preview unsaved draft in Viewer** sends a debounced, read-only project snapshot through the authenticated loopback companion channel. Draft data is held in Editor memory only, never written to the asset library; Viewer visibly marks draft mode and offers **Return to saved files**. Draft preview ends when its session is revoked or Editor disconnects. Handoffs do not upload data. In the portable suite, the sender prefers the validated sibling launcher; standalone installs retain their per-user launch-plan fallback. Concurrent first handoffs share one launch attempt while waiting up to 12 seconds for registration. Handoffs and duplicate app launches activate the existing window. On same-lobby saved-file reloads, Viewer keeps its language, camera framing/pose, voice volume, and playback position/speed/loop/pause state; explicit handoff sequence/time takes precedence when supplied. Editor asks before replacing a dirty project and refuses replacement during a save or save error.
-
-## Troubleshooting
-
-- **Library missing or moved:** use the native folder chooser to select the library's new root. Each app remembers its own path outside the library and keeps an unavailable removable-drive path until you select a replacement.
-- **Handoff does not open the expected content:** launch the target app once, select the same library root in both apps, then retry. Handoff is authenticated and loopback-only; it does not upload projects or assets.
-- **Editor reports an external save conflict:** review the conflict in the Editor before overwriting. Prior project JSON is retained in `.editor/backups/`; browser recovery snapshots are separate and require an explicit restore choice.
-- **Packaged app update testing:** this workspace has no configured release `baseUrl` or update feed. Local package builds and archive audits do not verify update delivery.
-
-## Workspace map
-
-```text
-apps/viewer/                 Viewer renderer and Electrobun host
-apps/editor/                 Editor renderer and Electrobun host
-packages/spine-runtime/      Shared Spine models, runtime, and viewport modules
-packages/viewer-feature/     Viewer screen and desktop asset adapter
-packages/editor-feature/     Modular editor UI, project logic, and tests
-packages/app-ui/             Shared icons and UI primitives
-packages/asset-library/      Shared catalog and manifest discovery
-packages/desktop-host/       Shared native host boundary and path policy
-packages/wasm-kernels/       Deferred until a CPU-bound workload is profiled
-plans/                       Architecture and commit-oriented roadmap
-data/                        Local asset library; ignored
+```sh
+bun run portable:package
 ```
 
-See [`plans/standalone-suite.md`](plans/standalone-suite.md) for migration phases, integration QoL, safety requirements, and release acceptance criteria.
+The ZIP is written to `release/portable/`. It contains the applications, not your local asset library; select or place the library separately.
+
+## Data and privacy
+
+- Viewer access to the asset library is read-only.
+- Editor changes are saved to authored project and workspace files; source Spine assets are left untouched.
+- The asset library is local and is not included in application builds or portable packages.
+- Viewer–Editor handoffs use a local connection and do not upload projects or assets.
+
+## Development checks
+
+```sh
+bun run typecheck
+bun test
+bun run build
+```
+
+`bun run build` builds both desktop apps and audits their release artifacts.

@@ -44,6 +44,56 @@ test("authored talks sample both moving body and face while preserving interacti
   expect(state.getCurrent(2)).toBeNull();
 });
 
+test("auto-play starts the next Talk by crossfading from the finished Talk tracks", () => {
+  const data = new SkeletonData();
+  data.bones.push(new BoneData(0, "root", null));
+  data.animations.push(
+    new Animation("Talk_01_M", [], 2),
+    new Animation("Talk_01_A", [], 2),
+    new Animation("Talk_02_M", [], 2),
+    new Animation("Talk_02_A", [], 2),
+  );
+  const state = new AnimationState(new AnimationStateData(data));
+  state.setAnimation(5, "Talk_01_M", false);
+  state.setAnimation(6, "Talk_01_A", false);
+  const skeleton = new Skeleton(data);
+  state.apply(skeleton);
+  const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
+    interactionMode: "interaction",
+    interactionReady: true,
+    bundle: {
+      skeleton,
+      state,
+      project: { talkMixDuration: 0.4 },
+      interaction: { talks: [
+        { main: "Talk_01_M", face: "Talk_01_A" },
+        { main: "Talk_02_M", face: "Talk_02_A" },
+      ] },
+    },
+    interactionState: "talk",
+    interactionTrackName: "Talk_01_M",
+    talkIndex: 1,
+    activeTalkIndex: 0,
+    talkEventIndex: 0,
+    talkAudioPending: false,
+    talkFadeQueued: true,
+    callbacks: { onTalk: () => true },
+    eyeFollowHold: 0,
+    resetInteractionTargets: () => undefined,
+  }) as SpineRenderer;
+
+  renderer.triggerTalk("Talk_02_M");
+
+  const main = state.getCurrent(5)!;
+  const face = state.getCurrent(6)!;
+  expect(main.animation?.name).toBe("Talk_02_M");
+  expect(main.mixDuration).toBe(0.4);
+  expect(main.mixingFrom?.animation?.name).toBe("Talk_01_M");
+  expect(face.animation?.name).toBe("Talk_02_A");
+  expect(face.mixingFrom?.animation?.name).toBe("Talk_01_A");
+  expect(renderer.isTalkActive()).toBe(true);
+});
+
 function playback(selection: string) {
   const data = new SkeletonData();
   data.bones.push(new BoneData(0, "root", null));

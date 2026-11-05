@@ -926,6 +926,9 @@ export function Spine() {
     setNavigation((current) => recordRecentLobby(current, selectedDirectoryName));
   }, [availableDirectories, navigationRootKey, selectedDirectoryName]);
   const selectedInteractionProject = draftPreview?.lobbyId === selectedDirectoryName ? draftPreview.project : localInteractionProject;
+  useEffect(() => {
+    setEffectsStrength(selectedInteractionProject?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH);
+  }, [selectedDirectoryName, selectedInteractionProject]);
   const compositionSequenceIds = selectedInteractionProject ? timelineSequenceIds(selectedInteractionProject) : [];
   const compositionSequenceSignature = compositionSequenceIds.join("\u001f");
   const compositionSequenceId = selectedSequenceId && compositionSequenceIds.includes(selectedSequenceId)
@@ -1255,13 +1258,9 @@ export function Spine() {
         setTalkAutoplay(false);
         return;
       }
-      const talkStillActive = compositionActive
-        ? compositionRef.current?.isTalkActive() === true
-        : viewportRef.current?.isTalkActive() === true;
-      if (talkStillActive) {
-        queueNextAutoTalk(lineIndex, run, attempt + 1);
-        return;
-      }
+      // Runtime auto-talk can crossfade directly from the previous Talk once
+      // its voice has ended; waiting for the old animation to fade to idle
+      // creates a visible idle gap and defeats the configured Talk mix.
       if (compositionActive) compositionRef.current?.triggerTalk(voiceAnimationForLine(line));
       else viewportRef.current?.triggerTalk(voiceAnimationForLine(line));
       // If the renderer rejected the request while its interaction state was
@@ -2067,11 +2066,25 @@ export function Spine() {
     }
 
     if (compositionSequenceId.startsWith("talk-")) {
-      // Wait for the entire authored talk, including its return to idle.
-      // Keep this composition and its loaded skeletons. Idle is an explicit
-      // animation override, never a selection of the opening sequence.
+      // Each Talk already blends out to idle over its final mix interval. Start
+      // the next authored Talk at that boundary rather than inserting a second
+      // idle bridge that makes the Talk-to-Talk autoplay transition feel cut.
+      const nextId = authoredAutoplay ? authoredTalkSequenceIds[authoredTalkIndexRef.current++] : undefined;
+      const next = nextId && selectedInteractionProject ? timelineForSequence(selectedInteractionProject, nextId) : null;
+      if (next && nextId) {
+        setIdleMode("none");
+        setSelectedSequenceId(nextId);
+        setProgress({ time: 0, duration: projectTimelineDuration(next, selectedInteractionProject), animation: null });
+        setPlaying(true);
+        return;
+      }
+      if (authoredAutoplay) {
+        talkAutoplayRef.current = false;
+        authoredTalkIndexRef.current = 0;
+        setTalkAutoplay(false);
+      }
       setProgress({ time: 0, duration: Math.max(0.01, compositionTimeline?.openingIdleDuration ?? 3), animation: null });
-      setIdleMode(authoredAutoplay ? "bridge" : "persistent");
+      setIdleMode("persistent");
       setPlaying(true);
       return;
     }

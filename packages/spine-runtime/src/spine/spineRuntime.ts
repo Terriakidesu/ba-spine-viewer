@@ -959,8 +959,10 @@ export class SpineRenderer {
   triggerTalk(requestedAnimation?: string) {
     if (this.interactionMode !== "interaction" || !this.interactionReady || !this.bundle || this.bundle.interaction.talks.length === 0) return;
     // Do not let manual or programmatic Talk requests replace an active
-    // dialogue; its animation and voice should finish before another begins.
-    if (this.interactionState !== "idle") return;
+    // dialogue; auto-play may replace it only after its voice has finished,
+    // where the configured track mix blends the two Talk poses directly.
+    const crossfadingFinishedTalk = this.interactionState === "talk" && !this.talkAudioPending && this.talkFadeQueued;
+    if (this.interactionState !== "idle" && !crossfadingFinishedTalk) return;
     const requested = requestedAnimation
       ? this.bundle.interaction.talks.findIndex((talk) => {
         const wanted = basename(requestedAnimation).toLocaleLowerCase();

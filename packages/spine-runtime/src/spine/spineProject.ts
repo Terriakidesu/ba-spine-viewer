@@ -102,6 +102,7 @@ export function manifestProjectValue(data: SpineManifestProjectData, directory: 
     ...(active !== undefined ? { timeline: active } : {}),
     sequences,
     ...(typeof rawInteractions.talkMixDuration === "number" ? { talkMixDuration: rawInteractions.talkMixDuration } : {}),
+    ...(typeof rawInteractions.effectsStrength === "number" ? { effectsStrength: rawInteractions.effectsStrength } : {}),
     ...workspaceState,
   };
 }

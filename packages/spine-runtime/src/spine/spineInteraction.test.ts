@@ -108,15 +108,18 @@ describe("Spine lobby interaction data", () => {
   test("normalizes per-phase and Talk mix settings without changing legacy defaults", () => {
     const legacy = normalizeSpineInteractionProject({ schemaVersion: 2, assetDirectory: "Airi_home", interactions: [{ id: "touch", name: "Touch", regions: [] }] });
     expect(legacy?.talkMixDuration).toBe(DEFAULT_TALK_MIX_DURATION);
+    expect(legacy?.effectsStrength).toBe(0.5);
     expect(legacy?.interactions[0]).toMatchObject({ startMixDuration: INTERACTION_PHASE_MIX, followMixDuration: INTERACTION_PHASE_MIX, releaseMixDuration: INTERACTION_PHASE_MIX });
 
     const configured = normalizeSpineInteractionProject({
       schemaVersion: 2,
       assetDirectory: "Airi_home",
       talkMixDuration: 0.8,
+      effectsStrength: 0.85,
       interactions: [{ id: "touch", name: "Touch", startMixDuration: 0.25, followMixDuration: 0, releaseMixDuration: 9, regions: [] }],
     });
-    expect(configured).toMatchObject({ talkMixDuration: 0.8 });
+    expect(configured).toMatchObject({ talkMixDuration: 0.8, effectsStrength: 0.85 });
+    expect(normalizeSpineInteractionProject({ schemaVersion: 2, assetDirectory: "Airi_home", effectsStrength: 2, interactions: [] })?.effectsStrength).toBe(1);
     expect(configured?.interactions[0]).toMatchObject({ startMixDuration: 0.25, followMixDuration: 0, releaseMixDuration: 2 });
   });
 

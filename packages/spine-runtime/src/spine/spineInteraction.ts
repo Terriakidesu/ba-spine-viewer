@@ -1,4 +1,5 @@
 import { normalizeSpineTimeline, type SpineTimeline } from "./spineTimeline";
+import { DEFAULT_EFFECTS_STRENGTH } from "./spineEffects";
 
 export type SpineInteractionReturnEasing = "linear" | "ease-out" | "ease-in-out";
 export const DEFAULT_INTERACTION_RETURN_DURATION = 0.35;
@@ -85,6 +86,8 @@ export interface SpineInteractionProject {
   entrySequence?: string | null;
   /** Shared Talk animation crossfade for runtime dialogue and timeline previews. */
   talkMixDuration?: number;
+  /** Additive and screen light contribution used by Viewer and Editor previews. */
+  effectsStrength?: number;
   interactions: SpineAuthoredInteraction[];
   timeline?: SpineTimeline;
   sequences?: Record<string, SpineTimeline>;
@@ -188,6 +191,7 @@ export function normalizeSpineInteractionProject(value: unknown, directory?: str
     assetDirectory,
     ...(project.entrySequence === null || typeof project.entrySequence === "string" ? { entrySequence: project.entrySequence } : {}),
     talkMixDuration: normalizeAnimationMixDuration(project.talkMixDuration, DEFAULT_TALK_MIX_DURATION),
+    effectsStrength: Math.max(0, Math.min(1, finiteNumber(project.effectsStrength, DEFAULT_EFFECTS_STRENGTH))),
     interactions: project.interactions
       .map((interaction, index) => normalizeAuthoredInteraction(interaction, index))
       .filter((interaction): interaction is SpineAuthoredInteraction => interaction !== null),

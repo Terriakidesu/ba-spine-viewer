@@ -7,6 +7,7 @@ import {
   type SpineMeta,
   type SpineProgress,
 } from "@ba-spine/spine-runtime/spine/spineRuntime";
+import { DEFAULT_EFFECTS_STRENGTH } from "@ba-spine/spine-runtime/spine/spineEffects";
 import {
   blankInteraction,
   blankRegion,
@@ -825,6 +826,10 @@ export function Editor() {
   useEffect(() => {
     rendererRef.current?.setSpeed(speed);
   }, [speed]);
+
+  useEffect(() => {
+    rendererRef.current?.setEffectsStrength(project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH);
+  }, [project?.effectsStrength]);
 
   useEffect(() => { resetPreview(); }, [testing]);
 
@@ -1900,6 +1905,11 @@ export function Editor() {
             <button className={`editor-button suite-tab${workspace === "camera" ? " active" : ""}`} role="tab" aria-selected={workspace === "camera"} onClick={() => setWorkspace("camera")} disabled={!assetLoaded}>Camera</button>
           </div>
           <div className="editor-asset-picker"><span>Set</span><button className="editor-asset-picker-button" type="button" aria-label="Choose character or asset set" aria-haspopup="dialog" aria-expanded={assetPickerOpen} onClick={() => setAssetPickerOpen(true)} disabled={!directories.length} title={directory || "Open a folder first"}><span>{directory ? characterDirectoryLabel(directory, directoryLabels) : "Open a folder…"}</span><IconChevronDown /></button></div>
+          <label className="editor-light-fx-control" title="Saved with this project and used in Editor and Viewer previews.">
+            <span>Light FX</span>
+            <input type="range" min="0" max="1" step="0.05" value={project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH} aria-label="Light FX strength" disabled={!project} onChange={(event) => live((current) => ({ ...current, effectsStrength: Number(event.target.value) }))} />
+            <output>{Math.round((project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH) * 100)}%</output>
+          </label>
         </div>
         <div className="editor-actions">
           <button className="suite-icon-button editor-button editor-icon-button editor-command-trigger" type="button" aria-label="Search commands" aria-keyshortcuts="Control+K Meta+K" title="Search commands (Ctrl/⌘ K)" onClick={() => setCommandPaletteOpen(true)}><IconSearch /></button>

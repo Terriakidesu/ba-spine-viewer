@@ -3,8 +3,9 @@ import type { SpineEditorBone } from "@ba-spine/spine-runtime/spine/spineRuntime
 import { DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_INTERACTION_RETURN_DURATION, DEFAULT_INTERACTION_RETURN_EASING, DEFAULT_TALK_MIX_DURATION, findInteractionProfile, type SpineInteractionReturnEasing } from "@ba-spine/spine-runtime/spine/spineInteraction";
 import { cheekControlNames } from "@ba-spine/spine-runtime/spine/spinePinch";
 import { normalizeSpineCameraTrack, type SpineCameraTrack } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
+import { DEFAULT_EFFECTS_STRENGTH } from "@ba-spine/spine-runtime/spine/spineEffects";
 
-export const EDITOR_SCHEMA_VERSION = 5;
+export const EDITOR_SCHEMA_VERSION = 6;
 export const LEGACY_EDITOR_SCHEMA_VERSION = 1;
 
 export type EditorTrigger = "press" | "hold" | "drag";
@@ -138,6 +139,7 @@ export interface EditorTimeline {
 export interface EditorProject {
   sequences?: Record<string, EditorTimeline>;
   talkMixDuration: number;
+  effectsStrength: number;
   schemaVersion: number;
   name: string;
   assetDirectory: string;
@@ -437,6 +439,7 @@ export function createProject(directory: string, animations: string[], bones: Sp
   return {
     schemaVersion: EDITOR_SCHEMA_VERSION,
     talkMixDuration: DEFAULT_TALK_MIX_DURATION,
+    effectsStrength: DEFAULT_EFFECTS_STRENGTH,
     name: `${directory} interactions`,
     assetDirectory: directory,
     interactions,
@@ -680,6 +683,7 @@ export function normalizeProject(value: unknown, directory: string): EditorProje
     name: typeof project.name === "string" ? project.name : `${directory} interactions`,
     assetDirectory: directory,
     talkMixDuration: Math.min(2, finiteNumber(project.talkMixDuration, DEFAULT_TALK_MIX_DURATION, 0)),
+    effectsStrength: Math.max(0, Math.min(1, finiteNumber(project.effectsStrength, DEFAULT_EFFECTS_STRENGTH))),
     ...(project.entrySequence === null || typeof project.entrySequence === "string" ? { entrySequence: project.entrySequence } : {}),
     interactions,
     selectedInteractionId,

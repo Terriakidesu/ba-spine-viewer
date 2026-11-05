@@ -16,6 +16,7 @@ function editorProject() {
     schemaVersion: 2,
     name: "Local project",
     assetDirectory: "Airi_home",
+    effectsStrength: 0.85,
     interactions: [{
       id: "pat",
       name: "Patting",
@@ -59,6 +60,7 @@ test("normalizes editor projects into the viewer playback contract", () => {
   const normalized = normalizeSpineInteractionProject(editorProject(), "Airi_home");
 
   expect(normalized?.assetDirectory).toBe("Airi_home");
+  expect(normalized?.effectsStrength).toBe(0.85);
   expect(normalized?.interactions[0]).toMatchObject({ allowX: false, rotationEnabled: true, rotationAxis: "y" });
   expect(normalized?.interactions[0]?.regions[0]).toMatchObject({ offsetX: 2, offsetY: 3, rotation: 4 });
 });

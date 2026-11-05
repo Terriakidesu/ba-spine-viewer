@@ -3,7 +3,7 @@ import { createWriteStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FfmpegVideoRecorder, ffmpegAudioMixFilterGraph, ffmpegEncoderAttempts } from "./ffmpegVideoRecorder";
+import { FfmpegVideoRecorder, ffmpegAudioMixFilterGraph, ffmpegEncoderAttempts, ffmpegVideoColorPipelineArgs } from "./ffmpegVideoRecorder";
 
 describe("FFmpeg video encoder selection", () => {
   test("prefers available H.264 hardware encoders and keeps a software fallback", () => {
@@ -35,6 +35,22 @@ describe("FFmpeg video encoder selection", () => {
   test("does not advertise an encoder that FFmpeg did not list", () => {
     expect(ffmpegEncoderAttempts("mp4", " V....D h264_nvenc NVENC").map(({ name }) => name)).toEqual(["h264_nvenc"]);
     expect(ffmpegEncoderAttempts("webm", "")).toEqual([]);
+  });
+});
+
+describe("FFmpeg video color signaling", () => {
+  test("converts full-range browser JPEG frames to tagged limited-range BT.709", () => {
+    const args = ffmpegVideoColorPipelineArgs("mp4");
+    expect(args).toContain("scale=in_range=pc:out_range=tv:in_color_matrix=bt470bg:out_color_matrix=bt709");
+    expect(args).toContain("-color_range:v");
+    expect(args).toContain("tv");
+    expect(args).toContain("-colorspace:v");
+    expect(args).toContain("bt709");
+    expect(args).toContain("h264_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1");
+  });
+
+  test("does not apply the H.264 bitstream filter to WebM output", () => {
+    expect(ffmpegVideoColorPipelineArgs("webm").some((arg) => arg.startsWith("h264_metadata="))).toBe(false);
   });
 });
 

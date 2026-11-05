@@ -198,7 +198,7 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
   const idleTailStart = timelineTalkIdleStart(layer, talkAnimationDuration || authoredDuration);
   const fadeOutStart = Number.isFinite(talkBlendOutStart) ? talkBlendOutStart! : idleTailStart;
   const talkMix = normalizeAnimationMixDuration(talkMixDuration, DEFAULT_TALK_MIX_DURATION);
-  const talkBlendActive = talkLayer && Boolean(talkAnimation) && currentTime >= talkStart && currentTime < fadeOutStart + talkMix;
+  const talkBlendActive = idleMode === "none" && talkLayer && Boolean(talkAnimation) && currentTime >= talkStart && currentTime < fadeOutStart + talkMix;
   const talkFadeOutAlpha = talkMix > 0 ? Math.max(0, Math.min(1, (fadeOutStart + talkMix - currentTime) / talkMix)) : Number(currentTime < fadeOutStart);
   const talkFadeInAlpha = talkMix > 0 ? Math.max(0, Math.min(1, (currentTime - talkStart) / talkMix)) : 1;
   const talkAlpha = Math.min(talkFadeInAlpha, talkFadeOutAlpha);

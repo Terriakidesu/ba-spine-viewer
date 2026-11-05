@@ -38,6 +38,7 @@ test("asset-set switching restores the saved .editor project", async () => {
 test("draft preview converts the live project to a Viewer snapshot without invoking persistence", () => {
   const project = createProject("Airi_home", [], []);
   project.name = "Live unsaved draft";
+  project.effectsStrength = 0.85;
   project.timeline.sequenceId = "opening";
   project.timeline.duration = 12;
   project.timeline.camera = { enabled: true, aspectRatio: "1:1", constraint: { mode: "none" }, safeBounds: [], keyframes: [{ id: "draft-key", time: 3, centerX: 10, centerY: 20, frameHeight: 300 }] };
@@ -47,6 +48,7 @@ test("draft preview converts the live project to a Viewer snapshot without invok
     assetDirectory: "Airi_home",
     entrySequence: null,
     name: "Live unsaved draft",
+    effectsStrength: 0.85,
     interactions: [{ id: project.interactions[0]!.id }],
     timeline: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "1:1" } },
     sequences: { opening: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "1:1" } } },
@@ -54,6 +56,7 @@ test("draft preview converts the live project to a Viewer snapshot without invok
   expect(JSON.parse(JSON.stringify(snapshot))).toEqual(snapshot);
   expect(normalizeSpineInteractionProject(snapshot, "Airi_home")).toMatchObject({
     assetDirectory: "Airi_home",
+    effectsStrength: 0.85,
     interactions: [{ id: project.interactions[0]!.id }],
     sequences: { opening: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "1:1" } } },
   });
@@ -119,6 +122,7 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
     getManifest: async () => record,
   };
   const project = createProject("Airi_home", [], []);
+  project.effectsStrength = 0.9;
   project.timeline.sequenceId = "talk-1";
   project.timeline.durationMode = "manual";
   project.timeline.duration = 8;
@@ -138,6 +142,7 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
 
   const saved = await saveManifestEditorProject(source, project);
   expect(JSON.parse(writes[".editor/Airi_home.workspace.json"]!).projectSchemaVersion).toBe(EDITOR_SCHEMA_VERSION);
+  expect(JSON.parse(writes["lobbies/Airi_home/interactions.json"]!).effectsStrength).toBe(0.9);
   expect(JSON.parse(writes["lobbies/Airi_home/sequences/talk-1.json"]!).camera).toMatchObject({ aspectRatio: "4:3", constraint: { mode: "manual", boundId: "room" } });
 
   const reopened = await readSavedEditorProject({
@@ -145,6 +150,7 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
     getManifest: async () => saved ? { ...record, manifest: saved.manifest } : null,
   }, "Airi_home", () => {});
   expect(reopened?.timeline).toMatchObject({ sequenceId: "talk-1", duration: 8, durationMode: "manual" });
+  expect(reopened?.effectsStrength).toBe(0.9);
   expect(reopened?.timeline.colorLayers[0]).toMatchObject({ id: "wash", opacity: 0.65, order: 2, blendMode: "screen" });
   expect(reopened?.timeline.colorLayers[0]?.clips[0]).toMatchObject({ id: "fade", color: "#244466", start: 1, end: 7, fadeIn: 2, fadeOut: 1 });
   expect(reopened?.timeline).toMatchObject({ selectedColorLayerId: "wash", selectedColorClipId: "fade" });

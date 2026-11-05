@@ -45,6 +45,9 @@ button:disabled { cursor: default; opacity: .4; }
 .editor-asset-picker-button:not(:disabled) { cursor: pointer; }
 .editor-asset-picker-button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .editor-asset-picker-button > svg { width: 14px; height: 14px; flex: none; color: var(--editor-cyan); }
+.editor-light-fx-control { display: inline-flex; align-items: center; gap: 6px; flex: none; color: var(--editor-muted); font-size: 10px; font-weight: 750; white-space: nowrap; }
+.editor-light-fx-control input { width: 76px; margin: 0; accent-color: var(--editor-cyan); }
+.editor-light-fx-control output { min-width: 31px; color: var(--editor-text); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
 .editor-save-state { display: inline-flex; align-items: center; gap: 3px; min-height: 30px; padding: 0 3px; color: var(--editor-muted); font-size: 10px; white-space: nowrap; }
 .editor-save-state svg { width: 10px; height: 10px; }
 .editor-save-state.is-dirty { color: var(--editor-yellow); }

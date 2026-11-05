@@ -63,6 +63,15 @@ test("background timeline layers follow the main animation by default and keep e
   expect(legacy?.timeline.layers.find((layer) => layer.role === "background")?.followMainAnimation).toBe(true);
 });
 
+test("project Light FX strength defaults, clamps, and survives normalization", () => {
+  const project = createProject("Airi_home", [], []);
+  expect(project.effectsStrength).toBe(0.5);
+  project.effectsStrength = 0.85;
+  expect(normalizeProject(JSON.parse(JSON.stringify(project)), "Airi_home")?.effectsStrength).toBe(0.85);
+  expect(normalizeProject({ ...project, effectsStrength: 4 }, "Airi_home")?.effectsStrength).toBe(1);
+  expect(normalizeProject({ ...project, effectsStrength: -2 }, "Airi_home")?.effectsStrength).toBe(0);
+});
+
 test("legacy Talk timelines migrate to auto duration without resetting current manual overrides", () => {
   const legacy = normalizeProject({
     schemaVersion: 2,
@@ -112,7 +121,7 @@ test("color compositor settings and clips survive project save and reopen", () =
   expect(reopened.timeline.durationMode).toBe("auto");
 });
 
-test("v4 projects migrate without camera data and authored camera tracks round-trip in v5", () => {
+test("v4 projects migrate without camera data and camera tracks remain intact in schema 6", () => {
   const legacy = normalizeProject({
     schemaVersion: 4,
     assetDirectory: "Airi_home",
