@@ -417,6 +417,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const [selectedCameraBoundId, setSelectedCameraBoundId] = useState<string | null>(null);
   const [cameraBoundDrawing, setCameraBoundDrawing] = useState(false);
   const [cameraBoundDraft, setCameraBoundDraft] = useState<{ start: CameraCanvasPoint; end: CameraCanvasPoint } | null>(null);
+  const [cameraGizmoDragging, setCameraGizmoDragging] = useState(false);
   const [cameraProjectionRevision, setCameraProjectionRevision] = useState(0);
   const [files, setFiles] = useState<Record<string, SpineFiles | null>>({});
   const [layerLoadErrors, setLayerLoadErrors] = useState<Record<string, string>>({});
@@ -728,6 +729,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     setCameraKeyframeTimeIssue(null);
     setCameraContextMenu(null);
     cameraKeyframeDragRef.current = null;
+    setCameraGizmoDragging(false);
     setCameraBoundDrawing(false);
     setCameraBoundDraft(null);
     cameraBoundDrawRef.current = null;
@@ -1382,6 +1384,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     event.preventDefault();
     event.stopPropagation();
     svg.setPointerCapture(event.pointerId);
+    setCameraGizmoDragging(true);
     setSelectedCameraBoundId(boundId);
     setCameraInspectorTarget("boundary");
     cameraBoundTransformRef.current = { pointerId: event.pointerId, boundId, mode: transformMode, ...(handle ? { handle } : {}), last: worldPoint, original: bound, latest: bound, edited: false };
@@ -1423,6 +1426,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     event.preventDefault();
     event.stopPropagation();
     cameraBoundTransformRef.current = null;
+    setCameraGizmoDragging(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     if (active.edited) {
       const current = active.latest;
@@ -1446,6 +1450,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     event.preventDefault();
     event.stopPropagation();
     svg.setPointerCapture(event.pointerId);
+    setCameraGizmoDragging(true);
     cameraShotTransformRef.current = { pointerId: event.pointerId, keyframeId: keyframe.id, mode: transformMode, ...(handle ? { handle } : {}), last: worldPoint, original: keyframe, latest: keyframe, edited: false };
     setCameraInspectorTarget("shot");
     setPlaying(false);
@@ -1487,6 +1492,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     event.preventDefault();
     event.stopPropagation();
     cameraShotTransformRef.current = null;
+    setCameraGizmoDragging(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     if (active.edited) {
       const current = active.latest;
@@ -1500,6 +1506,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     const active = cameraShotTransformRef.current;
     if (!active || active.pointerId !== event.pointerId) return false;
     cameraShotTransformRef.current = null;
+    setCameraGizmoDragging(false);
     updateCameraKeyframe(active.keyframeId, active.original, false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     if (active.edited) onCancelCameraEdit();
@@ -1510,12 +1517,14 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     const bound = cameraBoundTransformRef.current;
     if (bound?.pointerId === event.pointerId) {
       cameraBoundTransformRef.current = null;
+      setCameraGizmoDragging(false);
       updateCameraBound(bound.boundId, bound.original, false);
       if (bound.edited) onCancelCameraEdit();
     }
     const shot = cameraShotTransformRef.current;
     if (shot?.pointerId === event.pointerId) {
       cameraShotTransformRef.current = null;
+      setCameraGizmoDragging(false);
       updateCameraKeyframe(shot.keyframeId, shot.original, false);
       if (shot.edited) onCancelCameraEdit();
     }
@@ -2103,6 +2112,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     setCameraBoundDraft(null);
     cameraBoundDrawRef.current = null;
     cameraBoundTransformRef.current = null;
+    setCameraGizmoDragging(false);
     setCameraTool("select");
     if (mode !== "camera") return;
     setStageView(resetStageView());
@@ -3431,6 +3441,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     const transform = cameraBoundTransformRef.current;
     if (transform) {
       cameraBoundTransformRef.current = null;
+      setCameraGizmoDragging(false);
       updateCameraBound(transform.boundId, transform.original, false);
       if (transform.edited) onCancelCameraEdit();
       const svg = stage?.querySelector("svg.timeline-camera-overlay");
@@ -3440,6 +3451,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     const shotTransform = cameraShotTransformRef.current;
     if (shotTransform) {
       cameraShotTransformRef.current = null;
+      setCameraGizmoDragging(false);
       updateCameraKeyframe(shotTransform.keyframeId, shotTransform.original, false);
       if (shotTransform.edited) onCancelCameraEdit();
       const svg = stage?.querySelector("svg.timeline-camera-overlay");
@@ -3840,6 +3852,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                     const boundTransform = cameraBoundTransformRef.current;
                     if (boundTransform?.pointerId === event.pointerId) {
                       cameraBoundTransformRef.current = null;
+                      setCameraGizmoDragging(false);
                       updateCameraBound(boundTransform.boundId, boundTransform.original, false);
                       if (boundTransform.edited) onCancelCameraEdit();
                       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -3875,7 +3888,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                         const size = 9 / stageView.scale;
                         return handles.map((handle) => <rect key={handle.id} className={`timeline-camera-shot-handle is-${handle.id}`} x={handle.x - size / 2} y={handle.y - size / 2} width={size} height={size} rx={2 / stageView.scale} aria-hidden="true" onPointerDown={(event) => beginCameraShotTransform(event, "resize", handle.id)} onClick={(event) => event.stopPropagation()} />);
                       })()}
-                      {cameraEditMode === "shots" && <text className="timeline-camera-selection-label is-shot" x={selectedCameraShotRect.x + 5 / stageView.scale} y={selectedCameraShotRect.y > 18 / stageView.scale ? selectedCameraShotRect.y - 5 / stageView.scale : selectedCameraShotRect.y + 15 / stageView.scale} fontSize={11 / stageView.scale}>Shot · {seconds(selectedCameraKeyframe.time)}</text>}
+                      {cameraEditMode === "shots" && !cameraGizmoDragging && <text className="timeline-camera-selection-label is-shot" x={selectedCameraShotRect.x + 5 / stageView.scale} y={selectedCameraShotRect.y > 18 / stageView.scale ? selectedCameraShotRect.y - 5 / stageView.scale : selectedCameraShotRect.y + 15 / stageView.scale} fontSize={11 / stageView.scale}>Shot · {seconds(selectedCameraKeyframe.time)}</text>}
                     </g>}
                     {cameraGuidesVisible && cameraBoundFrames.map((bound) => <g key={bound.id} onContextMenu={(event) => openCameraContextMenu(event, { kind: "boundary", id: bound.id })}>
                       <rect className={`timeline-camera-bound${bound.active ? " is-active" : ""}${bound.selected ? " is-selected" : ""}${bound.enabled ? "" : " is-disabled"}${cameraEditMode === "boundaries" ? " is-editable" : ""}`} x={bound.x} y={bound.y} width={bound.width} height={bound.height} role={cameraEditMode === "boundaries" ? "button" : undefined} tabIndex={cameraTool === "select" && cameraEditMode === "boundaries" ? 0 : -1} aria-pressed={bound.selected} aria-label={`Select ${cameraTrack?.safeBounds.find((item) => item.id === bound.id)?.name ?? "camera boundary"}`} onPointerDown={cameraEditMode === "boundaries" ? (event) => beginCameraBoundTransform(event, bound.id, "move") : undefined} onClick={cameraEditMode === "boundaries" ? (event) => { event.stopPropagation(); if (cameraTool === "select") { setSelectedCameraBoundId(bound.id); setCameraInspectorTarget("boundary"); setCameraEditMode("boundaries"); } } : undefined} onKeyDown={(event) => {
@@ -3899,7 +3912,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                         const size = 8 / stageView.scale;
                         return handles.map((handle) => <rect key={handle.id} className={`timeline-camera-bound-handle is-${handle.id}`} x={handle.x - size / 2} y={handle.y - size / 2} width={size} height={size} rx={2 / stageView.scale} aria-hidden="true" onPointerDown={(event) => beginCameraBoundTransform(event, bound.id, "resize", handle.id)} onClick={(event) => event.stopPropagation()} />);
                       })()}
-                      {bound.selected && <text className="timeline-camera-selection-label is-boundary" x={bound.x + 5 / stageView.scale} y={bound.y + 15 / stageView.scale} fontSize={11 / stageView.scale}>{cameraTrack?.safeBounds.find((item) => item.id === bound.id)?.name ?? "Camera boundary"}</text>}
+                      {bound.selected && !cameraGizmoDragging && <text className="timeline-camera-selection-label is-boundary" x={bound.x + 5 / stageView.scale} y={bound.y > 18 / stageView.scale ? bound.y - 5 / stageView.scale : bound.y + 15 / stageView.scale} fontSize={11 / stageView.scale}>{cameraTrack?.safeBounds.find((item) => item.id === bound.id)?.name ?? "Camera boundary"}</text>}
                     </g>)}
                     {cameraBoundDraft && <rect className="timeline-camera-bound-draft" x={Math.min(cameraBoundDraft.start.x, cameraBoundDraft.end.x)} y={Math.min(cameraBoundDraft.start.y, cameraBoundDraft.end.y)} width={Math.abs(cameraBoundDraft.end.x - cameraBoundDraft.start.x)} height={Math.abs(cameraBoundDraft.end.y - cameraBoundDraft.start.y)} />}
                     </g>
