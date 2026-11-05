@@ -22,6 +22,12 @@
 - Packaging replaces the versioned ZIP under `release/portable`; if Windows reports `EBUSY` removing it, close the holder of that exact ZIP and rerun rather than deleting broader outputs.
 - Electrobun 2.0.5 has no built-in OS hard minimum-size API: Windows x64 uses the native Win32 hook in `packages/desktop-host`; elsewhere `setSize` correction is a fallback, not a hard drag limit.
 
+## Commit messages
+
+- Use Conventional Commits: `<type>(<scope>): <summary>`, for example `feat(editor): add animation length matching`. Scope is optional.
+- Use a concise, imperative summary and lowercase types such as `feat`, `fix`, `docs`, `refactor`, `test`, `build`, or `chore`.
+- Mark breaking changes with `!` after the type or scope and explain them with a `BREAKING CHANGE:` footer.
+
 ## Portable data safety
 
 - Keep portable manifest and launcher paths validated, relative, and contained within the suite. The archive may contain only a placeholder under `data/`, never the local library.
