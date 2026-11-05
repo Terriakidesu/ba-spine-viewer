@@ -648,7 +648,7 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-workspace-status > small { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spine-controls { max-height: min(36vh, 310px); overflow: auto; overscroll-behavior: contain; }
 .spine-layout.is-fullscreen .spine-stage-frame { container-type: size; }
-.spine-layout.is-fullscreen .spine-stage-frame .spine-stage { width: min(100cqw, 177.7778cqh); height: auto; max-width: 100cqw; max-height: 100cqh; }
+.spine-layout.is-fullscreen .spine-stage-frame .spine-stage { width: min(100cqw, 177.7778cqh); height: auto; max-width: 100cqw; max-height: 100cqh; aspect-ratio: 16 / 9; }
 .spine-layout.is-fullscreen .spine-stage-frame[data-aspect-ratio="4:3"] .spine-stage { width: min(100cqw, 133.3334cqh); aspect-ratio: 4 / 3; }
 .spine-layout.is-fullscreen .spine-stage-frame[data-aspect-ratio="1:1"] .spine-stage { width: min(100cqw, 100cqh); aspect-ratio: 1 / 1; }
 .spine-layout.is-fullscreen .spine-stage-frame[data-free-canvas="true"] .spine-stage { width: 100cqw; height: 100cqh; max-width: none; max-height: none; aspect-ratio: auto; }
