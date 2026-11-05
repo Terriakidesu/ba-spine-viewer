@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BlendMode, BoneData, Physics, RegionAttachment, Skeleton, SkeletonData, SlotData, Vector2 } from "@esotericsoftware/spine-core";
-import { authoredViewport, fitScene, interactionBounds, interactionHit, interactionKindAtPoint, sceneBounds } from "./spineCamera";
+import { authoredViewport, cameraPositionForZoomAnchor, fitScene, interactionBounds, interactionHit, interactionKindAtPoint, sceneBounds } from "./spineCamera";
 import { SpineRenderer } from "./spineRuntime";
 
 function scene() {
@@ -453,6 +453,14 @@ describe("Spine scene framing", () => {
     expect(camera.zoom).toBeCloseTo(expected.zoom);
     expect(camera.position.x).toBeCloseTo(expected.x);
     expect(camera.position.y).toBeCloseTo(expected.y);
+  });
+
+  test("keeps the world point under the cursor stationary while zooming", () => {
+    expect(cameraPositionForZoomAnchor(
+      { x: 10, y: 20 },
+      { x: -5, y: 30 },
+      { x: -25, y: 12 },
+    )).toEqual({ x: 30, y: 38 });
   });
 
   test("interaction mode can fit the authored camera boundary without cropping", () => {

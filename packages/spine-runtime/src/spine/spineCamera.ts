@@ -8,6 +8,11 @@ export interface SceneBounds {
   height: number;
 }
 
+export interface CameraWorldPoint {
+  x: number;
+  y: number;
+}
+
 export interface AuthoredViewport extends SceneBounds {
   /** True when the viewport came from a named scene layer and backdrop. */
   authored: boolean;
@@ -572,5 +577,14 @@ export function fitScene(bounds: SceneBounds, viewportWidth: number, viewportHei
     x: bounds.x + bounds.width / 2,
     y: bounds.y + bounds.height / 2,
     zoom,
+  };
+}
+
+/** Keep the world point under a pointer stationary when the camera zoom changes. */
+export function cameraPositionForZoomAnchor(position: CameraWorldPoint, beforeZoom: CameraWorldPoint, afterZoom: CameraWorldPoint): CameraWorldPoint {
+  if (![position.x, position.y, beforeZoom.x, beforeZoom.y, afterZoom.x, afterZoom.y].every(Number.isFinite)) return position;
+  return {
+    x: position.x + beforeZoom.x - afterZoom.x,
+    y: position.y + beforeZoom.y - afterZoom.y,
   };
 }

@@ -21,7 +21,7 @@ import {
   SceneRenderer,
   Vector3,
 } from "@esotericsoftware/spine-webgl";
-import { authoredViewport, fitScene, interactionKindAtPoint, interactionZonesForDisplay, sceneBounds, type InteractionHitKind, type SceneBounds } from "./spineCamera";
+import { authoredViewport, cameraPositionForZoomAnchor, fitScene, interactionKindAtPoint, interactionZonesForDisplay, sceneBounds, type InteractionHitKind, type SceneBounds } from "./spineCamera";
 import { findIdleAnimation } from "./spineAnimation";
 import { spineCanvasBackingSize } from "./spineCanvasResolution";
 import { DEFAULT_EFFECTS_STRENGTH, drawWithEffectsStrength } from "./spineEffects";
@@ -2129,8 +2129,19 @@ export class SpineRenderer {
     event.preventDefault();
     if (this.interactionMode === "interaction") return;
     this.useManualCamera();
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || this.canvas.width <= 0 || this.canvas.height <= 0) return;
+    const dprX = this.canvas.width / rect.width;
+    const dprY = this.canvas.height / rect.height;
+    const screenPoint = new Vector3((event.clientX - rect.left) * dprX, (event.clientY - rect.top) * dprY, 0);
     const camera = this.renderer.camera;
+    const beforeZoom = camera.screenToWorld(screenPoint, this.canvas.width, this.canvas.height);
     camera.zoom = Math.max(0.02, Math.min(50, camera.zoom * Math.exp(event.deltaY * 0.001)));
+    camera.update();
+    const afterZoom = camera.screenToWorld(screenPoint, this.canvas.width, this.canvas.height);
+    const position = cameraPositionForZoomAnchor(camera.position, beforeZoom, afterZoom);
+    camera.position.x = position.x;
+    camera.position.y = position.y;
     camera.update();
     this.emitEditorFrame();
   };
