@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoFrameTargetCount, videoRecordingDimensions, videoRecordingProgress } from "./videoRecorder";
+import { createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingProgress } from "./videoRecorder";
 
 describe("Viewer video recording plans", () => {
   test("counts the opening once and stops at the requested idle-loop boundary", () => {
@@ -36,6 +36,15 @@ describe("Viewer video recording plans", () => {
     expect(videoFrameTargetCount(1, 60, 60)).toBe(60);
     expect(videoFrameTargetCount(Number.NaN, 30, 300)).toBe(0);
     expect(videoFrameTargetCount(10, 30, 30)).toBe(30);
+    expect(videoRecordingFrameCount(1, 30)).toBe(30);
+    expect(videoRecordingFrameCount(1.001, 30)).toBe(31);
+    expect(videoRecordingFrameCount(Number.NaN, 30)).toBe(0);
+  });
+
+  test("keeps authored audio timestamps and clips segments at the video endpoint", () => {
+    expect(videoRecordingAudioSchedule(2.25, 8, 0.65, 5)).toEqual({ start: 2.25, duration: 2.75, volume: 0.65 });
+    expect(videoRecordingAudioSchedule(-1, 2, 1.5, 4)).toEqual({ start: 0, duration: 2, volume: 1 });
+    expect(videoRecordingAudioSchedule(5, 6, 1, 5)).toBeNull();
   });
 
   test("sanitizes generated export names without touching the chosen folder", () => {

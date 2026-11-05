@@ -795,6 +795,46 @@ export class SpineRenderer {
     return true;
   }
 
+  /** Reset the interaction renderer to the exact opening or idle sequence for offline export. */
+  prepareRecordingPlayback(includeOpening: boolean) {
+    const bundle = this.bundle;
+    if (!bundle) return false;
+    this.playing = false;
+    this.speed = 1;
+    this.loop = true;
+    this.skipIntro = !includeOpening;
+    this.interactionState = "idle";
+    this.interactionTrackName = null;
+    this.interactionReady = !includeOpening || !(bundle.meta.introAnimation && bundle.meta.idleAnimation);
+    this.animationSelection = includeOpening && bundle.meta.introAnimation && bundle.meta.idleAnimation
+      ? INTRO_ANIMATION
+      : bundle.meta.idleAnimation ?? "";
+    if (!this.animationSelection) return false;
+    this.applyBaseAnimation(this.animationSelection, true);
+    this.playing = false;
+    return true;
+  }
+
+  /** Advance Spine by one fixed export timestep and draw that sampled pose immediately. */
+  advanceRecordingFrame(deltaSeconds: number): boolean {
+    const bundle = this.bundle;
+    if (this.destroyed || !bundle || !Number.isFinite(deltaSeconds) || deltaSeconds < 0 || this.context.gl.isContextLost()) return false;
+    this.playing = false;
+    this.restoreInteractionPose();
+    bundle.state.update(deltaSeconds);
+    bundle.state.apply(bundle.skeleton);
+    bundle.skeleton.updateWorldTransform(Physics.update);
+    this.callbacks.onEditorUpdate?.(deltaSeconds, bundle.skeleton, bundle.state);
+    if (this.interactionMode === "interaction") {
+      const entry = bundle.state.getCurrent(0);
+      if (!(bundle.meta.introAnimation && bundle.meta.idleAnimation) || entry?.animation?.name !== bundle.meta.introAnimation) this.interactionReady = true;
+      this.finishInteractionState();
+    }
+    this.emitEditorFrame();
+    this.drawFrame(bundle);
+    return true;
+  }
+
   /** Report readiness details for preview diagnostics without exposing renderer internals. */
   getPreviewDiagnostics() {
     const contextLost = this.context.gl.isContextLost();

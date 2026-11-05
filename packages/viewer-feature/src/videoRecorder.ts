@@ -22,6 +22,12 @@ export interface VideoRecordingPlan {
   totalDuration: number;
 }
 
+export interface VideoRecordingAudioSchedule {
+  start: number;
+  duration: number;
+  volume: number;
+}
+
 export interface VideoRecordingProgress {
   phase: "opening" | "idle";
   elapsed: number;
@@ -320,6 +326,25 @@ function getSharedAudioContext(): AudioContext | null {
 export function videoFrameTargetCount(elapsedSeconds: number, frameRate: number, totalFrames: number): number {
   if (!Number.isFinite(elapsedSeconds) || !Number.isFinite(frameRate) || frameRate <= 0 || !Number.isFinite(totalFrames) || totalFrames <= 0) return 0;
   return Math.min(Math.floor(totalFrames), Math.max(0, Math.floor(Math.max(0, elapsedSeconds) * frameRate) + 1));
+}
+
+/** Fixed output frame count; every frame is sampled at index / frameRate. */
+export function videoRecordingFrameCount(totalDuration: number, frameRate: number): number {
+  if (!Number.isFinite(totalDuration) || totalDuration <= 0 || !Number.isFinite(frameRate) || frameRate <= 0) return 0;
+  return Math.max(1, Math.ceil(totalDuration * frameRate - 1e-9));
+}
+
+/** Clip a source audio segment to the exported timeline without changing its authored start. */
+export function videoRecordingAudioSchedule(start: number, end: number, volume: number, totalDuration: number): VideoRecordingAudioSchedule | null {
+  if (![start, end, volume, totalDuration].every(Number.isFinite) || totalDuration <= 0 || end <= start) return null;
+  const safeStart = Math.max(0, start);
+  const safeEnd = Math.min(totalDuration, end);
+  if (safeEnd <= safeStart) return null;
+  return {
+    start: safeStart,
+    duration: safeEnd - safeStart,
+    volume: Math.max(0, Math.min(1, volume)),
+  };
 }
 
 /** Capture one composited JPEG frame at a time for the native FFmpeg pipeline. */

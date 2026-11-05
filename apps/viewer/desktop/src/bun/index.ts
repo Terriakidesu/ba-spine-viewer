@@ -392,16 +392,32 @@ async function api(request: Request, url: URL): Promise<Response> {
       });
       return json({ sessionId });
     }
+    if (url.pathname === "/__spine/video/ffmpeg/audio" && request.method === "POST") {
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      const contentType = request.headers.get("content-type")?.split(";")[0]?.trim().toLocaleLowerCase() ?? "";
+      if (contentType && contentType !== "application/octet-stream" && !contentType.startsWith("audio/")) {
+        return errorResponse("The Viewer audio track is invalid.");
+      }
+      const bytes = await readBoundedBytes(request, 256 * 1024 * 1024);
+      if (!bytes) return errorResponse("The Viewer audio track is empty.");
+      await ffmpegVideoRecorder.addAudioTrack(sessionId, {
+        start: Number(request.headers.get("x-ba-spine-audio-start")),
+        duration: Number(request.headers.get("x-ba-spine-audio-duration")),
+        volume: Number(request.headers.get("x-ba-spine-audio-volume")),
+        extension: request.headers.get("x-ba-spine-audio-extension") ?? "",
+        bytes,
+      });
+      return json({ added: true });
+    }
+    if (url.pathname === "/__spine/video/ffmpeg/status" && request.method === "GET") {
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      const status = ffmpegVideoRecorder.status(sessionId);
+      return status ? json(status) : errorResponse("The Viewer FFmpeg recording session is unavailable.", 404);
+    }
     if (url.pathname === "/__spine/video/ffmpeg/finish" && request.method === "POST") {
       const sessionId = request.headers.get("x-ba-spine-video-session") ?? "";
       const frameCount = Number(request.headers.get("x-ba-spine-video-frames"));
-      const audioType = request.headers.get("x-ba-spine-audio-type") ?? "";
-      const contentType = request.headers.get("content-type")?.split(";")[0]?.trim().toLocaleLowerCase() ?? "";
-      if (contentType && contentType !== "application/octet-stream" && !contentType.startsWith("audio/")) {
-        return errorResponse("The Viewer recording audio is invalid.");
-      }
-      const audioBytes = contentType ? await readBoundedBytes(request, 256 * 1024 * 1024) : null;
-      const result = await ffmpegVideoRecorder.finish(sessionId, frameCount, audioBytes, audioType || contentType);
+      const result = await ffmpegVideoRecorder.finish(sessionId, frameCount);
       videoSaveDirectory = null;
       return json(result);
     }

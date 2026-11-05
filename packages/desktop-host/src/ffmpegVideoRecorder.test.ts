@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ffmpegEncoderAttempts } from "./ffmpegVideoRecorder";
+import { ffmpegAudioMixFilterGraph, ffmpegEncoderAttempts } from "./ffmpegVideoRecorder";
 
 describe("FFmpeg video encoder selection", () => {
   test("prefers available H.264 hardware encoders and keeps a software fallback", () => {
@@ -31,5 +31,23 @@ describe("FFmpeg video encoder selection", () => {
   test("does not advertise an encoder that FFmpeg did not list", () => {
     expect(ffmpegEncoderAttempts("mp4", " V....D h264_nvenc NVENC").map(({ name }) => name)).toEqual(["h264_nvenc"]);
     expect(ffmpegEncoderAttempts("webm", "")).toEqual([]);
+  });
+});
+
+describe("FFmpeg timestamped audio mixing", () => {
+  test("delays authored clips, applies per-track gain, and trims the mix to video duration", () => {
+    const mix = ffmpegAudioMixFilterGraph([
+      { start: 2.25, duration: 1.5, volume: 0.65 },
+      { start: 0, duration: 4, volume: 1 },
+    ], 5);
+
+    expect(mix).toEqual({
+      graph: "[1:a:0]atrim=start=0:duration=1.500000,asetpts=PTS-STARTPTS,volume=0.6500,adelay=2250:all=1[a0];[2:a:0]atrim=start=0:duration=4.000000,asetpts=PTS-STARTPTS,volume=1.0000,adelay=0:all=1[a1];[a0][a1]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,apad,atrim=duration=5.000000[aout]",
+      output: "[aout]",
+    });
+  });
+
+  test("does not add an audio stream when no audio tracks were scheduled", () => {
+    expect(ffmpegAudioMixFilterGraph([], 5)).toBeNull();
   });
 });

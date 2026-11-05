@@ -14,6 +14,7 @@ export interface SpineCompositionViewportHandle {
   toggleFullscreen: () => Promise<void>;
   restartPlayback: () => void;
   seek: (time: number) => void;
+  sampleRecordingFrame: (time: number) => void;
   triggerTalk: (animation?: string) => void;
   setTalkAudioPending: (pending: boolean) => void;
   isTalkActive: () => boolean;
@@ -416,6 +417,13 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
         ? Math.max(openingIdleStart, Math.min(playbackDuration, time))
         : Math.max(0, Math.min(playbackDuration, time));
       currentTimeRef.current = next;
+      onProgressRef.current({ time: next, duration: playbackDuration, animation: progressAnimation });
+    },
+    sampleRecordingFrame: (time) => {
+      if (!Number.isFinite(time)) return;
+      const next = Math.max(0, time);
+      currentTimeRef.current = next;
+      finishedRef.current = false;
       onProgressRef.current({ time: next, duration: playbackDuration, animation: progressAnimation });
     },
     triggerTalk: (animation) => talkRendererRef.current?.triggerTalk(animation),
