@@ -7,6 +7,8 @@ const THUMBNAIL_HEIGHT = 192;
 const FACE_THUMBNAIL_SIZE = 192;
 const THUMBNAIL_CACHE_VERSION = { lobby: "lobby-v2", face: "face-v1" } as const;
 const MAX_IMAGE_BYTES = 1024 * 1024;
+const MAX_MEMORY_CACHE_ENTRIES = 96;
+const MAX_MEMORY_CACHE_BYTES = 32 * 1024 * 1024;
 
 export type ViewerThumbnailKind = keyof typeof THUMBNAIL_CACHE_VERSION;
 
@@ -24,6 +26,34 @@ class SerialThumbnailQueue {
 }
 
 const thumbnailQueue = new SerialThumbnailQueue();
+const memoryThumbnailCache = new Map<string, Blob>();
+let memoryThumbnailCacheBytes = 0;
+
+function readMemoryThumbnail(key: string): Blob | null {
+  const image = memoryThumbnailCache.get(key);
+  if (!image) return null;
+  memoryThumbnailCache.delete(key);
+  memoryThumbnailCache.set(key, image);
+  return image;
+}
+
+function writeMemoryThumbnail(key: string, image: Blob): void {
+  if (image.size <= 0 || image.size > MAX_IMAGE_BYTES || image.size > MAX_MEMORY_CACHE_BYTES) return;
+  const previous = memoryThumbnailCache.get(key);
+  if (previous) {
+    memoryThumbnailCache.delete(key);
+    memoryThumbnailCacheBytes -= previous.size;
+  }
+  memoryThumbnailCache.set(key, image);
+  memoryThumbnailCacheBytes += image.size;
+  while (memoryThumbnailCache.size > MAX_MEMORY_CACHE_ENTRIES || memoryThumbnailCacheBytes > MAX_MEMORY_CACHE_BYTES) {
+    const oldestKey = memoryThumbnailCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = memoryThumbnailCache.get(oldestKey);
+    memoryThumbnailCache.delete(oldestKey);
+    if (oldest) memoryThumbnailCacheBytes -= oldest.size;
+  }
+}
 
 function canvasBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
@@ -103,21 +133,35 @@ async function renderSpineThumbnail(files: SpineFiles, directory: string, kind: 
   }
 }
 
-/** Load a persisted preview, generating it in a single asynchronous WebGL lane on cache miss. */
+/** Load a cached preview, generating it in a single asynchronous WebGL lane on cache miss. */
 export async function getViewerThumbnail(source: DesktopAssetSource, directory: string, kind: ViewerThumbnailKind, signal: AbortSignal): Promise<Blob | null> {
   const fingerprint = await source.getThumbnailFingerprint(directory, signal);
   if (signal.aborted) throw abortError(signal);
   const cacheFingerprint = `${THUMBNAIL_CACHE_VERSION[kind]}:${fingerprint}`;
+  const cacheKey = JSON.stringify([source.rootPath, directory, cacheFingerprint]);
+  const inMemory = readMemoryThumbnail(cacheKey);
+  if (inMemory) return inMemory;
   return thumbnailQueue.run(async () => {
+    const queuedMemory = readMemoryThumbnail(cacheKey);
+    if (queuedMemory) return queuedMemory;
     const cached = await source.getThumbnail(directory, cacheFingerprint, signal);
-    if (cached) return cached;
+    if (cached) {
+      writeMemoryThumbnail(cacheKey, cached);
+      return cached;
+    }
     const files = await source.getThumbnailFiles(directory, signal);
     if (signal.aborted) throw abortError(signal);
     const image = await renderSpineThumbnail(files, directory, kind, signal);
     if (signal.aborted) throw abortError(signal);
     const latestFingerprint = await source.getThumbnailFingerprint(directory, signal);
     if (latestFingerprint !== fingerprint) return null;
-    await source.putThumbnail(directory, cacheFingerprint, image, signal);
+    writeMemoryThumbnail(cacheKey, image);
+    // Rendering is still useful if the optional persistent cache is temporarily unavailable.
+    try {
+      await source.putThumbnail(directory, cacheFingerprint, image, signal);
+    } catch {
+      if (signal.aborted) throw abortError(signal);
+    }
     return image;
   }, signal);
 }
