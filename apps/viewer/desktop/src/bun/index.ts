@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
-import { extname, join, relative, resolve, sep } from "node:path";
+import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { ApplicationMenu, BrowserWindow, Screen, Utils } from "electrobun/main";
 import { normalizeLibraryRelativePath, resolveLibraryPath } from "@ba-spine/desktop-host/pathPolicy";
 import { createNodeLibraryReader } from "@ba-spine/desktop-host/nodeLibraryReader";
@@ -18,6 +18,7 @@ import { defaultDesktopWindowFrame, enforceDesktopWindowMinimum, readDesktopWind
 import { restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
 import { discoverPortableSuite, firstRecognizableLibraryPath } from "@ba-spine/desktop-host/portableSuite";
 import { installWindowsNativeWindowMinimum } from "@ba-spine/desktop-host/windowsWindowMinimum";
+import { saveVideoWithoutOverwrite } from "@ba-spine/desktop-host/videoExport";
 
 const viewerLibraryPreferencePath = join(Utils.paths.appData, "BA Spine Suite", "Viewer", "library.json");
 const portableSuite = process.env.BA_SPINE_SUITE_ROOT
@@ -47,6 +48,8 @@ let libraryWatcherAvailable = false;
 let libraryChangeRevision = 0;
 let libraryChangeDebouncer: ReturnType<typeof createDebouncedAction> | null = null;
 const pendingLibraryPaths = new Set<string | null>();
+const MAX_VIEWER_VIDEO_BYTES = 1_073_741_824;
+let videoSaveDirectory: string | null = null;
 
 function launchPlanFor(app: "viewer" | "editor") {
   return defaultCompanionLaunchPlan(app, {
@@ -283,7 +286,7 @@ async function readBoundedBytes(request: Request, maxBytes: number): Promise<Uin
       length += value.byteLength;
       if (length > maxBytes) {
         await reader.cancel();
-        throw new Error(`Viewer thumbnail exceeds the ${maxBytes} byte safety limit.`);
+        throw new Error(`Request body exceeds the ${maxBytes} byte safety limit.`);
       }
       chunks.push(value);
     }
@@ -330,6 +333,36 @@ async function api(request: Request, url: URL): Promise<Response> {
       nativeWindow.setFullScreen(body.fullScreen);
       syncViewerApplicationMenu(body.fullScreen);
       return json({ fullScreen: body.fullScreen });
+    }
+    if (url.pathname === "/__spine/video/location" && request.method === "POST") {
+      const selected = await Utils.openFileDialog({
+        startingFolder: videoSaveDirectory ?? Utils.paths.home,
+        canChooseFiles: false,
+        canChooseDirectory: true,
+        allowsMultipleSelection: false,
+      });
+      if (!selected[0]) {
+        videoSaveDirectory = null;
+        return json({ directoryName: null });
+      }
+      const selectedPath = await realpath(resolve(selected[0]));
+      if (!(await stat(selectedPath)).isDirectory()) return errorResponse("Choose a folder for the video export.");
+      videoSaveDirectory = selectedPath;
+      return json({ directoryName: basename(selectedPath) });
+    }
+    if (url.pathname === "/__spine/video/save" && request.method === "POST") {
+      if (!videoSaveDirectory) return errorResponse("Choose a video export folder before recording.");
+      const contentType = request.headers.get("content-type")?.split(";")[0]?.trim().toLocaleLowerCase() ?? "";
+      if (contentType !== "video/webm" && contentType !== "video/mp4") return errorResponse("Only WebM and MP4 video exports are supported.");
+      const bytes = await readBoundedBytes(request, MAX_VIEWER_VIDEO_BYTES);
+      if (!bytes) return errorResponse("The video export is empty.");
+      let requestedName = request.headers.get("x-ba-spine-video-name") ?? "spine-recording";
+      try { requestedName = decodeURIComponent(requestedName); } catch { return errorResponse("The video filename is invalid."); }
+      const expectedExtension = contentType === "video/webm" ? ".webm" : ".mp4";
+      const withoutExtension = requestedName.replace(/\.[^.]*$/, "") || "spine-recording";
+      const savedAs = await saveVideoWithoutOverwrite(videoSaveDirectory, `${withoutExtension}${expectedExtension}`, bytes);
+      videoSaveDirectory = null;
+      return json({ fileName: savedAs });
     }
     if (url.pathname === "/__spine/companion/pending" && request.method === "GET") return json({ messages: companionInbox.pending() });
     if (url.pathname === "/__spine/companion/ack" && request.method === "POST") {

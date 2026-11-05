@@ -122,6 +122,9 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
       onErrorRef.current(value instanceof Error ? value.message : String(value));
       return;
     }
+    renderer.setInteractionMode(interactionEnabled ? "interaction" : "free");
+    renderer.setShowInteractionPoints(showInteractionPoints);
+    renderer.setCameraMode(cameraModeRef.current ?? "fit");
     renderer.setResolutionScale(resolutionScaleRef.current);
     renderer.setPlaying(false);
     renderer.setLoop(false);
@@ -141,7 +144,7 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
     if (files) void renderer.load(files, layer.directory, interactionProject);
     else renderer.clear();
     return () => renderer.clear();
-  }, [files, interactionProject, layer.directory]);
+  }, [files, interactionProject, layer.directory, preserveDrawingBuffer]);
 
   useEffect(() => {
     const renderer = rendererRef.current;

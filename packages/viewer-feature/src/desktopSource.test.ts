@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { acknowledgeDesktopHandoff, getDesktopFullscreen, readDesktopDraftSnapshot, receiveDesktopHandoffs, sendDesktopHandoff, setDesktopFullscreen, sourceFromDesktop } from "./desktopSource";
+import { acknowledgeDesktopHandoff, chooseDesktopVideoDirectory, getDesktopFullscreen, readDesktopDraftSnapshot, receiveDesktopHandoffs, saveDesktopVideo, sendDesktopHandoff, setDesktopFullscreen, sourceFromDesktop } from "./desktopSource";
 
 const manifest = JSON.stringify({
   schemaVersion: 1,
@@ -18,6 +18,42 @@ const manifest = JSON.stringify({
 });
 
 describe("viewer desktop asset source", () => {
+  test("chooses a native video folder and uploads the correctly labeled format through the host bridge", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const calls: Array<{ path: string; method: string; token: string | null; contentType: string | null; filename: string | null; body?: BodyInit | null }> = [];
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { __BA_SPINE_HOST_TOKEN__: "video-token" } });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      calls.push({
+        path: String(input),
+        method: init?.method ?? "GET",
+        token: headers.get("x-ba-spine-token"),
+        contentType: headers.get("content-type"),
+        filename: headers.get("x-ba-spine-video-name"),
+        ...(init?.body !== undefined ? { body: init.body } : {}),
+      });
+      return String(input).endsWith("/location")
+        ? Response.json({ directoryName: "Videos" })
+        : Response.json({ fileName: "Airi (1).mp4" });
+    }) as typeof fetch;
+
+    try {
+      expect(await chooseDesktopVideoDirectory()).toBe("Videos");
+      const blob = new Blob(["video fixture"], { type: "video/mp4" });
+      expect(await saveDesktopVideo(blob, "Airi opening.mp4", "mp4")).toBe("Airi (1).mp4");
+      expect(calls.map(({ path, method, token, contentType, filename }) => ({ path, method, token, contentType, filename }))).toEqual([
+        { path: "/__spine/video/location", method: "POST", token: "video-token", contentType: null, filename: null },
+        { path: "/__spine/video/save", method: "POST", token: "video-token", contentType: "video/mp4", filename: "Airi%20opening.mp4" },
+      ]);
+      expect(calls[1]?.body).toBe(blob);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
+  });
+
   test("reads and changes native fullscreen through the authenticated desktop bridge", async () => {
     const originalFetch = globalThis.fetch;
     const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");

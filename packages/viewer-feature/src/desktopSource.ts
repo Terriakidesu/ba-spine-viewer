@@ -64,6 +64,25 @@ export async function setDesktopFullscreen(fullScreen: boolean): Promise<void> {
   });
 }
 
+export async function chooseDesktopVideoDirectory(): Promise<string | null> {
+  if (!isDesktopHost()) return null;
+  const result = await request("/__spine/video/location", { method: "POST" }).then((response) => response.json()) as { directoryName?: unknown };
+  return typeof result.directoryName === "string" && result.directoryName ? result.directoryName : null;
+}
+
+export async function saveDesktopVideo(blob: Blob, filename: string, format: "webm" | "mp4"): Promise<string> {
+  const result = await request("/__spine/video/save", {
+    method: "POST",
+    headers: {
+      "content-type": format === "webm" ? "video/webm" : "video/mp4",
+      "x-ba-spine-video-name": encodeURIComponent(filename),
+    },
+    body: blob,
+  }).then((response) => response.json()) as { fileName?: unknown };
+  if (typeof result.fileName !== "string" || !result.fileName) throw new Error("The Viewer did not return the saved video filename.");
+  return result.fileName;
+}
+
 export async function loadDesktopSource(): Promise<DesktopAssetSource | null> {
   if (!isDesktopHost()) return null;
   const selected = await request("/__spine/root").then((response) => response.json()) as { rootPath: string | null };

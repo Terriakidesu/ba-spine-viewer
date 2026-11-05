@@ -4,7 +4,7 @@ import { LanguageSwitch } from "./components/LanguageSwitch";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { setLanguage, t, useLanguage, type LangKey } from "./i18n";
 import { normalizeVoiceVolume, readViewerVoiceVolume, restoreViewerHandoffState, writeViewerVoiceVolume, type ViewerHandoffRestoreState, type ViewerReloadSnapshot } from "./handoffState";
-import { acknowledgeDesktopHandoff, chooseDesktopSource, chooseDesktopSourceAt, getDesktopFullscreen, isDesktopHost, loadDesktopSource, readDesktopDraftSnapshot, receiveDesktopHandoffs, sendDesktopHandoff, setDesktopFullscreen, type DesktopAssetSource } from "./desktopSource";
+import { acknowledgeDesktopHandoff, chooseDesktopSource, chooseDesktopSourceAt, chooseDesktopVideoDirectory, getDesktopFullscreen, isDesktopHost, loadDesktopSource, readDesktopDraftSnapshot, receiveDesktopHandoffs, saveDesktopVideo, sendDesktopHandoff, setDesktopFullscreen, type DesktopAssetSource } from "./desktopSource";
 import { libraryIdentityForPath, type SpineDraftSnapshot, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
 import {
   INTRO_ANIMATION,
@@ -53,6 +53,7 @@ import {
 import { SpineCompositionViewport, type SpineCompositionViewportHandle } from "@ba-spine/spine-runtime/ui/SpineCompositionViewport";
 import { timelineForSequence, timelinePlaybackDuration, timelineSequenceIds, timelineTalkInProgress, timelineTalkSequenceIds, type SpineTimeline } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import { readViewerAspectRatio, writeViewerAspectRatio, type ViewerAspectRatio } from "./viewerPresentation";
+import { createCanvasRecordingCapture, createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoRecordingDimensions, videoRecordingProgress, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
 
 type ViewerDraftPreview = Omit<SpineDraftSnapshot, "project"> & { project: SpineInteractionProject };
 
@@ -81,6 +82,123 @@ type DirectoryPickerWindow = Window & {
   showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
 };
 
+interface VideoWritableHandle {
+  createWritable: () => Promise<{
+    write: (data: Blob) => Promise<void>;
+    close: () => Promise<void>;
+    abort?: () => Promise<void>;
+  }>;
+}
+
+type VideoPickerWindow = DirectoryPickerWindow & {
+  showSaveFilePicker?: (options: {
+    suggestedName: string;
+    types: Array<{ description: string; accept: Record<string, string[]> }>;
+  }) => Promise<VideoWritableHandle>;
+};
+
+function videoFileExtension(format: VideoRecordingFormat): ".webm" | ".mp4" {
+  return format === "webm" ? ".webm" : ".mp4";
+}
+
+async function chooseVideoDestination(format: VideoRecordingFormat, name: string): Promise<VideoDestination | null> {
+  const filename = `${videoFilenameStem(name)}${videoFileExtension(format)}`;
+  if (isDesktopHost()) {
+    if (!await chooseDesktopVideoDirectory()) return null;
+    return { filename, save: (blob) => saveDesktopVideo(blob, filename, format) };
+  }
+
+  const picker = window as VideoPickerWindow;
+  if (picker.showSaveFilePicker) {
+    const handle = await picker.showSaveFilePicker.call(window, {
+      suggestedName: filename,
+      types: [{
+        description: format === "webm" ? "WebM video" : "MP4 video",
+        accept: { [format === "webm" ? "video/webm" : "video/mp4"]: [videoFileExtension(format)] },
+      }],
+    });
+    return {
+      filename,
+      save: async (blob) => {
+        const writable = await handle.createWritable();
+        try {
+          await writable.write(blob);
+          await writable.close();
+        } catch (error) {
+          await writable.abort?.().catch(() => undefined);
+          throw error;
+        }
+      },
+    };
+  }
+
+  if (picker.showDirectoryPicker) {
+    const directory = await picker.showDirectoryPicker.call(window);
+    const uniqueName = `${videoFilenameStem(name)}-${crypto.randomUUID()}${videoFileExtension(format)}`;
+    return {
+      filename: uniqueName,
+      save: async (blob) => {
+        const handle = await directory.getFileHandle(uniqueName, { create: true });
+        const writable = await handle.createWritable();
+        try {
+          await writable.write(blob);
+          await writable.close();
+        } catch (error) {
+          await writable.abort?.().catch(() => undefined);
+          throw error;
+        }
+      },
+    };
+  }
+  throw new Error("This browser does not provide a save-location picker for video exports.");
+}
+
+interface VideoDestination {
+  filename: string;
+  save: (blob: Blob) => Promise<string | void>;
+}
+
+interface ViewerPlaybackSnapshot {
+  sequenceId: string;
+  progress: SpineProgress;
+  playing: boolean;
+  speed: number;
+  loop: boolean;
+  idleMode: "none" | "persistent" | "bridge";
+  animation: string;
+  animationSelectionOrigin: "automatic" | "explicit";
+  skipIntro: boolean;
+  cameraMode: SpineCameraMode;
+  cameraPose: SpineCameraPose | null;
+}
+
+interface VideoRecordingRun {
+  settings: VideoRecordingSettings;
+  destination: VideoDestination;
+  snapshot: ViewerPlaybackSnapshot;
+  phase: "preparing" | "opening" | "idle" | "stopping";
+  plan: VideoRecordingPlan | null;
+  recorder: MediaRecorder | null;
+  capture: CanvasRecordingCapture | null;
+  chunks: Blob[];
+  saveWhenStopped: boolean;
+  stopRequested: boolean;
+  preparationStarted: boolean;
+  finalized: boolean;
+  failureMessage?: string;
+  idleStartedAt: number | null;
+  startedAt: number | null;
+  lastUiUpdate: number;
+  source: "composition" | "runtime";
+}
+
+interface VideoRecorderDialogState {
+  phase: "settings" | "preparing" | "recording" | "saving" | "canceling" | "error";
+  settings: VideoRecordingSettings;
+  elapsed: number;
+  error?: string;
+}
+
 function errorMessage(value: unknown): string {
   return value instanceof Error ? value.message : t("spine.error.unknown");
 }
@@ -104,6 +222,7 @@ export interface SpineViewportHandle {
   replayIntro: () => void;
   restartPlayback: () => void;
   seek: (time: number) => void;
+  getRecordingMetrics: () => { openingDuration: number; idleDuration: number; idleAnimation: string; ready: boolean };
 }
 
 interface SpineViewportProps {
@@ -119,6 +238,8 @@ interface SpineViewportProps {
   skipIntro: boolean;
   showInteractionPoints: boolean;
   effectsStrength: number;
+  preserveDrawingBuffer?: boolean;
+  recordingMeta: SpineMeta | null;
   onMeta: (meta: SpineMeta | null) => void;
   onProgress: (progress: SpineProgress) => void;
   onLoading: (loading: boolean) => void;
@@ -144,6 +265,8 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
   skipIntro,
   showInteractionPoints,
   effectsStrength,
+  preserveDrawingBuffer = false,
+  recordingMeta,
   onMeta,
   onProgress,
   onLoading,
@@ -180,7 +303,15 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
         onIntro: (animation, eventCount) => callbacks.current.onIntro(animation, eventCount),
         onIntroClip: (clipIndex) => callbacks.current.onIntroClip(clipIndex),
         onInteractionPoints: (overlay) => setInteractionOverlay(overlay),
-      });
+      }, { preserveDrawingBuffer });
+      renderer.setCameraMode(cameraMode);
+      renderer.setInteractionMode(interactionMode);
+      renderer.setSkipIntro(skipIntro);
+      renderer.setEffectsStrength(effectsStrength);
+      renderer.setShowInteractionPoints(showInteractionPoints);
+      renderer.setPlaying(playing);
+      renderer.setSpeed(speed);
+      renderer.setLoop(loop);
       rendererRef.current = renderer;
       return () => {
         renderer.dispose();
@@ -189,7 +320,7 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
     } catch (error) {
       callbacks.current.onError(new Error(errorMessage(error)));
     }
-  }, []);
+  }, [preserveDrawingBuffer]);
 
   useEffect(() => {
     const renderer = rendererRef.current;
@@ -198,7 +329,7 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
     renderer.setSkipIntro(skipIntro);
     if (files) void renderer.load(files, directory, interactionProject);
     else renderer.clear();
-  }, [files, directory, interactionProject]);
+  }, [files, directory, interactionProject, preserveDrawingBuffer]);
 
   useEffect(() => rendererRef.current?.setAnimation(animation), [animation]);
   useEffect(() => rendererRef.current?.setPlaying(playing), [playing]);
@@ -231,7 +362,15 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
     replayIntro: () => rendererRef.current?.replayIntro(),
     restartPlayback: () => rendererRef.current?.restartPlayback(),
     seek: (value) => rendererRef.current?.seek(value),
-  }), []);
+    getRecordingMetrics: () => {
+      const renderer = rendererRef.current;
+       if (!renderer || !recordingMeta) return { openingDuration: 0, idleDuration: 0, idleAnimation: "", ready: false };
+      const openingDuration = recordingMeta.introAnimation ? renderer.getEditorAnimationInfo(recordingMeta.introAnimation).duration : 0;
+      const idleAnimation = recordingMeta.idleAnimation || "";
+      const idleDuration = idleAnimation ? renderer.getEditorAnimationInfo(idleAnimation).duration : 0;
+      return { openingDuration, idleDuration, idleAnimation, ready: true };
+    },
+  }), [recordingMeta]);
 
   const overlayWidth = interactionOverlay.canvasWidth;
   const overlayHeight = interactionOverlay.canvasHeight;
@@ -371,9 +510,26 @@ export function Spine() {
   const [voicePlaying, setVoicePlaying] = useState(false);
   const [talkAutoplay, setTalkAutoplay] = useState(false);
   const [idleMode, setIdleMode] = useState<"none" | "persistent" | "bridge">("none");
+  const [videoRecorderFormats] = useState<SupportedVideoFormat[]>(() => detectSupportedVideoFormats());
+  const [videoRecorderSettings, setVideoRecorderSettings] = useState<VideoRecordingSettings>(() => ({
+    mode: "opening-idle",
+    idleLoops: 3,
+    resolution: 1080,
+    frameRate: 30,
+    framing: "current",
+    includeAudio: true,
+    includeSubtitles: true,
+    format: videoRecorderFormats.some(({ format }) => format === "webm") ? "webm" : videoRecorderFormats[0]?.format ?? "webm",
+  }));
+  const [videoRecorderDialog, setVideoRecorderDialog] = useState<VideoRecorderDialogState | null>(null);
+  const videoRecorderDialogRef = useRef<VideoRecorderDialogState | null>(null);
+  videoRecorderDialogRef.current = videoRecorderDialog;
   const inputRef = useRef<HTMLInputElement>(null);
   const viewportRef = useRef<SpineViewportHandle>(null);
   const compositionRef = useRef<SpineCompositionViewportHandle>(null);
+  const stageFrameRef = useRef<HTMLDivElement>(null);
+  const videoRecordingRunRef = useRef<VideoRecordingRun | null>(null);
+  const pendingVideoRestoreRef = useRef<ViewerPlaybackSnapshot | null>(null);
   const fullscreenLayoutRef = useRef<HTMLDivElement>(null);
   const fullscreenControlsRef = useRef<HTMLDivElement>(null);
   const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -403,6 +559,11 @@ export function Spine() {
   progressRef.current = progress;
 
   talkAutoplayRef.current = talkAutoplay;
+
+  useEffect(() => {
+    if (videoRecorderFormats.length === 0 || videoRecorderFormats.some(({ format }) => format === videoRecorderSettings.format)) return;
+    setVideoRecorderSettings((current) => ({ ...current, format: videoRecorderFormats[0]!.format }));
+  }, [videoRecorderFormats, videoRecorderSettings.format]);
 
   const sourceRootPath = source && "rootPath" in source && typeof source.rootPath === "string" ? source.rootPath : null;
   const navigationRootKey = sourceRootPath ?? (source ? "ephemeral-local-preview" : null);
@@ -662,6 +823,20 @@ export function Spine() {
     : "";
   const compositionTimeline = selectedInteractionProject ? timelineForSequence(selectedInteractionProject, compositionSequenceId) : null;
   const compositionActive = Boolean(compositionTimeline);
+  const videoRecorderApplyingCamera = videoRecorderDialog?.phase === "preparing"
+    || videoRecorderDialog?.phase === "recording"
+    || videoRecorderDialog?.phase === "saving"
+    || videoRecorderDialog?.phase === "canceling";
+  const savedCameraForRecording = videoRecorderApplyingCamera && videoRecorderDialog?.settings.framing === "saved";
+  const compositionCameraMode: SpineCameraMode = savedCameraForRecording
+    ? compositionTimeline?.camera?.enabled ? "authored" : "fit"
+    : interactionMode === "free"
+      ? "artwork"
+      : compositionTimeline?.camera?.enabled ? "authored" : "fit";
+  const authoredCameraActive = interactionMode === "interaction" && compositionActive && compositionTimeline?.camera?.enabled === true;
+  const outputAspectRatio = savedCameraForRecording && compositionTimeline?.camera?.enabled
+    ? compositionTimeline.camera.aspectRatio
+    : authoredCameraActive ? compositionTimeline?.camera?.aspectRatio ?? aspectRatio : aspectRatio;
   const authoredTalkSequenceIds = selectedInteractionProject ? timelineTalkSequenceIds(selectedInteractionProject) : [];
   const authoredTalkAutoplayAvailable = Boolean(
     selectedInteractionProject
@@ -779,13 +954,20 @@ export function Spine() {
       : !pendingHandoff && currentSequence
         ? currentSequence
         : entrySequence && sequenceIds.includes(entrySequence) ? entrySequence : "";
-    setIdleMode("none");
-    setSelectedSequenceId(initialSequence);
-    const initialTimeline = selectedInteractionProject && initialSequence ? timelineForSequence(selectedInteractionProject, initialSequence) : null;
+    const videoRestore = pendingVideoRestoreRef.current;
+    const sequenceToSelect = videoRestore ? videoRestore.sequenceId : initialSequence;
+    const recorderRun = videoRecordingRunRef.current;
+    setIdleMode(videoRestore
+      ? videoRestore.idleMode
+      : recorderRun?.phase === "preparing" && recorderRun.source === "composition" && recorderRun.settings.mode === "idle-only"
+        ? "persistent"
+        : "none");
+    setSelectedSequenceId(sequenceToSelect);
+    const initialTimeline = selectedInteractionProject && sequenceToSelect ? timelineForSequence(selectedInteractionProject, sequenceToSelect) : null;
     setProgress({
-      time: 0,
-      duration: initialTimeline ? projectTimelineDuration(initialTimeline, selectedInteractionProject) : 0,
-      animation: null,
+      time: videoRestore?.progress.time ?? 0,
+      duration: videoRestore?.progress.duration ?? (initialTimeline ? projectTimelineDuration(initialTimeline, selectedInteractionProject) : 0),
+      animation: videoRestore?.progress.animation ?? null,
     });
   }, [compositionSequenceSignature, selectedDirectoryName, selectedInteractionProject?.entrySequence, selectedSequenceId]);
 
@@ -866,6 +1048,8 @@ export function Spine() {
   // Audio preparation is intentionally non-blocking: once the character scene
   // is visible, Talk/sequence audio must never replace it with a loading card.
   const isLoading = !error && Boolean(folderLoading || filesLoading || rendererLoading || rendererPending);
+  const videoRecorderReadyRef = useRef(false);
+  videoRecorderReadyRef.current = !isLoading && !backgroundAudioLoading && Boolean(meta);
   const compositionRendererProgress = compositionLoadProgress?.stage === "audio" ? null : compositionLoadProgress;
   const loadingProgress: SpineLoadProgress | null = folderLoading
       ? null
@@ -1029,6 +1213,15 @@ export function Spine() {
     audio.volume = normalizeVoiceVolume(voiceVolume);
     audio.currentTime = 0;
     voiceAudioRef.current = audio;
+    const recording = videoRecordingRunRef.current;
+    if (recording?.capture && recording.settings.includeAudio) {
+      try {
+        recording.capture.addAudioElement(audio);
+      } catch (error) {
+        stopVideoRecording(false, errorMessage(error));
+        return;
+      }
+    }
     audio.onplay = () => {
       if (session.run !== voiceRunRef.current || voiceSessionRef.current !== session || voiceAudioRef.current !== audio) return;
       setVoiceLineIndex(session.lineIndex);
@@ -1417,6 +1610,7 @@ export function Spine() {
   }, []);
 
   const chooseFolder = async () => {
+    if (videoRecordingRunRef.current) return;
     if (isDesktopHost()) {
       try {
         const desktopSource = await chooseDesktopSource();
@@ -1508,6 +1702,7 @@ export function Spine() {
   };
 
   const onInputChange = (event: ChangeEvent<HTMLInputElement>) => {
+    if (videoRecordingRunRef.current) return;
     if (!event.currentTarget.files?.length) return;
     resetAssetPlayback();
     setSource(sourceFromInput(event.currentTarget.files));
@@ -1516,6 +1711,7 @@ export function Spine() {
   };
 
   const selectCharacter = (name: string) => {
+    if (videoRecordingRunRef.current) return;
     const first = indexedAssets(characterIndex.characters[name]).find((variant) => !availableDirectories || availableDirectories.has(variant.directory));
     resetAssetPlayback();
     setSelectedCharacter(name);
@@ -1524,6 +1720,7 @@ export function Spine() {
   };
 
   const selectLobby = (lobbyId: string) => {
+    if (videoRecordingRunRef.current) return;
     const character = Object.entries(characterIndex.characters)
       .find(([, entry]) => indexedAssets(entry).some((asset) => asset.directory === lobbyId));
     if (!character || !availableDirectories?.has(lobbyId)) return;
@@ -1574,6 +1771,7 @@ export function Spine() {
   };
 
   const selectInteractionMode = (value: SpineInteractionMode) => {
+    if (videoRecordingRunRef.current) return;
     if (value === interactionMode) return;
     stopVoice();
     if (value === "interaction") {
@@ -1673,6 +1871,15 @@ export function Spine() {
   };
 
   const handleCompositionFinished = () => {
+    const recording = videoRecordingRunRef.current;
+    if (recording?.source === "composition") {
+      if (recording.phase === "opening") {
+        recording.phase = "idle";
+        recording.idleStartedAt = performance.now();
+        setIdleMode("persistent");
+      }
+      return;
+    }
     const opening = selectedInteractionProject ? timelineForSequence(selectedInteractionProject, "opening") : null;
     const authoredAutoplay = talkAutoplayRef.current && authoredTalkSequenceIds.length > 0 && Boolean(opening);
 
@@ -1720,6 +1927,321 @@ export function Spine() {
     setTalkAutoplay(false);
     setPlaying(true);
   };
+
+  const restoreVideoRecording = (run: VideoRecordingRun, failure?: string) => {
+    if (videoRecordingRunRef.current !== run) return;
+    stopVoice();
+    run.capture?.stopDrawing();
+    run.capture?.stopTracks();
+    pendingVideoRestoreRef.current = run.snapshot;
+    videoRecordingRunRef.current = null;
+    setPlaying(false);
+    setSelectedSequenceId(run.snapshot.sequenceId);
+    setIdleMode(run.snapshot.idleMode);
+    setProgress(run.snapshot.progress);
+    setAnimation(run.snapshot.animation);
+    setAnimationSelectionOrigin(run.snapshot.animationSelectionOrigin);
+    setSkipIntro(run.snapshot.skipIntro);
+    setSpeed(run.snapshot.speed);
+    setLoop(run.snapshot.loop);
+    setCameraMode(run.snapshot.cameraMode);
+    setVideoRecorderDialog(failure
+      ? { phase: "error", settings: run.settings, elapsed: 0, error: failure }
+      : null);
+  };
+
+  const finalizeVideoRecording = async (run: VideoRecordingRun) => {
+    if (run.finalized) return;
+    run.finalized = true;
+    let failure = run.failureMessage;
+    try {
+      if (failure) throw new Error(failure);
+      if (run.saveWhenStopped) {
+        const mimeType = run.recorder?.mimeType || (run.settings.format === "webm" ? "video/webm" : "video/mp4");
+        const blob = new Blob(run.chunks, { type: mimeType });
+        if (blob.size === 0) throw new Error("The WebView exported an empty video.");
+        await run.destination.save(blob);
+      }
+    } catch (error) {
+      failure = errorMessage(error);
+    }
+    restoreVideoRecording(run, failure);
+  };
+
+  const stopVideoRecording = (save: boolean, failure?: string) => {
+    const run = videoRecordingRunRef.current;
+    if (!run || run.stopRequested) return;
+    run.stopRequested = true;
+    run.saveWhenStopped = save;
+    run.failureMessage = failure;
+    run.phase = "stopping";
+    setPlaying(false);
+    setVideoRecorderDialog((current) => current
+      ? { ...current, phase: failure ? "saving" : save ? "saving" : "canceling" }
+      : current);
+    run.capture?.stopDrawing();
+    if (!run.recorder || run.recorder.state === "inactive") {
+      void finalizeVideoRecording(run);
+      return;
+    }
+    try {
+      run.recorder.stop();
+    } catch (error) {
+      run.failureMessage = failure ?? errorMessage(error);
+      void finalizeVideoRecording(run);
+    }
+  };
+
+  const handleViewerProgress = (next: SpineProgress, sourceKind: "composition" | "runtime") => {
+    progressRef.current = next;
+    setProgress(next);
+    const run = videoRecordingRunRef.current;
+    if (!run || run.phase === "preparing" || run.phase === "stopping" || run.source !== sourceKind || !run.plan) return;
+
+    const now = performance.now();
+    let elapsed: number;
+    if (sourceKind === "composition") {
+      if (run.phase === "opening" && next.time >= run.plan.openingDuration) {
+        run.phase = "idle";
+        run.idleStartedAt = now;
+        setIdleMode("persistent");
+      }
+      elapsed = run.settings.mode === "idle-only"
+        ? Math.max(0, next.time - run.plan.openingDuration)
+        : next.time;
+    } else {
+      if (run.phase === "opening" && next.animation && next.animation !== meta?.introAnimation) {
+        run.phase = "idle";
+        run.idleStartedAt = now;
+      }
+      if (run.settings.mode === "idle-only") elapsed = (now - (run.startedAt ?? now)) / 1000;
+      else if (run.phase === "opening") elapsed = Math.min(run.plan.openingDuration, next.time);
+      else elapsed = run.plan.openingDuration + Math.max(0, now - (run.idleStartedAt ?? now)) / 1000;
+    }
+
+    const recordingProgress = videoRecordingProgress(run.plan, elapsed);
+    if (now - run.lastUiUpdate >= 180 || recordingProgress.finished) {
+      run.lastUiUpdate = now;
+      setVideoRecorderDialog((current) => current ? { ...current, elapsed: recordingProgress.elapsed } : current);
+    }
+    if (recordingProgress.finished) stopVideoRecording(true);
+  };
+
+  const openVideoRecorder = () => {
+    setVideoRecorderDialog({ phase: "settings", settings: videoRecorderSettings, elapsed: 0 });
+  };
+
+  const updateVideoRecorderSettings = (patch: Partial<VideoRecordingSettings>) => {
+    setVideoRecorderSettings((current) => ({ ...current, ...patch }));
+    setVideoRecorderDialog((current) => current?.phase === "settings"
+      ? { ...current, settings: { ...current.settings, ...patch } }
+      : current);
+  };
+
+  const startVideoRecording = async () => {
+    if (!videoRecorderDialog || videoRecorderDialog.phase !== "settings") return;
+    const settings = videoRecorderDialog.settings;
+    const selectedFormat = videoRecorderFormats.find((item) => item.format === settings.format);
+    if (!selectedFormat) {
+      setVideoRecorderDialog({ ...videoRecorderDialog, phase: "error", error: t("spine.recorder.unsupported") });
+      return;
+    }
+    const modeName = settings.mode === "opening-idle" ? "opening-idle" : "idle-only";
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const outputName = `${videoFilenameStem(`${selectedCharacter} ${modeName} ${timestamp}`)}.${settings.format}`;
+    let destination: VideoDestination | null;
+    try {
+      destination = await chooseVideoDestination(settings.format, outputName.replace(/\.[^.]+$/, ""));
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setVideoRecorderDialog({ ...videoRecorderDialog, phase: "error", error: errorMessage(error) });
+      return;
+    }
+    if (!destination || videoRecorderDialogRef.current?.phase !== "settings") return;
+
+    const recordingUsesComposition = compositionActive || hasOpeningSequence;
+    const snapshot: ViewerPlaybackSnapshot = {
+      sequenceId: selectedSequenceId,
+      progress: { ...progressRef.current },
+      playing,
+      speed,
+      loop,
+      idleMode,
+      animation,
+      animationSelectionOrigin,
+      skipIntro,
+      cameraMode,
+      cameraPose: activeViewport()?.getCameraPose() ?? null,
+    };
+    const run: VideoRecordingRun = {
+      settings,
+      destination,
+      snapshot,
+      phase: "preparing",
+      plan: null,
+      recorder: null,
+      capture: null,
+      chunks: [],
+      saveWhenStopped: false,
+      stopRequested: false,
+      preparationStarted: false,
+      finalized: false,
+      idleStartedAt: null,
+      startedAt: null,
+      lastUiUpdate: 0,
+      source: recordingUsesComposition ? "composition" : "runtime",
+    };
+    videoRecordingRunRef.current = run;
+    setVideoRecorderSettings(settings);
+    setVideoRecorderDialog({ phase: "preparing", settings, elapsed: 0 });
+    stopVoice();
+    talkAutoplayRef.current = false;
+    setTalkAutoplay(false);
+    setPlaying(false);
+    setSpeed(1);
+    setLoop(true);
+
+    if (recordingUsesComposition) {
+      const sequenceId = compositionSequenceIds.includes("opening") ? "opening" : compositionSequenceId;
+      const timeline = selectedInteractionProject && sequenceId ? timelineForSequence(selectedInteractionProject, sequenceId) : compositionTimeline;
+      setSelectedSequenceId(sequenceId);
+      setIdleMode(settings.mode === "idle-only" ? "persistent" : "none");
+      setProgress({ time: 0, duration: timeline ? projectTimelineDuration(timeline, selectedInteractionProject) : 0, animation: null });
+    } else if (settings.mode === "idle-only" || !meta?.introAnimation) {
+      const idleAnimation = meta?.idleAnimation || animation;
+      setAnimation(idleAnimation);
+      setAnimationSelectionOrigin("explicit");
+      setProgress({ time: 0, duration: meta?.duration ?? 0, animation: null });
+    } else {
+      setSkipIntro(false);
+      setAnimation(INTRO_ANIMATION);
+      setAnimationSelectionOrigin("explicit");
+      setProgress({ time: 0, duration: meta.duration, animation: null });
+    }
+  };
+
+  useEffect(() => {
+    const run = videoRecordingRunRef.current;
+    if (!run || run.phase !== "preparing" || videoRecorderDialog?.phase !== "preparing" || run.preparationStarted) return;
+    if (isLoading || backgroundAudioLoading || !meta || !selectedDirectoryName) return;
+    if (run.source === "composition" && !compositionActive) return;
+    run.preparationStarted = true;
+    void (async () => {
+      const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await nextFrame();
+      await nextFrame();
+      if (videoRecordingRunRef.current !== run) return;
+      if (!videoRecorderReadyRef.current) {
+        run.preparationStarted = false;
+        return;
+      }
+      const metrics = run.source === "composition"
+        ? compositionRef.current?.getRecordingMetrics()
+        : viewportRef.current?.getRecordingMetrics();
+      if (!metrics?.ready) {
+        run.preparationStarted = false;
+        return;
+      }
+      if (!metrics || metrics.idleDuration <= 0) throw new Error(t("spine.recorder.noIdle"));
+      const selectedFormat = videoRecorderFormats.find((item) => item.format === run.settings.format);
+      if (!selectedFormat) throw new Error(t("spine.recorder.unsupported"));
+      run.plan = createVideoRecordingPlan(run.settings.mode, metrics.openingDuration, metrics.idleDuration, run.settings.idleLoops);
+      if (run.source === "composition") {
+        if (run.settings.mode === "idle-only" || run.plan.openingDuration <= 0) {
+          setIdleMode("persistent");
+          compositionRef.current?.restartPlayback();
+        } else {
+          setIdleMode("none");
+          compositionRef.current?.seek(0);
+        }
+      } else if (run.settings.mode === "idle-only" || run.plan.openingDuration <= 0) {
+        const idleAnimation = metrics.idleAnimation || meta.idleAnimation || animation;
+        setAnimation(idleAnimation);
+        setAnimationSelectionOrigin("explicit");
+        viewportRef.current?.setAnimation(idleAnimation);
+        viewportRef.current?.seek(0);
+      } else {
+        setSkipIntro(false);
+        setAnimation(INTRO_ANIMATION);
+        setAnimationSelectionOrigin("explicit");
+        viewportRef.current?.replayIntro();
+      }
+      if (run.settings.framing === "current") {
+        const viewport = run.source === "composition" ? compositionRef.current : viewportRef.current;
+        viewport?.setCameraPose(run.snapshot.cameraPose);
+      }
+      await nextFrame();
+      await nextFrame();
+      if (videoRecordingRunRef.current !== run) return;
+      const stageFrame = stageFrameRef.current;
+      const stage = stageFrame?.querySelector<HTMLElement>(".spine-stage");
+      if (!stage) throw new Error(t("spine.recorder.stageUnavailable"));
+      const dimensions = videoRecordingDimensions(run.settings.resolution, outputAspectRatio);
+      const audioElements = [
+        ...Array.from(stageFrame?.querySelectorAll<HTMLMediaElement>("audio") ?? []),
+        ...(voiceAudioRef.current ? [voiceAudioRef.current] : []),
+      ];
+      const capture = await createCanvasRecordingCapture({
+        stage,
+        width: dimensions.width,
+        height: dimensions.height,
+        frameRate: run.settings.frameRate,
+        includeAudio: run.settings.includeAudio,
+        includeSubtitles: run.settings.includeSubtitles,
+        audioElements,
+        mimeType: selectedFormat.mimeType,
+      });
+      if (videoRecordingRunRef.current !== run || run.stopRequested) {
+        capture.stopDrawing();
+        capture.stopTracks();
+        return;
+      }
+      run.capture = capture;
+      run.recorder = capture.recorder;
+      capture.recorder.ondataavailable = (event) => { if (event.data.size > 0) run.chunks.push(event.data); };
+      capture.recorder.onerror = (event) => {
+        const recorderError = (event as Event & { error?: DOMException }).error;
+        stopVideoRecording(false, recorderError?.message || t("spine.recorder.encodeError"));
+      };
+      capture.recorder.onstop = () => { void finalizeVideoRecording(run); };
+      run.phase = run.settings.mode === "opening-idle" && run.plan.openingDuration > 0 ? "opening" : "idle";
+      capture.recorder.start(1000);
+      setVideoRecorderDialog({ phase: "recording", settings: run.settings, elapsed: 0 });
+      await nextFrame();
+      await nextFrame();
+      if (videoRecordingRunRef.current === run && !run.stopRequested) {
+        run.startedAt = performance.now();
+        if (run.phase === "idle") run.idleStartedAt = run.startedAt;
+        setPlaying(true);
+      }
+    })().catch((error: unknown) => stopVideoRecording(false, errorMessage(error)));
+  }, [animation, backgroundAudioLoading, compositionActive, compositionLoadProgress, compositionSequenceId, isLoading, meta, outputAspectRatio, selectedDirectoryName, videoRecorderFormats, videoRecorderDialog?.phase]);
+
+  useEffect(() => {
+    const snapshot = pendingVideoRestoreRef.current;
+    if (!snapshot || videoRecordingRunRef.current || isLoading) return;
+    let firstFrame = 0;
+    let secondFrame = 0;
+    firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        if (pendingVideoRestoreRef.current !== snapshot || videoRecordingRunRef.current) return;
+        pendingVideoRestoreRef.current = null;
+        const viewport = compositionActive ? compositionRef.current : viewportRef.current;
+        if (!compositionActive) {
+          setAnimation(snapshot.animation);
+          setAnimationSelectionOrigin(snapshot.animationSelectionOrigin);
+          viewportRef.current?.setAnimation(snapshot.animation);
+        }
+        viewport?.setCameraPose(snapshot.cameraPose);
+        viewport?.seek(snapshot.progress.time);
+        setPlaying(snapshot.playing);
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+    };
+  }, [compositionActive, compositionSequenceId, idleMode, isLoading, selectedDirectoryName, videoRecorderDialog?.phase]);
 
   const togglePlayback = () => setPlaying((value) => !value);
 
@@ -1816,6 +2338,14 @@ export function Spine() {
     const onKey = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
       const target = event.target as HTMLElement | null;
+      if (videoRecorderDialog) {
+        if (key === "escape") {
+          event.preventDefault();
+          if (videoRecorderDialog.phase === "settings" || videoRecorderDialog.phase === "error") setVideoRecorderDialog(null);
+          else if (videoRecorderDialog.phase === "preparing" || videoRecorderDialog.phase === "recording") stopVideoRecording(false);
+        }
+        return;
+      }
       if (key === "escape") {
         if (target?.closest("input, select, textarea, [contenteditable]")) return;
         if (showOptions) {
@@ -1892,19 +2422,15 @@ export function Spine() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [cameraMode, compositionActive, compositionSequenceId, fullscreen, fullscreenClean, interactionMode, interactionReady, loop, meta, playing, selectedInteractionProject, showFullscreenControls, showOptions, speed, voiceLines.length]);
+  }, [cameraMode, compositionActive, compositionSequenceId, fullscreen, fullscreenClean, interactionMode, interactionReady, loop, meta, playing, selectedInteractionProject, showFullscreenControls, showOptions, speed, videoRecorderDialog, voiceLines.length]);
 
-  const compositionCameraMode: SpineCameraMode = interactionMode === "free"
-    ? "artwork"
-    : compositionTimeline?.camera?.enabled ? "authored" : "fit";
-  const authoredCameraActive = interactionMode === "interaction" && compositionActive && compositionTimeline?.camera?.enabled === true;
-  const outputAspectRatio = authoredCameraActive ? compositionTimeline?.camera?.aspectRatio ?? aspectRatio : aspectRatio;
   const showAspectRatioControl = interactionMode === "interaction" || compositionActive;
-  const viewportCameraMode: SpineCameraMode = interactionMode === "free" ? "artwork" : "fit";
+  const viewportCameraMode: SpineCameraMode = savedCameraForRecording ? "fit" : interactionMode === "free" ? "artwork" : "fit";
   const hasOpeningSequence = Boolean(selectedInteractionProject && compositionSequenceIds.includes("opening"));
   const canRestartOpening = hasOpeningSequence || (!compositionActive && Boolean(meta?.introAnimation && meta.idleAnimation));
 
   return <main className={`spine-page${isDesktopHost() && fullscreen ? " is-native-fullscreen" : ""}`}>
+    <div className="spine-recorder-background" inert={Boolean(videoRecorderDialog)} aria-hidden={Boolean(videoRecorderDialog)}>
     <header className="spine-header">
       <div className="spine-brand">
         <span className="spine-kicker">BA Spine Suite / Spine 4.2</span>
@@ -2004,6 +2530,7 @@ export function Spine() {
                     aria-expanded={expanded}
                     className={`spine-character-row${name === selectedCharacter ? " is-selected" : ""}`}
                     onClick={() => {
+                      if (videoRecordingRunRef.current) return;
                       if (name !== selectedCharacter) selectCharacter(name);
                       else setExpandedCharacter((current) => current === name ? "" : name);
                     }}
@@ -2016,6 +2543,7 @@ export function Spine() {
                 {expanded && <div className="spine-character-variants" role="group" aria-label={t("spine.characterVariants", { name })}>
                   {visibleVariants.map((variant) => <div key={variant.directory} className="spine-variant-row">
                     <button type="button" data-browser-item data-character={name} className={`spine-variant-select${variant.directory === selectedDirectoryName ? " is-selected" : ""}`} aria-current={variant.directory === selectedDirectoryName ? "true" : undefined} onClick={() => {
+                      if (videoRecordingRunRef.current) return;
                       if (variant.directory !== selectedDirectoryName || name !== selectedCharacter) resetAssetPlayback();
                       setSelectedCharacter(name);
                       setSelectedDirectory(variant.directory);
@@ -2070,7 +2598,7 @@ export function Spine() {
             </button>
           </div>
         </div>
-        <div className="spine-stage-frame" data-aspect-ratio={outputAspectRatio} data-free-canvas={!compositionActive && interactionMode === "free" ? "true" : "false"} onPointerDown={(event) => {
+        <div ref={stageFrameRef} className="spine-stage-frame" data-aspect-ratio={outputAspectRatio} data-free-canvas={!compositionActive && interactionMode === "free" ? "true" : "false"} onPointerDown={(event) => {
           stagePointer.current = { x: event.clientX, y: event.clientY };
         }} onPointerUp={(event) => {
           const start = stagePointer.current;
@@ -2096,9 +2624,10 @@ export function Spine() {
                  effectsStrength={effectsStrength}
                  cameraMode={compositionCameraMode}
                   aspectRatio={outputAspectRatio}
-                 idleMode={idleMode}
+                idleMode={idleMode}
+                preserveDrawingBuffer={videoRecorderApplyingCamera}
                onMeta={handleViewportMeta}
-               onProgress={setProgress}
+                onProgress={(next) => handleViewerProgress(next, "composition")}
                onLoading={(loading) => { setRendererLoading(loading); if (!loading) setRendererLoadProgress(null); }}
                onLoadProgress={setCompositionLoadProgress}
                 onError={handleViewportError}
@@ -2122,9 +2651,11 @@ export function Spine() {
               interactionMode={interactionMode}
               skipIntro={skipIntro}
               showInteractionPoints={showInteractionPoints}
-               effectsStrength={effectsStrength}
-               onMeta={handleViewportMeta}
-               onProgress={(next) => { if (!compositionActive) setProgress(next); }}
+              effectsStrength={effectsStrength}
+              preserveDrawingBuffer={videoRecorderApplyingCamera}
+              recordingMeta={meta}
+              onMeta={handleViewportMeta}
+                onProgress={(next) => handleViewerProgress(next, "runtime")}
                onLoading={(loading) => { setRendererLoading(loading); if (!loading) setRendererLoadProgress(null); }}
                onLoadProgress={setRendererLoadProgress}
                 onError={handleViewportError}
@@ -2163,6 +2694,7 @@ export function Spine() {
               {interactionMode === "free" && <button className="spine-tool-button" type="button" disabled={!meta} onClick={fitAllArtwork} aria-label={t("spine.fitAllArtwork")} title={t("spine.fitAllArtwork")}><IconTarget /><span>{t("spine.fitAllArtwork")}</span></button>}
               {interactionReady && meta?.interaction.talkCount ? <button className="spine-tool-button" type="button" onClick={() => playTalk()} aria-label={t("spine.talkAria")} title={t("spine.talkAria")}><IconMessage /><span>{t("spine.talk")}</span><small>{meta.interaction.talkCount}</small></button> : null}
               {interactionReady && (voiceLines.length > 0 || authoredTalkAutoplayAvailable) ? <button className={`spine-tool-button${talkAutoplay ? " is-active" : ""}`} type="button" onClick={toggleTalkAutoplay} aria-pressed={talkAutoplay} aria-label={t(talkAutoplay ? "spine.autoplayStop" : "spine.autoplayStart")} title={t(talkAutoplay ? "spine.autoplayStop" : "spine.autoplayStart")}><span>{talkAutoplay ? <IconPause /> : <IconPlay />}</span><span>{t("spine.autoplay")}</span></button> : null}
+              <button className="spine-tool-button spine-record-video-button" type="button" disabled={!meta || videoRecorderFormats.length === 0} onClick={openVideoRecorder} aria-label={t("spine.recorder.open")} title={t(videoRecorderFormats.length ? "spine.recorder.open" : "spine.recorder.unsupported")}><IconDot /><span>{t("spine.recorder.open")}</span></button>
               <button className={`spine-tool-button${showOptions ? " is-active" : ""}`} type="button" aria-expanded={showOptions} aria-controls="spine-options" onClick={() => setShowOptions((shown) => !shown)}><IconSliders /><span>{t("spine.options")}</span></button>
                <details className="spine-shortcut-help">
                  <summary className="spine-tool-button" aria-label={t("spine.shortcuts")} title={t("spine.shortcuts")}><IconHelp /><span>{t("spine.shortcuts")}</span></summary>
@@ -2224,7 +2756,7 @@ export function Spine() {
                   </select></label>}
                   {interactionMode === "free" && !compositionActive && <label className="spine-check"><input type="checkbox" checked={loop} onChange={(event) => setLoop(event.target.checked)} />{t("spine.loop")}</label>}
                   {!compositionActive && <label className="spine-check"><input type="checkbox" checked={skipIntro} onChange={(event) => toggleSkipIntro(event.target.checked)} />{t("spine.skipIntro")}</label>}
-                  {selectedInteractionProject && compositionSequenceIds.length > 0 && <label className="spine-setting-field"><span>{t("spine.sequence")}</span><select value={compositionSequenceId || "__runtime-intro__"} onChange={(event) => { const next = event.target.value === "__runtime-intro__" ? "" : event.target.value; const nextTimeline = next ? timelineForSequence(selectedInteractionProject, next) : null; stopVoice(); setIdleMode("none"); setProgress({ time: 0, duration: nextTimeline ? projectTimelineDuration(nextTimeline, selectedInteractionProject) : 0, animation: null }); setSelectedSequenceId(next); }} aria-label={t("spine.sequenceAria")}>
+                  {selectedInteractionProject && compositionSequenceIds.length > 0 && <label className="spine-setting-field"><span>{t("spine.sequence")}</span><select value={compositionSequenceId || "__runtime-intro__"} onChange={(event) => { if (videoRecordingRunRef.current) return; const next = event.target.value === "__runtime-intro__" ? "" : event.target.value; const nextTimeline = next ? timelineForSequence(selectedInteractionProject, next) : null; stopVoice(); setIdleMode("none"); setProgress({ time: 0, duration: nextTimeline ? projectTimelineDuration(nextTimeline, selectedInteractionProject) : 0, animation: null }); setSelectedSequenceId(next); }} aria-label={t("spine.sequenceAria")}>
                     {!compositionSequenceId && <option value="__runtime-intro__">Runtime intro</option>}
                     {compositionSequenceIds.map((id) => <option key={id} value={id}>{id === "opening" ? t("spine.sequenceOpening") : id.match(/^talk-(\d+)$/)?.[1] ? t("spine.sequenceTalk", { n: id.match(/^talk-(\d+)$/)![1]! }) : id}</option>)}
                   </select></label>}
@@ -2248,5 +2780,67 @@ export function Spine() {
         <p className="spine-caption">{meta ? t("spine.loaded", { animations: meta.animations.length }) : t("spine.caption")}</p>
       </section>
     </div>
+    </div>
+    {videoRecorderDialog && <div className="spine-recorder-backdrop">
+      <section className="spine-recorder-dialog" role="dialog" aria-modal="true" aria-labelledby="spine-recorder-title">
+        <div className="spine-recorder-heading">
+          <div><span>{t("spine.recorder.eyebrow")}</span><h2 id="spine-recorder-title">{t("spine.recorder.title")}</h2></div>
+          {(videoRecorderDialog.phase === "settings" || videoRecorderDialog.phase === "error") && <button type="button" onClick={() => setVideoRecorderDialog(null)} aria-label={t("spine.recorder.close")}><IconClose /></button>}
+        </div>
+        {videoRecorderDialog.phase === "settings" ? <>
+          <div className="spine-recorder-fields">
+            <label><span>{t("spine.recorder.mode")}</span><select value={videoRecorderDialog.settings.mode} onChange={(event) => updateVideoRecorderSettings({ mode: event.target.value as VideoRecordingSettings["mode"] })}>
+              <option value="opening-idle">{t("spine.recorder.mode.openingIdle")}</option>
+              <option value="idle-only">{t("spine.recorder.mode.idleOnly")}</option>
+            </select></label>
+            <label><span>{t("spine.recorder.idleLoops")}</span><input type="number" min="1" max="20" step="1" value={videoRecorderDialog.settings.idleLoops} onChange={(event) => updateVideoRecorderSettings({ idleLoops: Math.max(1, Math.min(20, Math.floor(Number(event.target.value) || 1))) })} /></label>
+            <label><span>{t("spine.recorder.resolution")}</span><select value={videoRecorderDialog.settings.resolution} onChange={(event) => updateVideoRecorderSettings({ resolution: Number(event.target.value) as VideoRecordingSettings["resolution"] })}>
+              <option value="720">720p</option><option value="1080">1080p</option>
+            </select></label>
+            <label><span>{t("spine.recorder.frameRate")}</span><select value={videoRecorderDialog.settings.frameRate} onChange={(event) => updateVideoRecorderSettings({ frameRate: Number(event.target.value) as VideoRecordingSettings["frameRate"] })}>
+              <option value="30">30 FPS</option><option value="60">60 FPS</option>
+            </select></label>
+            <label><span>{t("spine.recorder.framing")}</span><select value={videoRecorderDialog.settings.framing} onChange={(event) => updateVideoRecorderSettings({ framing: event.target.value as VideoRecordingSettings["framing"] })}>
+              <option value="current">{t("spine.recorder.framing.current")}</option><option value="saved">{t("spine.recorder.framing.saved")}</option>
+            </select></label>
+            <label><span>{t("spine.recorder.format")}</span><select value={videoRecorderDialog.settings.format} onChange={(event) => updateVideoRecorderSettings({ format: event.target.value as VideoRecordingFormat })} disabled={videoRecorderFormats.length === 0}>
+              {videoRecorderFormats.map(({ format }) => <option key={format} value={format}>{format === "webm" ? "WebM" : "MP4"}</option>)}
+            </select></label>
+          </div>
+          <div className="spine-recorder-toggles">
+            <label><input type="checkbox" checked={videoRecorderDialog.settings.includeAudio} onChange={(event) => updateVideoRecorderSettings({ includeAudio: event.target.checked })} />{t("spine.recorder.includeAudio")}</label>
+            <label><input type="checkbox" checked={videoRecorderDialog.settings.includeSubtitles} onChange={(event) => updateVideoRecorderSettings({ includeSubtitles: event.target.checked })} />{t("spine.recorder.includeSubtitles")}</label>
+          </div>
+          <p className="spine-recorder-note">{t("spine.recorder.note")}</p>
+          {videoRecorderFormats.length === 0 && <p className="spine-recorder-error" role="alert">{t("spine.recorder.unsupported")}</p>}
+          <div className="spine-recorder-actions">
+            <button type="button" className="spine-recorder-secondary" onClick={() => setVideoRecorderDialog(null)}>{t("spine.recorder.cancel")}</button>
+            <button type="button" className="spine-recorder-primary" disabled={!videoRecorderFormats.length || !meta} onClick={() => void startVideoRecording()}>{t("spine.recorder.start")}</button>
+          </div>
+        </> : videoRecorderDialog.phase === "error" ? <>
+          <p className="spine-recorder-error" role="alert">{videoRecorderDialog.error}</p>
+          <div className="spine-recorder-actions"><button type="button" className="spine-recorder-primary" onClick={() => setVideoRecorderDialog(null)}>{t("spine.recorder.close")}</button></div>
+        </> : <>
+          <div className="spine-recorder-status" role="status" aria-live="polite">
+            {videoRecorderDialog.phase === "preparing" && <><span className="spine-recorder-spinner" aria-hidden="true" /><strong>{t("spine.recorder.preparing")}</strong><span>{t("spine.recorder.waiting")}</span></>}
+            {videoRecorderDialog.phase === "recording" && <>
+              <span className="spine-recorder-live-dot" aria-hidden="true" />
+              <strong>{t("spine.recorder.recording")}</strong>
+              <span>{videoRecorderDialog.elapsed.toFixed(1)}s{videoRecordingRunRef.current?.plan ? ` / ${videoRecordingRunRef.current.plan.totalDuration.toFixed(1)}s` : ""}</span>
+              {videoRecordingRunRef.current?.plan && <span>{t("spine.recorder.loopProgress", { completed: videoRecordingProgress(videoRecordingRunRef.current.plan, videoRecorderDialog.elapsed).idleLoopsCompleted, total: videoRecordingRunRef.current.plan.idleLoops })}</span>}
+            </>}
+            {videoRecorderDialog.phase === "saving" && <><span className="spine-recorder-spinner" aria-hidden="true" /><strong>{t("spine.recorder.saving")}</strong></>}
+            {videoRecorderDialog.phase === "canceling" && <><span className="spine-recorder-spinner" aria-hidden="true" /><strong>{t("spine.recorder.canceling")}</strong></>}
+          </div>
+          {(videoRecorderDialog.phase === "preparing" || videoRecorderDialog.phase === "recording") && <div className={`spine-recorder-progress${videoRecorderDialog.phase === "preparing" ? " is-indeterminate" : ""}`} role="progressbar" aria-label={t("spine.recorder.progressAria")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={videoRecordingRunRef.current?.plan ? Math.round(videoRecordingProgress(videoRecordingRunRef.current.plan, videoRecorderDialog.elapsed).fraction * 100) : undefined}>
+            <span style={videoRecorderDialog.phase === "recording" && videoRecordingRunRef.current?.plan ? { width: `${videoRecordingProgress(videoRecordingRunRef.current.plan, videoRecorderDialog.elapsed).fraction * 100}%` } : undefined} />
+          </div>}
+          <div className="spine-recorder-actions">
+            <button type="button" className="spine-recorder-secondary" disabled={videoRecorderDialog.phase !== "preparing" && videoRecorderDialog.phase !== "recording"} onClick={() => stopVideoRecording(false)}>{t("spine.recorder.cancel")}</button>
+            <button type="button" className="spine-recorder-primary" disabled={videoRecorderDialog.phase !== "recording"} onClick={() => stopVideoRecording(true)}>{t("spine.recorder.stop")}</button>
+          </div>
+        </>}
+      </section>
+    </div>}
   </main>;
 }
