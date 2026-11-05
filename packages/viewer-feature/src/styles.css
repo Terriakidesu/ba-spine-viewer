@@ -510,6 +510,7 @@ a { color: var(--cyan); }
 .spine-stage-composition .spine-composition-layer { cursor: default; }
 .spine-stage-composition.spine-stage-interaction .spine-composition-layer { cursor: crosshair; }
 .spine-stage-composition .spine-timeline-layer-canvas { cursor: default; }
+.spine-stage-composition .spine-timeline-layer-canvas[data-camera-controls="true"] { cursor: grab; }
 .spine-stage-composition.spine-stage-interaction .spine-timeline-layer-canvas { cursor: crosshair; }
 .spine-stage canvas:active { cursor: grabbing; }
 .spine-interaction-overlay { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; overflow: visible; pointer-events: none; }

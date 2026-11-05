@@ -18,6 +18,8 @@ export interface SpineTimelineLayerCanvasProps {
   characterHidden?: boolean;
   preserveDrawingBuffer?: boolean;
   interactionEnabled?: boolean;
+  /** Enable free-canvas drag/zoom on the composition's reference layer. */
+  cameraControlsEnabled?: boolean;
   interactionProject?: SpineInteractionProject | null;
   showInteractionPoints?: boolean;
   effectsStrength?: number;
@@ -50,7 +52,7 @@ export interface SpineTimelineLayerCanvasProps {
  * interaction preservation, and visibility in this component. The two UIs
  * should provide state and callbacks, not fork playback rules.
  */
-export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimation, mainAnimationTime, mainAnimationLoop, openingMode = "direct", sequenceId = "legacy", idleMode = "none", talkMixDuration = DEFAULT_TALK_MIX_DURATION, talkBlendOutStart, characterHidden = false, preserveDrawingBuffer = false, interactionEnabled = false, interactionProject = null, showInteractionPoints = false, effectsStrength, resolutionScale = 1, resetCameraSignal = 0, cameraMode, sharedCameraFrame, sharedCameraPose, referenceCamera, onMeta, onCameraPose, onAnimationDuration, onMarkers, onInteractionPoints, onRenderer, onTalk, onTalkClip, onIntro, onIntroClip, onRendererLoading, onLoadProgress, onError }: SpineTimelineLayerCanvasProps) {
+export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimation, mainAnimationTime, mainAnimationLoop, openingMode = "direct", sequenceId = "legacy", idleMode = "none", talkMixDuration = DEFAULT_TALK_MIX_DURATION, talkBlendOutStart, characterHidden = false, preserveDrawingBuffer = false, interactionEnabled = false, cameraControlsEnabled = false, interactionProject = null, showInteractionPoints = false, effectsStrength, resolutionScale = 1, resetCameraSignal = 0, cameraMode, sharedCameraFrame, sharedCameraPose, referenceCamera, onMeta, onCameraPose, onAnimationDuration, onMarkers, onInteractionPoints, onRenderer, onTalk, onTalkClip, onIntro, onIntroClip, onRendererLoading, onLoadProgress, onError }: SpineTimelineLayerCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<SpineRenderer | null>(null);
   const [meta, setMeta] = useState<SpineMeta | null>(null);
@@ -269,10 +271,10 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
     zIndex: layer.order,
     opacity: visible ? layer.opacity : 0,
     mixBlendMode: timelineBlendModeCss(layer.blendMode ?? "normal"),
-    visibility: visible ? "visible" : "hidden",
+    visibility: visible || cameraControlsEnabled ? "visible" : "hidden",
     transform: `translate(${layer.x}px, ${layer.y}px) scale(${layer.scale})`,
     transformOrigin: "center center",
-    pointerEvents: interactionEnabled && visible ? "auto" : "none",
+    pointerEvents: cameraControlsEnabled || (interactionEnabled && visible) ? "auto" : "none",
   };
-  return <canvas ref={canvasRef} className="spine-timeline-layer-canvas" data-layer-id={layer.id} style={style} data-animation={animation} data-sample-time={time} aria-label={`${layer.name} Spine layer`} />;
+  return <canvas ref={canvasRef} className="spine-timeline-layer-canvas" data-layer-id={layer.id} data-camera-controls={cameraControlsEnabled ? "true" : undefined} style={style} data-animation={animation} data-sample-time={time} aria-label={`${layer.name} Spine layer`} />;
 }
