@@ -833,10 +833,9 @@ export function Spine() {
     : interactionMode === "free"
       ? "artwork"
       : compositionTimeline?.camera?.enabled ? "authored" : "fit";
-  const authoredCameraActive = interactionMode === "interaction" && compositionActive && compositionTimeline?.camera?.enabled === true;
   const outputAspectRatio = savedCameraForRecording && compositionTimeline?.camera?.enabled
     ? compositionTimeline.camera.aspectRatio
-    : authoredCameraActive ? compositionTimeline?.camera?.aspectRatio ?? aspectRatio : aspectRatio;
+    : aspectRatio;
   const authoredTalkSequenceIds = selectedInteractionProject ? timelineTalkSequenceIds(selectedInteractionProject) : [];
   const authoredTalkAutoplayAvailable = Boolean(
     selectedInteractionProject
@@ -2028,6 +2027,7 @@ export function Spine() {
   };
 
   const openVideoRecorder = () => {
+    if (interactionMode !== "interaction") return;
     setVideoRecorderDialog({ phase: "settings", settings: videoRecorderSettings, elapsed: 0 });
   };
 
@@ -2039,6 +2039,7 @@ export function Spine() {
   };
 
   const startVideoRecording = async () => {
+    if (interactionMode !== "interaction") return;
     if (!videoRecorderDialog || videoRecorderDialog.phase !== "settings") return;
     const settings = videoRecorderDialog.settings;
     const selectedFormat = videoRecorderFormats.find((item) => item.format === settings.format);
@@ -2424,7 +2425,7 @@ export function Spine() {
     return () => document.removeEventListener("keydown", onKey);
   }, [cameraMode, compositionActive, compositionSequenceId, fullscreen, fullscreenClean, interactionMode, interactionReady, loop, meta, playing, selectedInteractionProject, showFullscreenControls, showOptions, speed, videoRecorderDialog, voiceLines.length]);
 
-  const showAspectRatioControl = interactionMode === "interaction" || compositionActive;
+  const showAspectRatioControl = interactionMode === "interaction";
   const viewportCameraMode: SpineCameraMode = savedCameraForRecording ? "fit" : interactionMode === "free" ? "artwork" : "fit";
   const hasOpeningSequence = Boolean(selectedInteractionProject && compositionSequenceIds.includes("opening"));
   const canRestartOpening = hasOpeningSequence || (!compositionActive && Boolean(meta?.introAnimation && meta.idleAnimation));
@@ -2580,7 +2581,7 @@ export function Spine() {
              <small role={backgroundAudioLoading ? "status" : undefined}>{backgroundAudioLoading
                ? t("spine.loading.audio", { loaded: voiceAudioLoading ? voiceAudioProgress.loaded : compositionLoadProgress?.loaded ?? 0, total: voiceAudioLoading ? voiceAudioProgress.total : compositionLoadProgress?.total ?? 0 })
                : t(meta ? "spine.preview.ready" : "spine.preview.waiting")}</small>
-               {showAspectRatioControl && <label className="spine-output-ratio"><span>{t("spine.aspectRatio")}</span><select value={outputAspectRatio} disabled={authoredCameraActive} onChange={(event) => setAspectRatio(event.target.value as ViewerAspectRatio)} aria-label={t("spine.aspectRatioAria")}>
+                {showAspectRatioControl && <label className="spine-output-ratio"><span>{t("spine.aspectRatio")}</span><select value={outputAspectRatio} onChange={(event) => setAspectRatio(event.target.value as ViewerAspectRatio)} aria-label={t("spine.aspectRatioAria")}>
                 <option value="16:9">16:9</option><option value="4:3">4:3</option><option value="1:1">1:1</option>
               </select></label>}
             {desktopSource && <div className="spine-library-refresh">
@@ -2694,7 +2695,7 @@ export function Spine() {
               {interactionMode === "free" && <button className="spine-tool-button" type="button" disabled={!meta} onClick={fitAllArtwork} aria-label={t("spine.fitAllArtwork")} title={t("spine.fitAllArtwork")}><IconTarget /><span>{t("spine.fitAllArtwork")}</span></button>}
               {interactionReady && meta?.interaction.talkCount ? <button className="spine-tool-button" type="button" onClick={() => playTalk()} aria-label={t("spine.talkAria")} title={t("spine.talkAria")}><IconMessage /><span>{t("spine.talk")}</span><small>{meta.interaction.talkCount}</small></button> : null}
               {interactionReady && (voiceLines.length > 0 || authoredTalkAutoplayAvailable) ? <button className={`spine-tool-button${talkAutoplay ? " is-active" : ""}`} type="button" onClick={toggleTalkAutoplay} aria-pressed={talkAutoplay} aria-label={t(talkAutoplay ? "spine.autoplayStop" : "spine.autoplayStart")} title={t(talkAutoplay ? "spine.autoplayStop" : "spine.autoplayStart")}><span>{talkAutoplay ? <IconPause /> : <IconPlay />}</span><span>{t("spine.autoplay")}</span></button> : null}
-              <button className="spine-tool-button spine-record-video-button" type="button" disabled={!meta || videoRecorderFormats.length === 0} onClick={openVideoRecorder} aria-label={t("spine.recorder.open")} title={t(videoRecorderFormats.length ? "spine.recorder.open" : "spine.recorder.unsupported")}><IconDot /><span>{t("spine.recorder.open")}</span></button>
+              {interactionMode === "interaction" && <button className="spine-tool-button spine-record-video-button" type="button" disabled={!meta || videoRecorderFormats.length === 0} onClick={openVideoRecorder} aria-label={t("spine.recorder.open")} title={t(videoRecorderFormats.length ? "spine.recorder.open" : "spine.recorder.unsupported")}><IconDot /><span>{t("spine.recorder.open")}</span></button>}
               <button className={`spine-tool-button${showOptions ? " is-active" : ""}`} type="button" aria-expanded={showOptions} aria-controls="spine-options" onClick={() => setShowOptions((shown) => !shown)}><IconSliders /><span>{t("spine.options")}</span></button>
                <details className="spine-shortcut-help">
                  <summary className="spine-tool-button" aria-label={t("spine.shortcuts")} title={t("spine.shortcuts")}><IconHelp /><span>{t("spine.shortcuts")}</span></summary>
