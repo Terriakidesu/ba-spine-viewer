@@ -19,7 +19,7 @@ import type { DesktopAssetSource } from "./desktopSource";
 import { manifestReferenceCandidates } from "@ba-spine/spine-runtime/spine/spineManifest";
 import type { EditorSaveFile } from "./editorProject";
 import { audioPlaybackDecision, clampAudioEnd, clampAudioStart, decodedAudioTiming } from "./audioModel";
-import { animationClipEnd, animationEndForLayer, authoredTimelineEnd, deleteAnimationClipRipple, duplicateAnimationClipRipple, effectiveAnimationClips, extendTimelineDuration, insertAnimationClipRipple, linkAudioToSubtitle, linkedSubtitleForAudio, matchAudioAndSubtitleLength, moveAnimationClipRipple, nextTalkSequenceId, openingTimelineDuration, replaceSubtitleImport, resolveTimelineSnap, snapToTargets, splitCue, switchSequence, talkSequenceId } from "./sequenceModel";
+import { animationClipEnd, animationEndForLayer, authoredTimelineEnd, deleteAnimationClipRipple, duplicateAnimationClipRipple, effectiveAnimationClips, extendTimelineDuration, insertAnimationClipRipple, linkAudioToSubtitle, linkedSubtitleForAudio, matchAudioAndSubtitleLength, matchedAnimationEndpoint, moveAnimationClipRipple, nextTalkSequenceId, openingTimelineDuration, replaceSubtitleImport, resolveTimelineSnap, snapToTargets, splitCue, switchSequence, talkSequenceId } from "./sequenceModel";
 import { advanceSpineTimeline, normalizeColorClipFades, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineLayerAnimation, timelineMainAnimation, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimelineAudioPreloadState } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import { SpineTimelineLayerCanvas } from "@ba-spine/spine-runtime/ui/SpineTimelineLayerCanvas";
 import { spineAudioPathCandidates } from "@ba-spine/spine-runtime/spine/spineAudio";
@@ -2831,6 +2831,44 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     }, history);
   }
 
+  function animationLengthMatchAnimation(layer: EditorTimelineLayer, requestedAnimation: string): string {
+    return requestedAnimation || layer.animation || metas[layer.id]?.idleAnimation || "";
+  }
+
+  function animationLengthMatchInfo(layer: EditorTimelineLayer, requestedAnimation: string): { animation: string; duration: number } | null {
+    if (layer.locked || layer.followMainAnimation) return null;
+    const animation = animationLengthMatchAnimation(layer, requestedAnimation);
+    if (!animation) return null;
+    const duration = animationDurations[`${layer.id}:${animation}`] ?? 0;
+    return Number.isFinite(duration) && duration > 0 ? { animation, duration } : null;
+  }
+
+  function matchAnimationLength(layer: EditorTimelineLayer, clip?: EditorAnimationClip) {
+    const info = animationLengthMatchInfo(layer, clip?.animation ?? layer.animation);
+    if (!info) return;
+    const end = matchedAnimationEndpoint(clip ?? layer, info.duration);
+    if (end === null) return;
+    const legacyLayerClip = clip && !Array.isArray(layer.animationClips) && !clip.id.endsWith("-legacy-intro");
+    if (clip && !legacyLayerClip) {
+      updateAnimationClip(layer.id, clip.id, { endMode: "auto", end, loop: false });
+    } else {
+      updateLayer(layer.id, { endMode: "auto", end, loop: false });
+    }
+    onStatus(`Matched to Spine duration: ${seconds(info.duration)}.`);
+  }
+
+  function matchAnimationLengthButton(layer: EditorTimelineLayer, clip?: EditorAnimationClip) {
+    const requestedAnimation = clip?.animation ?? layer.animation;
+    const animation = animationLengthMatchAnimation(layer, requestedAnimation);
+    const info = animationLengthMatchInfo(layer, requestedAnimation);
+    let title = "Wait for the selected Spine animation duration to load.";
+    if (layer.locked) title = "Unlock this layer to match its animation length.";
+    else if (layer.followMainAnimation) title = "This layer follows the main animation; choose a fixed animation before matching its length.";
+    else if (!animation) title = "Choose a Spine animation before matching its length.";
+    else if (info) title = `Set End to the decoded ${info.animation} duration and disable looping.`;
+    return <div className="timeline-batch-actions"><button className="editor-button" type="button" disabled={!info} title={title} onClick={() => matchAnimationLength(layer, clip)}><IconSync /> Match animation length</button></div>;
+  }
+
   function moveAnimationClipTo(layerId: string, clipId: string, start: number) {
     updateTimeline((value) => {
       const owner = value.layers.find((layer) => layer.id === layerId);
@@ -4550,6 +4588,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
             }} /></div>
             <div className="editor-animation-field"><span>Face / secondary animation</span><AnimationPicker ariaLabel="Face or secondary animation" value={selectedAnimationClip.clip.faceAnimation === undefined ? LAYER_DEFAULT_FACE_ANIMATION : selectedAnimationClip.clip.faceAnimation} options={[{ value: LAYER_DEFAULT_FACE_ANIMATION, label: "Layer default" }, { value: "", label: "None" }, ...(metas[selectedAnimationClip.layer.id]?.animations ?? []).map((animation) => ({ value: animation, label: animation }))]} onChange={(value) => updateAnimationClip(selectedAnimationClip.layer.id, selectedAnimationClip.clip.id, { faceAnimation: value === LAYER_DEFAULT_FACE_ANIMATION ? undefined : value })} /></div>
             <div className="editor-two-fields"><NumberField label="Start" value={Number(selectedAnimationClip.clip.start.toFixed(3))} min={0} step={0.001} precision={3} unit="s" onCommit={(value) => moveAnimationClipTo(selectedAnimationClip.layer.id, selectedAnimationClip.clip.id, value)} /><NumberField label="End" value={Number(animationClipEnd(selectedAnimationClip.clip, animationDurations[`${selectedAnimationClip.layer.id}:${selectedAnimationClip.clip.animation}`] ?? 0).toFixed(3))} min={selectedAnimationClip.clip.start + 0.01} step={0.001} precision={3} unit="s" onCommit={(value) => updateAnimationClip(selectedAnimationClip.layer.id, selectedAnimationClip.clip.id, { endMode: "manual", end: Math.max(selectedAnimationClip.clip.start + 0.01, value) })} /></div>
+            {matchAnimationLengthButton(selectedAnimationClip.layer, selectedAnimationClip.clip)}
             <label><span className="timeline-inline-check"><input type="checkbox" checked={selectedAnimationClip.clip.endMode !== "manual"} onChange={(event) => {
               const duration = animationDurations[`${selectedAnimationClip.layer.id}:${selectedAnimationClip.clip.animation}`] ?? 0;
               updateAnimationClip(selectedAnimationClip.layer.id, selectedAnimationClip.clip.id, { endMode: event.target.checked ? "auto" : "manual", ...(event.target.checked ? { end: animationClipEnd(selectedAnimationClip.clip, duration) } : {}) });
@@ -4610,6 +4649,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
            {selectedLayer.role !== "character" && <label><span className="timeline-inline-check"><input type="checkbox" disabled={selectedLayer.locked} checked={selectedLayer.followMainAnimation === true} onChange={(event) => updateLayer(selectedLayer.id, { followMainAnimation: event.target.checked })} /> Follow main character animation</span><small className="editor-field-hint">Uses a matching animation and clock when available.</small></label>}
             <div className="editor-animation-field"><span>Face / secondary animation</span><AnimationPicker ariaLabel="Layer face or secondary animation" disabled={selectedLayer.locked} value={selectedLayer.faceAnimation ?? ""} options={[{ value: "", label: "None" }, ...(metas[selectedLayer.id]?.animations ?? []).map((name) => ({ value: name, label: name }))]} onChange={(faceAnimation) => updateLayer(selectedLayer.id, { faceAnimation })} /></div>
            <div className="editor-two-fields"><NumberField label="Start" value={Number(selectedLayer.start.toFixed(3))} min={0} step={0.001} precision={3} unit="s" disabled={selectedLayer.locked} onCommit={(value) => updateLayer(selectedLayer.id, { start: Math.max(0, value) })} /><NumberField label="End" value={Number(selectedLayer.end.toFixed(3))} min={selectedLayer.start + 0.01} step={0.001} precision={3} unit="s" disabled={selectedLayer.locked} onCommit={(value) => updateLayer(selectedLayer.id, { endMode: "manual", end: Math.max(selectedLayer.start + 0.01, value) })} /></div>
+           {!Array.isArray(selectedLayer.animationClips) && matchAnimationLengthButton(selectedLayer)}
            <label><span className="timeline-inline-check"><input type="checkbox" disabled={selectedLayer.locked} checked={selectedLayer.endMode !== "manual"} onChange={(event) => updateLayer(selectedLayer.id, { endMode: event.target.checked ? "auto" : "manual" })} /> Use Spine animation end</span></label>
            <div className="editor-two-fields"><NumberField label="Animation offset" value={Number(selectedLayer.animationOffset.toFixed(3))} min={0} step={0.001} precision={3} unit="s" disabled={selectedLayer.locked} onCommit={(value) => updateLayer(selectedLayer.id, { animationOffset: Math.max(0, value) })} /><label><span>Playback</span><span className="timeline-inline-check"><input type="checkbox" disabled={selectedLayer.locked} checked={selectedLayer.loop} onChange={(event) => updateLayer(selectedLayer.id, { loop: event.target.checked })} /> Loop</span></label></div>
            <details><summary>Advanced transforms</summary><div className="editor-three-fields"><NumberField label="X" value={selectedLayer.x} step={1} precision={2} unit="units" disabled={selectedLayer.locked} onCommit={(value) => updateLayer(selectedLayer.id, { x: value })} /><NumberField label="Y" value={selectedLayer.y} step={1} precision={2} unit="units" disabled={selectedLayer.locked} onCommit={(value) => updateLayer(selectedLayer.id, { y: value })} /><NumberField label="Scale" value={selectedLayer.scale} min={0.01} step={0.01} precision={3} disabled={selectedLayer.locked} onCommit={(value) => updateLayer(selectedLayer.id, { scale: Math.max(0.01, value) })} /></div></details>

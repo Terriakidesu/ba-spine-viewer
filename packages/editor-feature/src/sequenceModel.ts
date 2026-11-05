@@ -18,6 +18,16 @@ export function animationClipEnd(clip: EditorAnimationClip, animationDuration: n
   return timelineAnimationClipPlaybackEnd(clip, animationDuration);
 }
 
+/** Resolve an animation's non-looping endpoint from its decoded Spine duration. */
+export function matchedAnimationEndpoint(
+  timing: Pick<EditorAnimationClip, "start" | "animationOffset">,
+  animationDuration: number,
+): number | null {
+  if (!Number.isFinite(timing.start) || !Number.isFinite(animationDuration) || animationDuration <= 0) return null;
+  const offset = Number.isFinite(timing.animationOffset) ? Math.max(0, timing.animationOffset) : 0;
+  return Math.max(timing.start + 0.01, timing.start + Math.max(0.01, animationDuration - offset));
+}
+
 /** Reposition a clip and ripple the later sequence; moving left through a clip inserts before it. */
 export function moveAnimationClipRipple(clips: readonly EditorAnimationClip[], clipId: string, requestedStart: number, snap = 0, targets: number[] = []): EditorAnimationClip[] {
   const original = [...clips].sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));

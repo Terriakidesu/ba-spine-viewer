@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createProject, normalizeProject } from "./editorModel";
-import { animationClipEnd, animationEndForLayer, authoredTimelineEnd, deleteAnimationClipRipple, duplicateAnimationClipRipple, effectiveAnimationClips, extendTimelineDuration, linkAudioToSubtitle, linkedSubtitleForAudio, matchAudioAndSubtitleLength, moveAnimationClipRipple, moveAudioClip, nextTalkSequenceId, openingPhaseTimings, openingTimelineDuration, replaceSubtitleImport, resolveTimelineSnap, snapToTargets, splitCue, switchSequence, talkSequenceDuration, talkSequenceId } from "./sequenceModel";
+import { animationClipEnd, animationEndForLayer, authoredTimelineEnd, deleteAnimationClipRipple, duplicateAnimationClipRipple, effectiveAnimationClips, extendTimelineDuration, linkAudioToSubtitle, linkedSubtitleForAudio, matchAudioAndSubtitleLength, matchedAnimationEndpoint, moveAnimationClipRipple, moveAudioClip, nextTalkSequenceId, openingPhaseTimings, openingTimelineDuration, replaceSubtitleImport, resolveTimelineSnap, snapToTargets, splitCue, switchSequence, talkSequenceDuration, talkSequenceId } from "./sequenceModel";
 import type { SpineMeta } from "@ba-spine/spine-runtime/spine/spineRuntime";
 
 test("talk sequences pair body and face and isolate subtitle clocks", () => {
@@ -117,6 +117,12 @@ test("non-looping timeline layers follow the real Spine duration unless manually
   expect(animationEndForLayer({ ...layer, endMode: "manual", end: 3 }, 4.5)).toBe(3);
 });
 
+test("matching animation length uses decoded duration, start, and offset", () => {
+  expect(matchedAnimationEndpoint({ start: 2.5, animationOffset: 0.75 }, 5)).toBe(6.75);
+  expect(matchedAnimationEndpoint({ start: 2.5, animationOffset: 8 }, 5)).toBe(2.51);
+  expect(matchedAnimationEndpoint({ start: 2.5, animationOffset: 0 }, 0)).toBeNull();
+});
+
 test("talk playback duration follows character animation instead of a long audio clip", () => {
   const layer = { ...createProject("Airi_home", [], []).timeline.layers[0]!, animation: "Talk_01_M", end: 20, loop: true };
   expect(talkSequenceDuration([layer], { [`${layer.id}:Talk_01_M`]: 2.75 }, () => "Talk_01_M")).toBe(2.75);
@@ -127,7 +133,10 @@ test("authored timeline content can extend the saved duration", () => {
   timeline.subtitles = [{ id: "cue", start: 8, end: 11, enabled: true, text: { en: "Late", ja: "", ko: "" } }];
   timeline.audio = [{ id: "audio", name: "voice.ogg", path: "voice.ogg", start: 8, end: 12, enabled: true, volume: 1 }];
   expect(authoredTimelineEnd(timeline)).toBe(12);
-  expect(extendTimelineDuration({ ...timeline, duration: 4 }).duration).toBe(12);
+  const extended = extendTimelineDuration({ ...timeline, duration: 4 });
+  expect(extended.duration).toBe(12);
+  expect(extended.subtitles).toBe(timeline.subtitles);
+  expect(extended.audio).toBe(timeline.audio);
 });
 
 test("automatic opening duration trims a blank tail but keeps intro and authored content", () => {
