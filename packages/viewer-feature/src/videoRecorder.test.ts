@@ -1,5 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingTimelineOffsets } from "./videoRecorder";
+import { createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, normalizeVideoRecordingQuality, readVideoRecordingQuality, VIDEO_RECORDING_QUALITY_STORAGE_KEY, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingTimelineOffsets, writeVideoRecordingQuality } from "./videoRecorder";
+
+describe("Viewer video quality preference", () => {
+  test("defaults safely and persists a validated quality preset", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+
+    expect(readVideoRecordingQuality(storage)).toBe("balanced");
+    expect(normalizeVideoRecordingQuality("unknown")).toBe("balanced");
+    writeVideoRecordingQuality("high", storage);
+    expect(values.get(VIDEO_RECORDING_QUALITY_STORAGE_KEY)).toBe("high");
+    expect(readVideoRecordingQuality(storage)).toBe("high");
+    writeVideoRecordingQuality("unknown", storage);
+    expect(readVideoRecordingQuality(storage)).toBe("balanced");
+  });
+});
 
 describe("Viewer video recording plans", () => {
   test("counts the opening once and stops at the requested idle-loop boundary", () => {

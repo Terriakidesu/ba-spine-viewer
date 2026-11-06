@@ -7,6 +7,23 @@ import { finished } from "node:stream/promises";
 import { saveVideoFileWithoutOverwrite } from "./videoExport";
 
 export type FfmpegVideoFormat = "webm" | "mp4";
+export type FfmpegVideoQuality = "high" | "balanced" | "compact";
+
+const ENCODER_QUALITY_VALUES: Record<FfmpegVideoQuality, {
+  nvenc: number;
+  h264Qsv: number;
+  amfI: number;
+  amfP: number;
+  mediaFoundationBitrate: string;
+  x264Crf: number;
+  vp9Qsv: number;
+  vp9Crf: number;
+  vp8Crf: number;
+}> = {
+  high: { nvenc: 18, h264Qsv: 18, amfI: 18, amfP: 20, mediaFoundationBitrate: "12M", x264Crf: 18, vp9Qsv: 24, vp9Crf: 26, vp8Crf: 24 },
+  balanced: { nvenc: 21, h264Qsv: 22, amfI: 21, amfP: 23, mediaFoundationBitrate: "8M", x264Crf: 21, vp9Qsv: 30, vp9Crf: 32, vp8Crf: 30 },
+  compact: { nvenc: 26, h264Qsv: 30, amfI: 27, amfP: 29, mediaFoundationBitrate: "5M", x264Crf: 26, vp9Qsv: 38, vp9Crf: 40, vp8Crf: 38 },
+};
 
 export interface FfmpegVideoSupport {
   available: boolean;
@@ -20,6 +37,7 @@ export interface FfmpegVideoRecordingOptions {
   height: number;
   frameRate: 30 | 60;
   format: FfmpegVideoFormat;
+  quality?: FfmpegVideoQuality;
   filename: string;
 }
 
@@ -47,6 +65,7 @@ interface FfmpegVideoSession {
   height: number;
   frameRate: number;
   format: FfmpegVideoFormat;
+  quality: FfmpegVideoQuality;
   framesPath: string;
   frameWriter: ReturnType<typeof createWriteStream>;
   frameCount: number;
@@ -155,20 +174,21 @@ function parseEncoders(output: string): Set<string> {
   return encoders;
 }
 
-export function ffmpegEncoderAttempts(format: FfmpegVideoFormat, encoderOutput: string): Array<{ name: string; args: string[]; hardware: boolean }> {
+export function ffmpegEncoderAttempts(format: FfmpegVideoFormat, encoderOutput: string, quality: FfmpegVideoQuality = "balanced"): Array<{ name: string; args: string[]; hardware: boolean }> {
   const available = parseEncoders(encoderOutput);
+  const values = ENCODER_QUALITY_VALUES[quality];
   const candidates = format === "mp4"
     ? [
-      { name: "h264_nvenc", args: ["-preset:v", "p4", "-rc:v", "vbr", "-cq:v", "21", "-b:v", "0"], hardware: true },
-      { name: "h264_qsv", args: ["-preset:v", "medium", "-global_quality:v", "22"], hardware: true },
-      { name: "h264_amf", args: ["-quality:v", "speed", "-rc:v", "cqp", "-qp_i:v", "21", "-qp_p:v", "23"], hardware: true },
-      { name: "h264_mf", args: ["-b:v", "8M"], hardware: true },
-      { name: "libx264", args: ["-preset:v", "veryfast", "-crf:v", "21"], hardware: false },
+      { name: "h264_nvenc", args: ["-preset:v", "p4", "-rc:v", "vbr", "-cq:v", String(values.nvenc), "-b:v", "0"], hardware: true },
+      { name: "h264_qsv", args: ["-preset:v", "medium", "-global_quality:v", String(values.h264Qsv)], hardware: true },
+      { name: "h264_amf", args: ["-quality:v", "speed", "-rc:v", "cqp", "-qp_i:v", String(values.amfI), "-qp_p:v", String(values.amfP)], hardware: true },
+      { name: "h264_mf", args: ["-b:v", values.mediaFoundationBitrate], hardware: true },
+      { name: "libx264", args: ["-preset:v", "veryfast", "-crf:v", String(values.x264Crf)], hardware: false },
     ]
     : [
-      { name: "vp9_qsv", args: ["-preset:v", "medium", "-global_quality:v", "30"], hardware: true },
-      { name: "libvpx-vp9", args: ["-deadline:v", "realtime", "-cpu-used:v", "5", "-crf:v", "32", "-b:v", "0", "-row-mt:v", "1"], hardware: false },
-      { name: "libvpx", args: ["-deadline:v", "realtime", "-cpu-used:v", "5", "-crf:v", "30", "-b:v", "0"], hardware: false },
+      { name: "vp9_qsv", args: ["-preset:v", "medium", "-global_quality:v", String(values.vp9Qsv)], hardware: true },
+      { name: "libvpx-vp9", args: ["-deadline:v", "realtime", "-cpu-used:v", "5", "-crf:v", String(values.vp9Crf), "-b:v", "0", "-row-mt:v", "1"], hardware: false },
+      { name: "libvpx", args: ["-deadline:v", "realtime", "-cpu-used:v", "5", "-crf:v", String(values.vp8Crf), "-b:v", "0"], hardware: false },
     ];
   return candidates.filter((candidate) => available.has(candidate.name));
 }
@@ -322,6 +342,8 @@ export class FfmpegVideoRecorder {
     if (!support.available || !support.formats.includes(options.format)) throw new Error("The bundled FFmpeg encoder is unavailable for this video format.");
     if (!safeRecordingDimensions(options.width, options.height)) throw new Error("The requested video dimensions are invalid.");
     if (options.frameRate !== 30 && options.frameRate !== 60) throw new Error("The requested video frame rate is invalid.");
+    const quality = options.quality ?? "balanced";
+    if (quality !== "high" && quality !== "balanced" && quality !== "compact") throw new Error("The requested video quality is invalid.");
     if (!options.filename.toLocaleLowerCase().endsWith(options.format === "webm" ? ".webm" : ".mp4")) {
       throw new Error("The requested filename does not match the video format.");
     }
@@ -350,6 +372,7 @@ export class FfmpegVideoRecorder {
       height: options.height,
       frameRate: options.frameRate,
       format: options.format,
+      quality,
       framesPath,
       frameWriter,
       frameCount: 0,
@@ -534,7 +557,7 @@ export class FfmpegVideoRecorder {
   }
 
   private async encode(session: FfmpegVideoSession, frameCount: number): Promise<{ encoder: string; outputPath: string }> {
-    const attempts = ffmpegEncoderAttempts(session.format, await this.encoderListing());
+    const attempts = ffmpegEncoderAttempts(session.format, await this.encoderListing(), session.quality);
     if (!attempts.length) throw new Error(`The bundled FFmpeg has no encoder for ${session.format.toUpperCase()}.`);
     session.encoderAttempts = attempts.length;
     const extension = session.format === "webm" ? "webm" : "mp4";

@@ -36,6 +36,34 @@ describe("FFmpeg video encoder selection", () => {
     expect(ffmpegEncoderAttempts("mp4", " V....D h264_nvenc NVENC").map(({ name }) => name)).toEqual(["h264_nvenc"]);
     expect(ffmpegEncoderAttempts("webm", "")).toEqual([]);
   });
+
+  test("maps quality presets onto every supported encoder control", () => {
+    const mp4Encoders = ["h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264"]
+      .map((name) => ` V..... ${name} encoder`).join("\n");
+    const balanced = ffmpegEncoderAttempts("mp4", mp4Encoders, "balanced");
+    const high = ffmpegEncoderAttempts("mp4", mp4Encoders, "high");
+    const compact = ffmpegEncoderAttempts("mp4", mp4Encoders, "compact");
+
+    expect(balanced.find(({ name }) => name === "h264_nvenc")?.args).toContain("21");
+    expect(balanced.find(({ name }) => name === "h264_qsv")?.args).toContain("22");
+    expect(balanced.find(({ name }) => name === "libx264")?.args).toContain("21");
+    expect(high.find(({ name }) => name === "h264_nvenc")?.args).toContain("18");
+    expect(high.find(({ name }) => name === "h264_amf")?.args).toEqual(expect.arrayContaining(["-qp_i:v", "18", "-qp_p:v", "20"]));
+    expect(high.find(({ name }) => name === "h264_mf")?.args).toEqual(["-b:v", "12M"]);
+    expect(compact.find(({ name }) => name === "h264_nvenc")?.args).toContain("26");
+    expect(compact.find(({ name }) => name === "h264_qsv")?.args).toContain("30");
+    expect(compact.find(({ name }) => name === "libx264")?.args).toContain("26");
+
+    const webmEncoders = ["vp9_qsv", "libvpx-vp9", "libvpx"].map((name) => ` V..... ${name} encoder`).join("\n");
+    const qualityValue = (args: string[]) => {
+      const optionIndex = args.findIndex((value) => value === "-global_quality:v" || value === "-crf:v");
+      return args[optionIndex + 1];
+    };
+    expect(ffmpegEncoderAttempts("webm", webmEncoders, "high").map(({ args }) => qualityValue(args)))
+      .toEqual(["24", "26", "24"]);
+    expect(ffmpegEncoderAttempts("webm", webmEncoders, "compact").map(({ args }) => qualityValue(args)))
+      .toEqual(["38", "40", "38"]);
+  });
 });
 
 describe("FFmpeg progress parsing", () => {

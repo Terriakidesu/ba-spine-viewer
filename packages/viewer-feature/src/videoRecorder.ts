@@ -4,6 +4,35 @@ export type VideoRecordingMode = "full-sequence" | "opening-idle" | "idle-only";
 export type VideoRecordingFormat = "webm" | "mp4";
 export type VideoRecordingResolution = 720 | 1080 | 1440 | 2160;
 export type VideoRecordingFrameRate = 30 | 60;
+export type VideoRecordingQuality = "high" | "balanced" | "compact";
+
+export const VIDEO_RECORDING_QUALITY_STORAGE_KEY = "ba-spine-viewer-video-quality";
+
+export function normalizeVideoRecordingQuality(value: unknown): VideoRecordingQuality {
+  return value === "high" || value === "compact" ? value : "balanced";
+}
+
+export function readVideoRecordingQuality(storage?: Pick<Storage, "getItem"> | null): VideoRecordingQuality {
+  try {
+    const target = storage === undefined
+      ? (typeof localStorage === "undefined" ? null : localStorage)
+      : storage;
+    return normalizeVideoRecordingQuality(target?.getItem(VIDEO_RECORDING_QUALITY_STORAGE_KEY));
+  } catch {
+    return "balanced";
+  }
+}
+
+export function writeVideoRecordingQuality(value: unknown, storage?: Pick<Storage, "setItem"> | null): void {
+  try {
+    const target = storage === undefined
+      ? (typeof localStorage === "undefined" ? null : localStorage)
+      : storage;
+    target?.setItem(VIDEO_RECORDING_QUALITY_STORAGE_KEY, normalizeVideoRecordingQuality(value));
+  } catch {
+    // Preferences are optional; a storage restriction must not interrupt exports.
+  }
+}
 
 export interface VideoRecordingSettings {
   mode: VideoRecordingMode;
@@ -19,6 +48,7 @@ export interface VideoRecordingSettings {
   includeAudio: boolean;
   includeSubtitles: boolean;
   format: VideoRecordingFormat;
+  quality: VideoRecordingQuality;
 }
 
 export interface VideoRecordingPlan {

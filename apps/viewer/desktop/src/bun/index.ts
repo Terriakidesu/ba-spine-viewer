@@ -383,12 +383,16 @@ async function api(request: Request, url: URL): Promise<Response> {
         || typeof body.frameRate !== "number" || (body.format !== "webm" && body.format !== "mp4")) {
         return errorResponse("The FFmpeg recording settings are invalid.");
       }
+      if (body.quality !== undefined && body.quality !== "high" && body.quality !== "balanced" && body.quality !== "compact") {
+        return errorResponse("The FFmpeg recording quality is invalid.");
+      }
       const sessionId = await ffmpegVideoRecorder.start({
         filename: body.filename,
         width: body.width,
         height: body.height,
         frameRate: body.frameRate as 30 | 60,
         format: body.format,
+        quality: body.quality as "high" | "balanced" | "compact" | undefined,
       });
       return json({ sessionId });
     }

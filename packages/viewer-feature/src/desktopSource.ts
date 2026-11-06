@@ -133,6 +133,7 @@ export async function startDesktopFfmpegVideoRecording(options: {
   height: number;
   frameRate: number;
   format: "webm" | "mp4";
+  quality: "high" | "balanced" | "compact";
 }): Promise<string> {
   const result = await request("/__spine/video/ffmpeg/start", {
     method: "POST",
