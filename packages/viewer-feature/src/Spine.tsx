@@ -51,9 +51,9 @@ import {
   type SpineVoiceLine,
 } from "@ba-spine/spine-runtime/spine/spineVoicelines";
 import { SpineCompositionViewport, type SpineCompositionViewportHandle } from "@ba-spine/spine-runtime/ui/SpineCompositionViewport";
-import { timelineForSequence, timelinePlaybackDuration, timelineSequenceIds, timelineTalkInProgress, timelineTalkSequenceIds, type SpineTimeline } from "@ba-spine/spine-runtime/spine/spineTimeline";
+import { timelineAuthoredCueEnd, timelineForSequence, timelineLastDefinedCameraTrack, timelinePlaybackDuration, timelineSequenceIds, timelineTalkInProgress, timelineTalkSequenceIds, type SpineTimeline } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import { readViewerAspectRatio, writeViewerAspectRatio, type ViewerAspectRatio } from "./viewerPresentation";
-import { createCanvasFrameCapture, createCanvasRecordingCapture, createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, type AudioRecordingCapture, type CanvasFrameCapture, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
+import { createCanvasFrameCapture, createCanvasRecordingCapture, createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingTimelineOffsets, type AudioRecordingCapture, type CanvasFrameCapture, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
 
 type ViewerDraftPreview = Omit<SpineDraftSnapshot, "project"> & { project: SpineInteractionProject };
 
@@ -73,7 +73,7 @@ function fullSequenceRecordingPlan(
   const opening = timelineForSequence(project, "opening");
   const talks = timelineTalkSequenceIds(project).flatMap((sequenceId) => {
     const timeline = timelineForSequence(project, sequenceId);
-    return timeline ? [{ sequenceId, duration: projectTimelineDuration(timeline, project) }] : [];
+    return timeline ? [{ sequenceId, duration: Math.max(projectTimelineDuration(timeline, project), timelineAuthoredCueEnd(timeline)) }] : [];
   });
   return createFullSequenceRecordingPlan({
     openingDuration: metrics.openingDuration,
@@ -233,6 +233,7 @@ interface VideoRecordingRun {
   segmentIndex: number;
   segmentStartedAt: number | null;
   segmentTimelineStart: number;
+  lastGlobalElapsed: number;
   activeSequenceId: string | null;
   lastPreviewAt: number;
   lastUiUpdate: number;
@@ -1046,6 +1047,54 @@ export function Spine() {
     : "";
   const compositionTimeline = selectedInteractionProject ? timelineForSequence(selectedInteractionProject, compositionSequenceId) : null;
   const compositionActive = Boolean(compositionTimeline);
+  const activeExportRun = videoRecordingRunRef.current;
+  const authoredTalkSequenceIds = selectedInteractionProject ? timelineTalkSequenceIds(selectedInteractionProject) : [];
+  const fullSequenceCompositionRecording = activeExportRun?.source === "composition" && activeExportRun.settings.mode === "full-sequence";
+  const recordingCameraHistoryTimelines = useMemo(() => {
+    if (!selectedInteractionProject) return [];
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    if (fullSequenceCompositionRecording && activeExportRun.plan?.segments) {
+      const lastIndex = Math.max(0, activeExportRun.segmentIndex);
+      for (const segment of activeExportRun.plan.segments.slice(0, lastIndex + 1)) {
+        if (segment.sequenceId && !seen.has(segment.sequenceId)) {
+          seen.add(segment.sequenceId);
+          ids.push(segment.sequenceId);
+        }
+      }
+    } else {
+      const sequenceIds = timelineSequenceIds(selectedInteractionProject);
+      const orderedIds = [
+        ...(sequenceIds.includes("opening") ? ["opening"] : []),
+        ...timelineTalkSequenceIds(selectedInteractionProject),
+        ...sequenceIds.filter((id) => id !== "opening" && !/^talk-\d+$/i.test(id)),
+      ];
+      const activeIndex = orderedIds.indexOf(compositionSequenceId);
+      const history = activeIndex >= 0 ? orderedIds.slice(0, activeIndex + 1) : [compositionSequenceId];
+      for (const id of history) {
+        if (id && !seen.has(id)) {
+          seen.add(id);
+          ids.push(id);
+        }
+      }
+    }
+    return ids.map((id) => timelineForSequence(selectedInteractionProject, id)).filter((item): item is SpineTimeline => item !== null);
+  }, [activeExportRun?.plan, activeExportRun?.segmentIndex, compositionSequenceId, fullSequenceCompositionRecording, selectedInteractionProject]);
+  const recordingCameraSource = useMemo(() => timelineLastDefinedCameraTrack(recordingCameraHistoryTimelines), [recordingCameraHistoryTimelines]);
+  const compositionCameraTrack = recordingCameraSource?.track ?? (compositionTimeline?.camera?.enabled ? compositionTimeline.camera : null);
+  const cameraRecordingSegment = activeExportRun?.plan?.segments?.[activeExportRun.segmentIndex];
+  const shouldHoldLastCameraShot = Boolean(recordingCameraSource && (
+    recordingCameraSource.sequenceId !== compositionTimeline?.sequenceId
+    || fullSequenceCompositionRecording && cameraRecordingSegment
+      && cameraRecordingSegment.kind !== "opening" && cameraRecordingSegment.kind !== "talk"
+  ));
+  const lastCameraAuthoredSegment = shouldHoldLastCameraShot && fullSequenceCompositionRecording && activeExportRun?.plan?.segments
+    ? activeExportRun.plan.segments.slice(0, Math.max(0, activeExportRun.segmentIndex) + 1).reverse()
+      .find((segment) => segment.sequenceId === recordingCameraSource?.sequenceId && (segment.kind === "opening" || segment.kind === "talk"))
+    : undefined;
+  const recordingCameraTime = shouldHoldLastCameraShot && recordingCameraSource
+    ? lastCameraAuthoredSegment?.duration ?? Math.max(0, ...recordingCameraSource.track.keyframes.map((keyframe) => keyframe.time))
+    : undefined;
   const videoRecorderApplyingCamera = videoRecorderDialog?.phase === "settings"
     || videoRecorderDialog?.phase === "preparing"
     || videoRecorderDialog?.phase === "recording"
@@ -1056,14 +1105,13 @@ export function Spine() {
     || videoRecorderDialog?.phase === "canceling";
   const savedCameraForRecording = videoRecorderApplyingCamera && videoRecorderDialog?.settings.framing === "saved";
   const compositionCameraMode: SpineCameraMode = savedCameraForRecording
-    ? compositionTimeline?.camera?.enabled ? "authored" : "fit"
+    ? compositionCameraTrack?.enabled ? "authored" : "fit"
     : interactionMode === "free"
       ? "artwork"
-      : compositionTimeline?.camera?.enabled ? "authored" : "fit";
-  const outputAspectRatio = savedCameraForRecording && compositionTimeline?.camera?.enabled
-    ? compositionTimeline.camera.aspectRatio
+      : compositionCameraTrack?.enabled ? "authored" : "fit";
+  const outputAspectRatio = savedCameraForRecording && compositionCameraTrack?.enabled
+    ? compositionCameraTrack.aspectRatio
     : aspectRatio;
-  const authoredTalkSequenceIds = selectedInteractionProject ? timelineTalkSequenceIds(selectedInteractionProject) : [];
   const authoredTalkAutoplayAvailable = Boolean(
     selectedInteractionProject
       && authoredTalkSequenceIds.length > 0
@@ -2237,10 +2285,10 @@ export function Spine() {
           if (segment.kind === "opening" || segment.kind === "talk") {
             const timeline = segment.sequenceId ? timelineForSequence(selectedInteractionProject, segment.sequenceId) : null;
             for (const clip of timeline?.audio ?? []) {
-              if (!clip.enabled || clip.start >= segment.duration) continue;
+              if (!clip.enabled) continue;
               const file = await loadRecordingAudioFile(source, clip.path);
               if (!file) continue;
-              addTrack(file, offset + clip.start, offset + Math.min(segment.duration, clip.end), clip.volume, segment.sequenceId ?? "opening");
+              addTrack(file, offset + clip.start, offset + clip.end, clip.volume, segment.sequenceId ?? "opening");
             }
           }
           offset += segment.duration;
@@ -2445,7 +2493,9 @@ export function Spine() {
             await waitForPaint();
             await waitForPaint();
           }
-          compositionRef.current?.sampleRecordingFrame(activeSegment.elapsed, time);
+          const globalElapsed = videoRecordingGlobalTime(plan, activeSegment.index, activeSegment.elapsed);
+          const idleElapsed = Math.max(0, globalElapsed - plan.openingDuration);
+          compositionRef.current?.sampleRecordingFrame(activeSegment.elapsed, idleElapsed, globalElapsed);
           needsPaintWait = true;
         } else {
           const timelineTime = run.settings.mode === "idle-only" ? plan.openingDuration + time : time;
@@ -2588,7 +2638,10 @@ export function Spine() {
 
     if (run.settings.mode === "full-sequence" && sourceKind === "composition" && run.plan.segments) {
       if (run.useFfmpeg) {
-        setProgress(next);
+        run.lastGlobalElapsed = Math.max(run.lastGlobalElapsed, Math.min(run.plan.totalDuration, next.time));
+        const globalProgress = { ...next, time: run.lastGlobalElapsed, duration: run.plan.totalDuration };
+        progressRef.current = globalProgress;
+        setProgress(globalProgress);
         return;
       }
       if (run.segmentIndex < 0) beginCompositionRecordingSegment(run, 0);
@@ -2599,18 +2652,22 @@ export function Spine() {
       }
       run.segmentStartedAt ??= now;
       const localElapsed = Math.max(0, (now - run.segmentStartedAt) / 1000);
-      const elapsed = Math.min(run.plan.totalDuration, run.segmentTimelineStart + localElapsed);
+      const elapsed = Math.max(run.lastGlobalElapsed, videoRecordingGlobalTime(run.plan, run.segmentIndex, localElapsed));
+      run.lastGlobalElapsed = elapsed;
+      const globalProgress = { ...next, time: elapsed, duration: run.plan.totalDuration };
+      progressRef.current = globalProgress;
       if (localElapsed >= segment.duration) {
         const nextIndex = run.segmentIndex + 1;
         if (nextIndex < run.plan.segments.length) beginCompositionRecordingSegment(run, nextIndex);
         else {
-          setProgress(next);
+          run.lastGlobalElapsed = run.plan.totalDuration;
+          setProgress({ ...globalProgress, time: run.lastGlobalElapsed });
           setVideoRecorderDialog((current) => current ? { ...current, elapsed: run.plan!.totalDuration } : current);
           stopVideoRecording(true);
         }
         return;
       }
-      setProgress(next);
+      setProgress(globalProgress);
       if (now - run.lastUiUpdate >= 180) {
         run.lastUiUpdate = now;
         const recordingProgress = videoRecordingProgress(run.plan, elapsed);
@@ -2691,25 +2748,21 @@ export function Spine() {
     const segment = segments?.[index];
     if (!plan || !segments || !segment) return;
     const targetSequenceId = segment.sequenceId ?? run.activeSequenceId ?? compositionSequenceId;
-    const targetTimeline = selectedInteractionProject && targetSequenceId
-      ? timelineForSequence(selectedInteractionProject, targetSequenceId)
-      : compositionTimeline;
     const sequenceChanged = Boolean(targetSequenceId && targetSequenceId !== run.activeSequenceId);
     const idleSegment = segment.kind !== "opening" && segment.kind !== "talk";
     run.segmentIndex = index;
     run.segmentStartedAt = run.startedAt === null ? null : performance.now();
-    run.segmentTimelineStart = segments.slice(0, index).reduce((total, item) => total + item.duration, 0);
+    run.segmentTimelineStart = videoRecordingSegmentStart(plan, index);
+    run.lastGlobalElapsed = Math.max(run.lastGlobalElapsed, run.segmentTimelineStart);
     run.activeSequenceId = targetSequenceId || null;
     run.phase = segment.kind === "opening" ? "opening" : "idle";
     if (sequenceChanged && targetSequenceId) setSelectedSequenceId(targetSequenceId);
     setIdleMode(idleSegment ? "persistent" : "none");
-    if (sequenceChanged || index === 0 || !idleSegment) {
-      setProgress({
-        time: 0,
-        duration: targetTimeline ? projectTimelineDuration(targetTimeline, selectedInteractionProject) : 0,
-        animation: null,
-      });
-    }
+    setProgress({
+      time: run.lastGlobalElapsed,
+      duration: plan.totalDuration,
+      animation: null,
+    });
   };
 
   const startVideoRecording = async () => {
@@ -2789,6 +2842,7 @@ export function Spine() {
       segmentIndex: -1,
       segmentStartedAt: null,
       segmentTimelineStart: 0,
+      lastGlobalElapsed: 0,
       activeSequenceId: selectedSequenceId || null,
       lastPreviewAt: 0,
       lastUiUpdate: 0,
@@ -3246,8 +3300,12 @@ export function Spine() {
     : null;
   const recorderEstimateFrames = recorderEstimate ? videoRecordingFrameCount(recorderEstimate.totalDuration, recorderSettings.frameRate) : 0;
   const recorderUsesFfmpeg = isDesktopHost() && desktopFfmpegFormats.includes(recorderSettings.format);
-  const activeExportRun = videoRecordingRunRef.current;
   const activeRecordingSegment = activeExportRun?.plan?.segments?.[activeExportRun.segmentIndex];
+  const recordingCueTimelines = useMemo(() => {
+    if (!fullSequenceCompositionRecording || !activeExportRun?.plan || !selectedInteractionProject) return undefined;
+    return videoRecordingTimelineOffsets(activeExportRun.plan, selectedInteractionProject)
+      .map(({ timeline, start }) => ({ timeline, start }));
+  }, [activeExportRun?.plan, fullSequenceCompositionRecording, selectedInteractionProject]);
   const recordingIdleOverride = activeExportRun?.source === "composition"
     && activeExportRun.settings.mode === "full-sequence"
     && Boolean(activeRecordingSegment && activeRecordingSegment.kind !== "opening" && activeRecordingSegment.kind !== "talk");
@@ -3633,6 +3691,13 @@ export function Spine() {
                   aspectRatio={outputAspectRatio}
                 idleMode={idleMode}
                 recordingIdleOverride={recordingIdleOverride}
+                recordingClock={fullSequenceCompositionRecording}
+                recordingCameraTrack={compositionCameraTrack}
+                recordingCameraTime={recordingCameraTime}
+                recordingIdleOffset={fullSequenceCompositionRecording ? activeExportRun?.plan?.openingDuration ?? 0 : undefined}
+                recordingCueTimelines={recordingCueTimelines}
+                recordingCueAudioEnabled={activeExportRun?.settings.includeAudio ?? false}
+                recordingCueSubtitlesEnabled={activeExportRun?.settings.includeSubtitles ?? false}
                 preserveDrawingBuffer={videoRecorderApplyingCamera}
                onMeta={handleViewportMeta}
                 onProgress={(next) => handleViewerProgress(next, "composition")}

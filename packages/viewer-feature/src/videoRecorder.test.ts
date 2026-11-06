@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt } from "./videoRecorder";
+import { createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingTimelineOffsets } from "./videoRecorder";
 
 describe("Viewer video recording plans", () => {
   test("counts the opening once and stops at the requested idle-loop boundary", () => {
@@ -46,6 +46,36 @@ describe("Viewer video recording plans", () => {
     ]);
     expect(videoRecordingSegmentAt(plan, 7.25)).toMatchObject({ index: 2, segment: { kind: "talk", sequenceId: "talk-1" }, elapsed: 0.25 });
     expect(videoRecordingProgress(plan, 36)).toMatchObject({ phase: "final-idle", segmentElapsed: 1, finished: false });
+    expect(videoRecordingSegmentStart(plan, 2)).toBe(7);
+    expect(videoRecordingGlobalTime(plan, 2, 0.25)).toBe(7.25);
+    expect(videoRecordingGlobalTime(plan, 3, 0)).toBe(15);
+    expect(videoRecordingGlobalTime(plan, 2, 8)).toBe(15);
+  });
+
+  test("maps Opening and Talk cue timelines onto one clock without replaying idle cues", () => {
+    const opening = { sequenceId: "opening" } as never;
+    const talk = { sequenceId: "talk-1" } as never;
+    const plan = createFullSequenceRecordingPlan({
+      openingDuration: 4,
+      idleDuration: 2,
+      openingSequenceId: "opening",
+      idleSequenceId: "opening",
+      includeOpening: true,
+      initialIdleLoops: 1,
+      betweenTalkIdleSeconds: 1,
+      finalIdleLoops: 1,
+      talks: [{ sequenceId: "talk-1", duration: 3 }, { sequenceId: "talk-2", duration: 2 }],
+      selectedTalkSequenceIds: ["talk-1", "talk-2"],
+    });
+    const offsets = videoRecordingTimelineOffsets(plan, {
+      timeline: opening,
+      sequences: { "talk-1": talk, "talk-2": { sequenceId: "talk-2" } as never },
+    });
+    expect(offsets.map(({ timeline, start }) => [timeline.sequenceId, start])).toEqual([
+      ["opening", 0],
+      ["talk-1", 6],
+      ["talk-2", 10],
+    ]);
   });
 
   test("full-sequence omits unavailable opening, filters unselected Talks, and enforces a settled final idle", () => {

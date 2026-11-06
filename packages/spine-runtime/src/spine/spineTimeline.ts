@@ -154,10 +154,45 @@ export function timelineVisualLayers(timeline: Pick<SpineTimeline, "layers"> & {
 }
 
 /** Keep camera-reference choice independent of compositing order changes. */
-export function timelineReferenceLayerId(timeline: Pick<SpineTimeline, "layers"> & { camera?: SpineTimeline["camera"] }): string {
-  const authoredReference = timeline.camera?.referenceLayerId;
+export function timelineReferenceLayerId(
+  timeline: Pick<SpineTimeline, "layers"> & { camera?: SpineTimeline["camera"] },
+  camera: SpineTimeline["camera"] | null = timeline.camera,
+): string {
+  const authoredReference = camera?.referenceLayerId;
   if (authoredReference && timeline.layers.some((layer) => layer.id === authoredReference)) return authoredReference;
   return timeline.layers.find((layer) => layer.role === "character")?.id ?? timeline.layers[0]?.id ?? "";
+}
+
+export interface SpineTimelineCameraSource {
+  track: SpineCameraTrack;
+  sequenceId: string;
+}
+
+/** Carry the most recently authored camera track and boundary across sequence changes. */
+export function timelineLastDefinedCameraTrack(timelines: readonly SpineTimeline[]): SpineTimelineCameraSource | null {
+  let source: SpineTimelineCameraSource | null = null;
+  let lastDefinedBounds: SpineCameraTrack["safeBounds"] | null = null;
+  for (const timeline of timelines) {
+    const track = timeline.camera;
+    if (!track?.enabled) continue;
+    const hasEnabledBounds = track.safeBounds.some((bound) => bound.enabled);
+    if (!hasEnabledBounds && track.keyframes.length === 0) continue;
+    if (hasEnabledBounds) lastDefinedBounds = track.safeBounds;
+    source = {
+      sequenceId: timeline.sequenceId,
+      track: hasEnabledBounds || !lastDefinedBounds ? track : { ...track, safeBounds: lastDefinedBounds },
+    };
+  }
+  return source;
+}
+
+/** Enabled authored cues can extend a Full sequence Talk beyond its animation's endpoint. */
+export function timelineAuthoredCueEnd(timeline: Pick<SpineTimeline, "audio" | "subtitles">): number {
+  return Math.max(
+    0,
+    ...timeline.audio.filter((clip) => clip.enabled).map((clip) => clip.end),
+    ...timeline.subtitles.filter((cue) => cue.enabled).map((cue) => cue.end),
+  );
 }
 
 export function timelineActiveColorClip(layer: SpineTimelineColorLayer, time: number): SpineTimelineColorClip | null {

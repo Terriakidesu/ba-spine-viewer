@@ -1,3 +1,5 @@
+import { timelineForSequence, type SpineTimeline, type SpineTimelineProject } from "@ba-spine/spine-runtime/spine/spineTimeline";
+
 export type VideoRecordingMode = "full-sequence" | "opening-idle" | "idle-only";
 export type VideoRecordingFormat = "webm" | "mp4";
 export type VideoRecordingResolution = 720 | 1080 | 1440 | 2160;
@@ -34,6 +36,11 @@ export interface VideoRecordingSegment {
   sequenceId?: string;
   talkNumber?: number;
   talkCount?: number;
+}
+
+export interface VideoRecordingTimelineOffset {
+  timeline: SpineTimeline;
+  start: number;
 }
 
 export interface VideoRecordingAudioSchedule {
@@ -190,6 +197,34 @@ export function videoRecordingSegmentAt(plan: VideoRecordingPlan, elapsedSeconds
     start = end;
   }
   return null;
+}
+
+/** Stable start time for a plan segment, used to keep the visible export clock monotonic. */
+export function videoRecordingSegmentStart(plan: VideoRecordingPlan, index: number): number {
+  if (!plan.segments || !Number.isInteger(index) || index < 0 || index >= plan.segments.length) return 0;
+  return plan.segments.slice(0, index).reduce((total, segment) => total + segment.duration, 0);
+}
+
+export function videoRecordingGlobalTime(plan: VideoRecordingPlan, index: number, segmentElapsed: number): number {
+  const segment = plan.segments?.[index];
+  if (!segment) return Math.max(0, Math.min(plan.totalDuration, Number.isFinite(segmentElapsed) ? segmentElapsed : 0));
+  const local = Math.max(0, Math.min(segment.duration, Number.isFinite(segmentElapsed) ? segmentElapsed : 0));
+  return Math.max(0, Math.min(plan.totalDuration, videoRecordingSegmentStart(plan, index) + local));
+}
+
+/** Map only Opening and Talk authored cues to the continuous Full sequence clock. */
+export function videoRecordingTimelineOffsets(plan: VideoRecordingPlan, project: SpineTimelineProject): VideoRecordingTimelineOffset[] {
+  if (!plan.segments) return [];
+  const offsets: VideoRecordingTimelineOffset[] = [];
+  let start = 0;
+  for (const segment of plan.segments) {
+    if ((segment.kind === "opening" || segment.kind === "talk") && segment.sequenceId) {
+      const timeline = timelineForSequence(project, segment.sequenceId);
+      if (timeline) offsets.push({ timeline, start });
+    }
+    start += segment.duration;
+  }
+  return offsets;
 }
 
 export function videoRecordingProgress(plan: VideoRecordingPlan, elapsedSeconds: number): VideoRecordingProgress {

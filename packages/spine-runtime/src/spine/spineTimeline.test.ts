@@ -22,7 +22,7 @@ test("a clip can inherit the layer face animation or explicitly disable it", () 
   expect(timelineFaceAnimation(configuredLayer, { faceAnimation: "" })).toBe("");
   expect(timelineFaceAnimation(configuredLayer, { faceAnimation: "LookEnd_01_A" })).toBe("LookEnd_01_A");
 });
-import { advanceSpineTimeline, normalizeSpineTimeline, timelineActiveAnimationClip, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAnimationNeedsIdleUnderlay, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineForSequence, timelineLayerAnimation, timelineLayerPlaybackEnd, timelineLayerSampleTime, timelineMainAnimation, timelineOpeningDuration, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineSequenceIds, timelineTalkSequenceIds, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer } from "./spineTimeline";
+import { advanceSpineTimeline, normalizeSpineTimeline, timelineActiveAnimationClip, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAnimationNeedsIdleUnderlay, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineAuthoredCueEnd, timelineBlendModeCss, timelineColorClipOpacity, timelineForSequence, timelineLastDefinedCameraTrack, timelineLayerAnimation, timelineLayerPlaybackEnd, timelineLayerSampleTime, timelineMainAnimation, timelineOpeningDuration, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineSequenceIds, timelineTalkSequenceIds, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer } from "./spineTimeline";
 
 const character = { start: 1, animationOffset: 0.25, loop: false, role: "character" as const };
 
@@ -369,4 +369,49 @@ test("timeline normalization preserves valid authored camera tracks and clips ou
   expect(normalized?.camera?.aspectRatio).toBe("4:3");
   expect(normalized?.camera?.constraint).toEqual({ mode: "manual", boundId: "room" });
   expect(normalized?.camera?.keyframes.map(({ id }) => id)).toEqual(["start"]);
+});
+
+test("camera history carries the latest enabled safe boundary into later sequences", () => {
+  const opening = normalizeSpineTimeline({
+    sequenceId: "opening",
+    camera: {
+      enabled: true,
+      aspectRatio: "16:9",
+      constraint: { mode: "manual", boundId: "opening-bound" },
+      safeBounds: [{ id: "opening-bound", name: "Opening", x: -100, y: -200, width: 400, height: 600, enabled: true }],
+      keyframes: [{ id: "opening-shot", time: 2, centerX: 0, centerY: 0, frameHeight: 200 }],
+    },
+  })!;
+  const talkWithoutBounds = normalizeSpineTimeline({
+    sequenceId: "talk-1",
+    camera: {
+      enabled: true,
+      aspectRatio: "4:3",
+      constraint: { mode: "automatic" },
+      safeBounds: [],
+      keyframes: [{ id: "talk-shot", time: 1, centerX: 10, centerY: 20, frameHeight: 180 }],
+    },
+  })!;
+
+  expect(timelineLastDefinedCameraTrack([opening, talkWithoutBounds])).toMatchObject({
+    sequenceId: "talk-1",
+    track: {
+      aspectRatio: "4:3",
+      keyframes: [{ id: "talk-shot" }],
+      safeBounds: [{ id: "opening-bound" }],
+    },
+  });
+  expect(timelineLastDefinedCameraTrack([opening])?.track.safeBounds[0]?.id).toBe("opening-bound");
+});
+
+test("enabled audio and subtitle endpoints can extend a full-sequence Talk", () => {
+  expect(timelineAuthoredCueEnd({
+    audio: [
+      { id: "voice", name: "voice", path: "voice.ogg", start: 1, end: 8, enabled: true, volume: 1 },
+      { id: "disabled", name: "disabled", path: "disabled.ogg", start: 0, end: 20, enabled: false, volume: 1 },
+    ],
+    subtitles: [
+      { id: "subtitle", start: 1, end: 9, enabled: true, text: { en: "Hello", ja: "", ko: "" } },
+    ],
+  })).toBe(9);
 });
