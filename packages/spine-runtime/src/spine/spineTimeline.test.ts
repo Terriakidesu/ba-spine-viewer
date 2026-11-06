@@ -22,7 +22,7 @@ test("a clip can inherit the layer face animation or explicitly disable it", () 
   expect(timelineFaceAnimation(configuredLayer, { faceAnimation: "" })).toBe("");
   expect(timelineFaceAnimation(configuredLayer, { faceAnimation: "LookEnd_01_A" })).toBe("LookEnd_01_A");
 });
-import { advanceSpineTimeline, normalizeSpineTimeline, timelineActiveAnimationClip, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAnimationNeedsIdleUnderlay, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineAuthoredCueEnd, timelineBlendModeCss, timelineColorClipOpacity, timelineForSequence, timelineLastDefinedCameraTrack, timelineLayerAnimation, timelineLayerPlaybackEnd, timelineLayerSampleTime, timelineMainAnimation, timelineOpeningDuration, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineSequenceIds, timelineTalkSequenceIds, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer } from "./spineTimeline";
+import { advanceSpineTimeline, normalizeSpineTimeline, timelineActiveAnimationClip, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAnimationNeedsIdleUnderlay, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineAuthoredCueEnd, timelineBlendModeCss, timelineColorClipOpacity, timelineForSequence, timelineLastDefinedCameraTrack, timelineLayerAnimation, timelineLayerAnimationPlaybackEnd, timelineLayerPlaybackEnd, timelineLayerSampleTime, timelineMainAnimation, timelineOpeningDuration, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineSequenceIds, timelineTalkSequenceIds, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer } from "./spineTimeline";
 
 const character = { start: 1, animationOffset: 0.25, loop: false, role: "character" as const };
 
@@ -114,6 +114,34 @@ test("automatic Talk duration trims stale saved tails and fits enabled endpoints
     language: "en",
   };
   expect(timelinePlaybackDuration(timeline, 0, undefined, 0.4)).toBeCloseTo(16.66);
+});
+
+test("automatic Talk duration follows decoded animation endpoints past the last audio cue", () => {
+  const talkLayer = layer({ animation: "Talk_01_M", end: 4, loop: true });
+  const timeline: SpineTimeline = {
+    sequenceId: "talk-2", openingMode: "direct", sceneDuration: 3, openingIdleDuration: 3,
+    durationMode: "auto", duration: 4, loop: false,
+    layers: [talkLayer], subtitles: [],
+    audio: [{ id: "last-line", name: "last-line.ogg", path: "last-line.ogg", start: 2, end: 6, enabled: true, volume: 1 }],
+    language: "en",
+  };
+  const layerEndFor = (candidate: SpineTimelineLayer) => timelineLayerAnimationPlaybackEnd(
+    candidate,
+    meta,
+    timeline.sequenceId,
+    timeline.openingMode,
+    (animation) => animation === "Talk_01_M" ? 10 : 0,
+  );
+
+  expect(layerEndFor(talkLayer)).toBe(10);
+  expect(timelinePlaybackDuration(timeline, 0, layerEndFor, 0.4)).toBeCloseTo(10.4);
+  expect(timelineLayerAnimationPlaybackEnd(
+    layer({ animation: "Talk_01_M", end: 4, endMode: "manual" }),
+    meta,
+    timeline.sequenceId,
+    timeline.openingMode,
+    () => 10,
+  )).toBe(4);
 });
 
 test("manual Talk duration honors the explicit saved override", () => {

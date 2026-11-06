@@ -3,7 +3,7 @@ import { SpineRenderer, type SpineCameraFrame, type SpineCameraMode, type SpineC
 import type { AssetSource } from "./spineAssets";
 import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration, type SpineInteractionProject } from "./spineInteraction";
 import { spineAudioPathCandidates } from "./spineAudio";
-import { advanceSpineTimeline, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineIdleAnimation, timelineLayerAnimation, timelineLayerAnimationClips, timelineMainAnimation, timelineOpeningContinuationStart, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimeline, type SpineTimelineAudioPreloadState } from "./spineTimeline";
+import { advanceSpineTimeline, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineIdleAnimation, timelineLayerAnimation, timelineLayerAnimationClips, timelineLayerAnimationPlaybackEnd, timelineMainAnimation, timelineOpeningContinuationStart, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer, type SpineTimelineAudioPreloadState } from "./spineTimeline";
 import { SpineTimelineLayerCanvas } from "./SpineTimelineLayerCanvas";
 import { cameraAspectValue, changeSpineCameraAspectRatio, evaluateSpineCameraTrack, type SpineCameraAspectRatio, type SpineCameraTrack } from "./spineCameraMotion";
 
@@ -25,6 +25,7 @@ export interface SpineCompositionViewportHandle {
   setTalkAudioPending: (pending: boolean) => void;
   isTalkActive: () => boolean;
   startIntroAudio: () => void;
+  getTimelinePlaybackDuration: (targetTimeline: SpineTimeline) => number;
   getRecordingMetrics: (targetTimeline?: SpineTimeline, requirePreloads?: boolean) => { openingDuration: number; idleDuration: number; idleAnimation: string; ready: boolean };
 }
 
@@ -133,11 +134,27 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   const mainAnimationDuration = characterLayer && mainAnimationName
     ? animationDurations[`${characterLayer.id}:${mainAnimationName}`] ?? 0
     : 0;
+  const talkMixDuration = normalizeAnimationMixDuration(interactionProject?.talkMixDuration, DEFAULT_TALK_MIX_DURATION);
+  const layerPlaybackEndFor = (targetTimeline: SpineTimeline, layer: SpineTimelineLayer) => {
+    const matchingLayer = layers.find((candidate) => candidate.id === layer.id && candidate.directory === layer.directory)
+      ?? layers.find((candidate) => candidate.directory === layer.directory);
+    const layerMeta = matchingLayer ? metas[matchingLayer.id] ?? null : null;
+    const renderer = matchingLayer ? layerRenderersRef.current.get(matchingLayer.id) : null;
+    const durationFor = (animation: string) => {
+      const cached = matchingLayer ? animationDurations[`${matchingLayer.id}:${animation}`] : undefined;
+      return cached ?? renderer?.getEditorAnimationInfo(animation).duration ?? 0;
+    };
+    return timelineLayerAnimationPlaybackEnd(layer, layerMeta, targetTimeline.sequenceId, targetTimeline.openingMode, durationFor);
+  };
   const openingMinimumDuration = timeline.sequenceId === "opening" && characterLayer
     ? hasAnimationClips ? 0 : characterLayer.start + (timeline.openingMode === "skip" ? 0 : introDuration)
     : 0;
-  const talkMixDuration = normalizeAnimationMixDuration(interactionProject?.talkMixDuration, DEFAULT_TALK_MIX_DURATION);
-  const playbackDuration = idleMode !== "none" ? Math.max(0.01, timeline.openingIdleDuration) : timelinePlaybackDuration(timeline, openingMinimumDuration, undefined, talkMixDuration);
+  const playbackDuration = idleMode !== "none" ? Math.max(0.01, timeline.openingIdleDuration) : timelinePlaybackDuration(
+    timeline,
+    openingMinimumDuration,
+    (layer) => layerPlaybackEndFor(timeline, layer),
+    talkMixDuration,
+  );
   const talkBlendOutStart = /^talk-\d+$/i.test(timeline.sequenceId) ? playbackDuration - talkMixDuration : undefined;
   const openingIdleStart = timeline.sequenceId === "opening" && characterLayer
     ? timelineOpeningContinuationStart(timeline, characterLayer, characterMeta, introDuration)
@@ -542,11 +559,17 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
           animation: progressAnimation,
         });
      },
-    triggerTalk: (animation) => talkRendererRef.current?.triggerTalk(animation),
-    setTalkAudioPending: (pending) => talkRendererRef.current?.setTalkAudioPending(pending),
-    isTalkActive: () => talkRendererRef.current?.isTalkActive() ?? false,
-    startIntroAudio: () => talkRendererRef.current?.startIntroAudio(),
-     getRecordingMetrics: (targetTimeline = timeline, requirePreloads = false) => {
+     triggerTalk: (animation) => talkRendererRef.current?.triggerTalk(animation),
+     setTalkAudioPending: (pending) => talkRendererRef.current?.setTalkAudioPending(pending),
+     isTalkActive: () => talkRendererRef.current?.isTalkActive() ?? false,
+     startIntroAudio: () => talkRendererRef.current?.startIntroAudio(),
+     getTimelinePlaybackDuration: (targetTimeline) => timelinePlaybackDuration(
+       targetTimeline,
+       0,
+       (layer) => layerPlaybackEndFor(targetTimeline, layer),
+       talkMixDuration,
+     ),
+      getRecordingMetrics: (targetTimeline = timeline, requirePreloads = false) => {
        const layer = targetTimeline.layers.find((candidate) => candidate.role === "character");
        const layerMeta = layer
          ? metas[layer.id] ?? metas[layers.find((candidate) => candidate.directory === layer.directory)?.id ?? ""] ?? null
@@ -571,7 +594,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
           ready: compositionReady && (requirePreloads ? allAudioReady : audioReady),
       };
     },
-   }), [allAudioReady, animationDurations, audioReady, compositionReady, idleMode, interactionMode, layers, metas, openingIdleStart, playbackDuration, progressAnimation, referenceLayerId, sharedCameraPose, timeline]);
+   }), [allAudioReady, animationDurations, audioReady, compositionReady, idleMode, interactionMode, layers, metas, openingIdleStart, playbackDuration, progressAnimation, referenceLayerId, sharedCameraPose, talkMixDuration, timeline]);
 
    const activeSubtitleTexts = recordingCueTimelines !== undefined
      ? recordingCueSubtitlesEnabled

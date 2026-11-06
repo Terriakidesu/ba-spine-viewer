@@ -389,6 +389,33 @@ export function timelineAnimationClipPlaybackEnd(clip: Pick<SpineTimelineAnimati
   return Math.max(clip.start + 0.01, clip.start + Math.max(0.01, animationDuration - Math.max(0, clip.animationOffset)));
 }
 
+/** Resolve a layer's real playback endpoint from decoded Spine animation lengths. */
+export function timelineLayerAnimationPlaybackEnd(
+  layer: SpineTimelineLayer,
+  meta: Pick<SpineMeta, "animations" | "introAnimation" | "idleAnimation"> | null,
+  sequenceId: string,
+  openingMode: SpineTimeline["openingMode"],
+  animationDurationFor: (animation: string) => number,
+): number {
+  const introDuration = meta?.introAnimation ? animationDurationFor(meta.introAnimation) : 0;
+  const talkCharacter = /^talk-\d+$/i.test(sequenceId) && layer.role === "character" && layer.endMode !== "manual";
+  const clips = timelineLayerAnimationClips(layer, meta, sequenceId, openingMode, introDuration);
+  return Math.max(0, ...clips
+    .filter((clip) => clip.enabled !== false)
+    .map((clip) => {
+      const playbackClip = talkCharacter ? { ...clip, loop: false } : clip;
+      const bodyEnd = timelineAnimationClipPlaybackEnd(playbackClip, animationDurationFor(clip.animation));
+      const faceAnimation = clip.faceAnimation ?? layer.faceAnimation;
+      if (!faceAnimation) return bodyEnd;
+      const faceClip = { ...playbackClip, animation: faceAnimation };
+      const faceEnd = timelineAnimationClipPlaybackEnd(
+        faceClip,
+        animationDurationFor(faceAnimation),
+      );
+      return Math.max(bodyEnd, faceEnd);
+    }));
+}
+
 export function timelineAnimationClipSampleTime(clip: Pick<SpineTimelineAnimationClip, "start" | "animationOffset" | "loop">, currentTime: number, animationDuration: number, forceLoop = false): number {
   const elapsed = Math.max(0, currentTime - clip.start) + clip.animationOffset;
   if (!animationDuration) return elapsed;

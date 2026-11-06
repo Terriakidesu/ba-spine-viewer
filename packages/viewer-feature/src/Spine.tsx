@@ -69,11 +69,15 @@ function fullSequenceRecordingPlan(
   project: SpineInteractionProject,
   settings: VideoRecordingSettings,
   metrics: { openingDuration: number; idleDuration: number },
+  durationForTimeline?: (timeline: SpineTimeline) => number,
 ): VideoRecordingPlan {
   const opening = timelineForSequence(project, "opening");
   const talks = timelineTalkSequenceIds(project).flatMap((sequenceId) => {
     const timeline = timelineForSequence(project, sequenceId);
-    return timeline ? [{ sequenceId, duration: Math.max(projectTimelineDuration(timeline, project), timelineAuthoredCueEnd(timeline)) }] : [];
+    return timeline ? [{
+      sequenceId,
+      duration: Math.max(durationForTimeline?.(timeline) ?? projectTimelineDuration(timeline, project), timelineAuthoredCueEnd(timeline)),
+    }] : [];
   });
   return createFullSequenceRecordingPlan({
     openingDuration: metrics.openingDuration,
@@ -2920,7 +2924,13 @@ export function Spine() {
       if (!selectedFormat) throw new Error(t("spine.recorder.unsupported"));
       run.plan = run.settings.mode === "full-sequence"
         ? selectedInteractionProject
-          ? fullSequenceRecordingPlan(selectedInteractionProject, run.settings, metrics)
+           ? fullSequenceRecordingPlan(
+             selectedInteractionProject,
+             run.settings,
+             metrics,
+             (targetTimeline) => compositionRef.current?.getTimelinePlaybackDuration(targetTimeline)
+               ?? projectTimelineDuration(targetTimeline, selectedInteractionProject),
+           )
           : null
         : createVideoRecordingPlan(run.settings.mode, metrics.openingDuration, metrics.idleDuration, run.settings.idleLoops);
       if (!run.plan || run.plan.totalDuration <= 0) throw new Error(t("spine.recorder.emptySequence"));
@@ -3285,11 +3295,24 @@ export function Spine() {
       const unavailable = talkAnimations.find((animation) => !meta.animations.some((name) => name.toLocaleLowerCase() === animation.toLocaleLowerCase()));
       if (unavailable) missingReason = t("spine.recorder.missingAnimation", { name: unavailable });
     }
-    return { sequenceId, timeline, missingReason, duration: timeline ? projectTimelineDuration(timeline, selectedInteractionProject) : 0 };
+    return {
+      sequenceId,
+      timeline,
+      missingReason,
+      duration: timeline
+        ? compositionRef.current?.getTimelinePlaybackDuration(timeline) ?? projectTimelineDuration(timeline, selectedInteractionProject)
+        : 0,
+    };
   }) : [];
   const selectedMissingTalks = recorderTalkOptions.filter((talk) => recorderSettings.talkSequenceIds.includes(talk.sequenceId) && talk.missingReason);
   const estimatedFullSequencePlan = selectedInteractionProject && fullSequenceMetrics?.ready && fullSequenceMetrics.idleDuration > 0
-    ? fullSequenceRecordingPlan(selectedInteractionProject, recorderSettings, fullSequenceMetrics)
+    ? fullSequenceRecordingPlan(
+      selectedInteractionProject,
+      recorderSettings,
+      fullSequenceMetrics,
+      (targetTimeline) => compositionRef.current?.getTimelinePlaybackDuration(targetTimeline)
+        ?? projectTimelineDuration(targetTimeline, selectedInteractionProject),
+    )
     : null;
   const recorderEstimate = videoRecorderDialog?.phase === "settings"
     ? recorderSettings.mode === "full-sequence"
