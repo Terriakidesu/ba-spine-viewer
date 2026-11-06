@@ -3995,38 +3995,6 @@ export function Spine() {
                     })}
                   </fieldset>
                   {selectedMissingTalks.length > 0 && <p className="spine-recorder-error" role="alert">{selectedMissingTalks.map((talk) => `${talk.sequenceId}: ${talk.missingReason}`).join(" · ")}</p>}
-                  <details className="spine-recorder-sequence-preview" open>
-                    <summary>
-                      <span>{t("spine.recorder.sequencePreview")}</span>
-                      <small>{recorderEstimate?.segments?.length
-                        ? `${t("spine.recorder.segmentCount", { count: recorderEstimate.segments.length })} · ${formatSeconds(recorderEstimate.totalDuration)}s`
-                        : t("spine.recorder.estimateLoading")}</small>
-                    </summary>
-                    {recorderTimelineSegments.length > 0
-                      ? <div className="spine-recorder-timeline-scroll" role="region" aria-label={t("spine.recorder.sequencePreview")} tabIndex={0}>
-                        <div className="spine-recorder-timeline-canvas" style={{ width: `${recorderTimelineTrackWidth + 20}px` }}>
-                          <div className="spine-recorder-timeline-ruler" style={{ width: `${recorderTimelineTrackWidth}px` }} aria-hidden="true">
-                            {recorderTimelineTicks.map((tick, index) => <span
-                              key={tick.time}
-                              className={`spine-recorder-timeline-tick${index === 0 ? " is-first" : index === recorderTimelineTicks.length - 1 ? " is-last" : ""}`}
-                              style={{ left: `${tick.left}px` }}
-                            ><i /><small>{formatSeconds(tick.time)}s</small></span>)}
-                          </div>
-                          <ol className="spine-recorder-timeline-track" style={{ width: `${recorderTimelineTrackWidth}px` }}>
-                            {recorderTimelineSegments.map((segment) => <li
-                              key={segment.key}
-                              className={`spine-recorder-timeline-segment is-${segment.kind}`}
-                              style={{ width: `${segment.width}px` }}
-                              title={`${segment.label} · ${formatSeconds(segment.duration)}s · ${formatSeconds(segment.start)}–${formatSeconds(segment.end)}s`}
-                              aria-label={`${segment.label}, ${formatSeconds(segment.duration)} seconds, ${formatSeconds(segment.start)} to ${formatSeconds(segment.end)} seconds`}
-                              tabIndex={0}
-                            ><strong>{segment.label}</strong><small>{formatSeconds(segment.duration)}s</small></li>)}
-                          </ol>
-                        </div>
-                      </div>
-                      : <p className="spine-recorder-note">{t("spine.recorder.estimateLoading")}</p>}
-                    <p className="spine-recorder-note">{t("spine.recorder.finalIdleNote")}</p>
-                  </details>
                 </>}
               </section>
               <p className="spine-recorder-estimate">{recorderEstimate
@@ -4091,6 +4059,38 @@ export function Spine() {
             </div>}
           </div>
         </div>
+        {videoRecorderDialog.phase === "settings" && videoRecorderDialog.settings.mode === "full-sequence" && <details className="spine-recorder-sequence-preview is-docked" open>
+          <summary>
+            <span>{t("spine.recorder.sequencePreview")}</span>
+            <small>{recorderEstimate?.segments?.length
+              ? `${t("spine.recorder.segmentCount", { count: recorderEstimate.segments.length })} · ${formatSeconds(recorderEstimate.totalDuration)}s`
+              : t("spine.recorder.estimateLoading")}</small>
+          </summary>
+          {recorderTimelineSegments.length > 0
+            ? <div className="spine-recorder-timeline-scroll" role="region" aria-label={t("spine.recorder.sequencePreview")} tabIndex={0}>
+              <div className="spine-recorder-timeline-canvas" style={{ width: `${recorderTimelineTrackWidth + 20}px` }}>
+                <div className="spine-recorder-timeline-ruler" style={{ width: `${recorderTimelineTrackWidth}px` }} aria-hidden="true">
+                  {recorderTimelineTicks.map((tick, index) => <span
+                    key={tick.time}
+                    className={`spine-recorder-timeline-tick${index === 0 ? " is-first" : index === recorderTimelineTicks.length - 1 ? " is-last" : ""}`}
+                    style={{ left: `${tick.left}px` }}
+                  ><i /><small>{formatSeconds(tick.time)}s</small></span>)}
+                </div>
+                <ol className="spine-recorder-timeline-track" style={{ width: `${recorderTimelineTrackWidth}px` }}>
+                  {recorderTimelineSegments.map((segment) => <li
+                    key={segment.key}
+                    className={`spine-recorder-timeline-segment is-${segment.kind}`}
+                    style={{ width: `${segment.width}px` }}
+                    title={`${segment.label} · ${formatSeconds(segment.duration)}s · ${formatSeconds(segment.start)}–${formatSeconds(segment.end)}s`}
+                    aria-label={`${segment.label}, ${formatSeconds(segment.duration)} seconds, ${formatSeconds(segment.start)} to ${formatSeconds(segment.end)} seconds`}
+                    tabIndex={0}
+                  ><strong>{segment.label}</strong><small>{formatSeconds(segment.duration)}s</small></li>)}
+                </ol>
+              </div>
+            </div>
+            : <p className="spine-recorder-note">{t("spine.recorder.estimateLoading")}</p>}
+          <p className="spine-recorder-note">{t("spine.recorder.finalIdleNote")}</p>
+        </details>}
         <div className="spine-recorder-footer">
           {videoRecorderDialog.phase === "settings" && <div className="spine-recorder-actions">
             <button type="button" className="spine-recorder-secondary" onClick={() => setVideoRecorderDialog(null)}>{t("spine.recorder.cancel")}</button>

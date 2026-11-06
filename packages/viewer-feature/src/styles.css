@@ -748,6 +748,7 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-talk-list > label small { min-width: 0; overflow-wrap: anywhere; color: var(--muted); font-size: 9px; text-align: right; }
 .spine-recorder-talk-list > label.has-warning small { grid-column: 2 / -1; color: var(--amber, #d3a84a); text-align: left; }
 .spine-recorder-sequence-preview { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: color-mix(in srgb, var(--surface-alt) 46%, transparent); }
+.spine-recorder-sequence-preview.is-docked { flex: none; margin-top: 12px; }
 .spine-recorder-sequence-preview > summary { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; color: var(--text); cursor: pointer; font-size: 10px; font-weight: 850; list-style: none; }
 .spine-recorder-sequence-preview > summary::-webkit-details-marker { display: none; }
 .spine-recorder-sequence-preview > summary::after { flex: none; color: var(--cyan); content: "＋"; font-size: 13px; }
