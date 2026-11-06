@@ -3299,6 +3299,57 @@ export function Spine() {
         : null
     : null;
   const recorderEstimateFrames = recorderEstimate ? videoRecordingFrameCount(recorderEstimate.totalDuration, recorderSettings.frameRate) : 0;
+  const recorderTimelineSegments = (() => {
+    const segments = recorderEstimate?.segments ?? [];
+    if (segments.length === 0) return [];
+    const pixelsPerSecond = Math.max(14, Math.min(36, 640 / Math.max(0.01, recorderEstimate?.totalDuration ?? 0)));
+    let elapsed = 0;
+    let left = 0;
+    return segments.map((segment, index) => {
+      const label = segment.kind === "opening" ? t("spine.recorder.segment.opening")
+        : segment.kind === "initial-idle" ? t("spine.recorder.segment.initialIdle")
+          : segment.kind === "between-idle" ? t("spine.recorder.segment.betweenIdle")
+            : segment.kind === "talk" ? t("spine.recorder.segment.talk", { n: segment.talkNumber ?? index, total: segment.talkCount ?? 0 })
+              : segment.kind === "final-idle" ? t("spine.recorder.segment.finalIdle")
+                : t("spine.recorder.idleLoops");
+      const duration = Math.max(0, Number.isFinite(segment.duration) ? segment.duration : 0);
+      const width = Math.max(96, duration * pixelsPerSecond);
+      const start = elapsed;
+      const end = start + duration;
+      const startX = left;
+      elapsed = end;
+      left += width + 4;
+      return {
+        key: `${segment.kind}:${segment.sequenceId ?? "idle"}:${index}`,
+        kind: segment.kind === "opening" ? "opening" : segment.kind === "talk" ? "talk" : "idle",
+        label,
+        duration,
+        start,
+        end,
+        startX,
+        width,
+      };
+    });
+  })();
+  const recorderTimelineTrackWidth = recorderTimelineSegments.reduce((width, segment) => width + segment.width, 0)
+    + Math.max(0, recorderTimelineSegments.length - 1) * 4;
+  const recorderTimelineTickStep = recorderEstimate && recorderEstimate.totalDuration <= 12
+    ? 2
+    : recorderEstimate && recorderEstimate.totalDuration <= 36
+      ? 5
+      : Math.max(5, Math.ceil((recorderEstimate?.totalDuration ?? 0) / 8 / 5) * 5);
+  const recorderTimelineTicks = (() => {
+    const totalDuration = recorderEstimate?.totalDuration ?? 0;
+    if (recorderTimelineSegments.length === 0) return [];
+    const times = [0];
+    for (let time = recorderTimelineTickStep; time < totalDuration; time += recorderTimelineTickStep) times.push(time);
+    if (totalDuration > 0) times.push(totalDuration);
+    return times.map((time) => {
+      const segment = recorderTimelineSegments.find((item) => time <= item.end) ?? recorderTimelineSegments[recorderTimelineSegments.length - 1]!;
+      const fraction = segment.duration > 0 ? Math.max(0, Math.min(1, (time - segment.start) / segment.duration)) : 0;
+      return { time, left: segment.startX + segment.width * fraction };
+    });
+  })();
   const recorderUsesFfmpeg = isDesktopHost() && desktopFfmpegFormats.includes(recorderSettings.format);
   const activeRecordingSegment = activeExportRun?.plan?.segments?.[activeExportRun.segmentIndex];
   const recordingCueTimelines = useMemo(() => {
@@ -3944,23 +3995,35 @@ export function Spine() {
                     })}
                   </fieldset>
                   {selectedMissingTalks.length > 0 && <p className="spine-recorder-error" role="alert">{selectedMissingTalks.map((talk) => `${talk.sequenceId}: ${talk.missingReason}`).join(" · ")}</p>}
-                  <details className="spine-recorder-sequence-preview">
+                  <details className="spine-recorder-sequence-preview" open>
                     <summary>
                       <span>{t("spine.recorder.sequencePreview")}</span>
                       <small>{recorderEstimate?.segments?.length
                         ? `${t("spine.recorder.segmentCount", { count: recorderEstimate.segments.length })} · ${formatSeconds(recorderEstimate.totalDuration)}s`
                         : t("spine.recorder.estimateLoading")}</small>
                     </summary>
-                    {recorderEstimate?.segments?.length
-                      ? <ol>{recorderEstimate.segments.map((segment, index) => {
-                        const label = segment.kind === "opening" ? t("spine.recorder.segment.opening")
-                          : segment.kind === "initial-idle" ? t("spine.recorder.segment.initialIdle")
-                            : segment.kind === "between-idle" ? t("spine.recorder.segment.betweenIdle")
-                              : segment.kind === "talk" ? t("spine.recorder.segment.talk", { n: segment.talkNumber ?? index, total: segment.talkCount ?? 0 })
-                                : segment.kind === "final-idle" ? t("spine.recorder.segment.finalIdle")
-                                  : t("spine.recorder.idleLoops");
-                        return <li key={`${segment.kind}:${segment.sequenceId ?? "idle"}:${index}`}><span>{label}</span><small>{formatSeconds(segment.duration)}s</small></li>;
-                      })}</ol>
+                    {recorderTimelineSegments.length > 0
+                      ? <div className="spine-recorder-timeline-scroll" role="region" aria-label={t("spine.recorder.sequencePreview")} tabIndex={0}>
+                        <div className="spine-recorder-timeline-canvas" style={{ width: `${recorderTimelineTrackWidth + 20}px` }}>
+                          <div className="spine-recorder-timeline-ruler" style={{ width: `${recorderTimelineTrackWidth}px` }} aria-hidden="true">
+                            {recorderTimelineTicks.map((tick, index) => <span
+                              key={tick.time}
+                              className={`spine-recorder-timeline-tick${index === 0 ? " is-first" : index === recorderTimelineTicks.length - 1 ? " is-last" : ""}`}
+                              style={{ left: `${tick.left}px` }}
+                            ><i /><small>{formatSeconds(tick.time)}s</small></span>)}
+                          </div>
+                          <ol className="spine-recorder-timeline-track" style={{ width: `${recorderTimelineTrackWidth}px` }}>
+                            {recorderTimelineSegments.map((segment) => <li
+                              key={segment.key}
+                              className={`spine-recorder-timeline-segment is-${segment.kind}`}
+                              style={{ width: `${segment.width}px` }}
+                              title={`${segment.label} · ${formatSeconds(segment.duration)}s · ${formatSeconds(segment.start)}–${formatSeconds(segment.end)}s`}
+                              aria-label={`${segment.label}, ${formatSeconds(segment.duration)} seconds, ${formatSeconds(segment.start)} to ${formatSeconds(segment.end)} seconds`}
+                              tabIndex={0}
+                            ><strong>{segment.label}</strong><small>{formatSeconds(segment.duration)}s</small></li>)}
+                          </ol>
+                        </div>
+                      </div>
                       : <p className="spine-recorder-note">{t("spine.recorder.estimateLoading")}</p>}
                     <p className="spine-recorder-note">{t("spine.recorder.finalIdleNote")}</p>
                   </details>
