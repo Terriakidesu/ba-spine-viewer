@@ -377,6 +377,12 @@ export function interactionBounds(skeleton: Skeleton): SceneBounds | null {
 
 export type InteractionHitKind = "pat" | "pinch" | "touch";
 
+export interface InteractionHitTarget {
+  kind: InteractionHitKind;
+  /** Present when the point was resolved to a particular saved Editor region. */
+  interactionId?: string;
+}
+
 export interface InteractionZone {
   x: number;
   y: number;
@@ -504,8 +510,28 @@ function inZone(zone: InteractionZone, x: number, y: number): boolean {
   return zoneDistance(zone, x, y) <= 1;
 }
 
-/** Resolve shared edges once, using only actions the loaded character supports. */
+function authoredRegionAtPoint(
+  skeleton: Skeleton,
+  x: number,
+  y: number,
+  kinds: InteractionHitKind[],
+  regions: SpineAuthoredRegion[],
+): SpineAuthoredRegion | null {
+  const supportedKinds = new Set(kinds);
+  // Match the Editor overlay's stacking order: the last enabled region drawn wins.
+  for (let index = regions.length - 1; index >= 0; index -= 1) {
+    const region = regions[index]!;
+    if (!supportedKinds.has(region.kind)) continue;
+    const zone = authoredZone(skeleton, region);
+    if (zone && inZone(zone, x, y)) return region;
+  }
+  return null;
+}
+
+/** Use Editor stack order for authored region hits, then retain nearest-zone legacy fallback. */
 export function interactionKindAtPoint(skeleton: Skeleton, x: number, y: number, kinds: InteractionHitKind[], regions: SpineAuthoredRegion[] = []): InteractionHitKind | null {
+  const authored = authoredRegionAtPoint(skeleton, x, y, kinds, regions);
+  if (authored) return authored.kind;
   let closest: InteractionHitKind | null = null;
   let bestDistance = Infinity;
   for (const kind of kinds) {
@@ -518,6 +544,14 @@ export function interactionKindAtPoint(skeleton: Skeleton, x: number, y: number,
     }
   }
   return closest;
+}
+
+/** Resolve an authored region to its individual interaction, falling back to legacy hit zones. */
+export function interactionTargetAtPoint(skeleton: Skeleton, x: number, y: number, kinds: InteractionHitKind[], regions: SpineAuthoredRegion[] = []): InteractionHitTarget | null {
+  const authored = authoredRegionAtPoint(skeleton, x, y, kinds, regions);
+  if (authored) return { kind: authored.kind, interactionId: authored.interactionId };
+  const kind = interactionKindAtPoint(skeleton, x, y, kinds, regions);
+  return kind ? { kind } : null;
 }
 
 /** Test a world-space pointer against the authored character attachments or a named interaction area. */

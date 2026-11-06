@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BlendMode, BoneData, Physics, RegionAttachment, Skeleton, SkeletonData, SlotData, Vector2 } from "@esotericsoftware/spine-core";
-import { authoredViewport, cameraPositionForZoomAnchor, fitScene, interactionBounds, interactionHit, interactionKindAtPoint, sceneBounds } from "./spineCamera";
+import { authoredViewport, cameraPositionForZoomAnchor, fitScene, interactionBounds, interactionHit, interactionKindAtPoint, interactionTargetAtPoint, sceneBounds } from "./spineCamera";
 import { SpineRenderer } from "./spineRuntime";
 
 function scene() {
@@ -400,7 +400,21 @@ describe("Spine scene framing", () => {
     const regions = [{
       id: "saved-cheek",
       kind: "pinch" as const,
+      interactionId: "pinch-first",
       name: "Saved cheek",
+      enabled: true,
+      shape: "ellipse" as const,
+      anchorBone: "root/PC/cheek_01",
+      offsetX: 20,
+      offsetY: 10,
+      radiusX: 30,
+      radiusY: 20,
+      rotation: 25,
+    }, {
+      id: "saved-cheek-overlap",
+      kind: "pinch" as const,
+      interactionId: "pinch-second",
+      name: "Overlapping saved cheek",
       enabled: true,
       shape: "ellipse" as const,
       anchorBone: "root/PC/cheek_01",
@@ -412,6 +426,7 @@ describe("Spine scene framing", () => {
     }];
     const center = skeleton.findBone("cheek_01")!.localToWorld(new Vector2(20, 10));
     expect(interactionKindAtPoint(skeleton, center.x, center.y, ["pinch"], regions)).toBe("pinch");
+    expect(interactionTargetAtPoint(skeleton, center.x, center.y, ["pinch"], regions)).toEqual({ kind: "pinch", interactionId: "pinch-second" });
     expect(interactionKindAtPoint(skeleton, -150, 300, ["pinch"], regions)).toBeNull();
   });
 

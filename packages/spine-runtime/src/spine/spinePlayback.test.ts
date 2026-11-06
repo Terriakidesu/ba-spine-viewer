@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Animation, AnimationState, AnimationStateData, BoneData, Event, EventData, EventTimeline, Skeleton, SkeletonData, TranslateTimeline } from "@esotericsoftware/spine-core";
 import { defaultSpineAnimation, findIdleAnimation, findIntroAnimation, INTRO_ANIMATION, SpineRenderer, talkEventTimes } from "./spineRuntime";
+import { normalizeSpineInteractionProject } from "./spineInteraction";
 
 test("authored talks sample both moving body and face while preserving interaction tracks", () => {
   const data = new SkeletonData();
@@ -456,23 +457,41 @@ describe("Spine restart playback", () => {
     expect(target.x).toBeCloseTo(30, 1);
   });
 
-  test("runs touch start, follow, release, then returns to idle", () => {
+  test("plays the selected authored touch interaction through start, follow, and release", () => {
     const data = new SkeletonData();
     data.bones.push(new BoneData(0, "root", null));
     data.animations.push(
       new Animation("Touch_01_M", [], 0.5),
       new Animation("Touch_02_M", [], 1),
       new Animation("TouchEnd_01_M", [], 0.25),
+      new Animation("Touch2_01_M", [], 0.5),
+      new Animation("Touch2_02_M", [], 1),
+      new Animation("Touch2End_01_M", [], 0.25),
+      new Animation("Touch2_01_A", [], 0.5),
+      new Animation("Touch2_02_A", [], 1),
+      new Animation("Touch2End_01_A", [], 0.25),
     );
     const skeleton = new Skeleton(data);
     const state = new AnimationState(new AnimationStateData(data));
-    state.setAnimation(3, "Touch_01_M", false);
+    state.setAnimation(3, "Touch2_01_M", false);
+    state.setAnimation(4, "Touch2_01_A", false);
     state.update(0.5);
     state.apply(skeleton);
+    const animations = data.animations.map((animation) => animation.name);
+    const project = normalizeSpineInteractionProject({
+      schemaVersion: 1,
+      assetDirectory: "Airi_home",
+      interactions: [
+        { id: "touch-first", name: "Touch first", startAnimation: "Touch_01_M", followAnimation: "Touch_02_M", endAnimation: "TouchEnd_01_M", regions: [] },
+        { id: "touch-second", name: "Touch second", startAnimation: "Touch2_01_M", followAnimation: "Touch2_02_M", endAnimation: "Touch2End_01_M", faceStartAnimation: "Touch2_01_A", faceFollowAnimation: "Touch2_02_A", faceEndAnimation: "Touch2End_01_A", regions: [] },
+      ],
+    });
     const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
       bundle: {
         state,
         skeleton,
+        meta: { animations },
+        project,
         interaction: {
           touch: {
             start: { main: "Touch_01_M", face: null },
@@ -482,20 +501,23 @@ describe("Spine restart playback", () => {
         },
       },
       interactionState: "touchStart",
-      interactionTrackName: "Touch_01_M",
+      interactionTrackName: "Touch2_01_M",
       interactionPointerHeld: true,
-      interactionPressedKind: "touch",
+      interactionPressedTarget: { kind: "touch", interactionId: "touch-second" },
+      activeGestureInteractionId: "touch-second",
       interactionFollowWorld: null,
     }) as any;
 
     renderer.finishInteractionState();
-    expect(state.getCurrent(3)?.animation?.name).toBe("Touch_02_M");
+    expect(state.getCurrent(3)?.animation?.name).toBe("Touch2_02_M");
+    expect(state.getCurrent(4)?.animation?.name).toBe("Touch2_02_A");
     expect(state.getCurrent(3)?.loop).toBe(true);
 
     renderer.interactionPointerHeld = false;
-    renderer.interactionPressedKind = null;
+    renderer.interactionPressedTarget = null;
     renderer.endGesture();
-    expect(state.getCurrent(3)?.animation?.name).toBe("TouchEnd_01_M");
+    expect(state.getCurrent(3)?.animation?.name).toBe("Touch2End_01_M");
+    expect(state.getCurrent(4)?.animation?.name).toBe("Touch2End_01_A");
 
     state.update(0.25);
     state.apply(skeleton);

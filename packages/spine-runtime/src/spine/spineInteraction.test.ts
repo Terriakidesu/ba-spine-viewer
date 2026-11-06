@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Animation, AnimationState, AnimationStateData, BoneData, Skeleton, SkeletonData } from "@esotericsoftware/spine-core";
-import { authoredRegions, DEFAULT_TALK_MIX_DURATION, findInteractionProfile, interactionPhaseAfterStart, interactionPressReady, INTERACTION_PHASE_MIX, normalizeSpineInteractionProject, profileFromProject, setInteractionTrack } from "./spineInteraction";
+import { authoredInteractionAction, authoredRegions, DEFAULT_TALK_MIX_DURATION, findInteractionProfile, interactionPhaseAfterStart, interactionPressReady, INTERACTION_PHASE_MIX, normalizeSpineInteractionProject, profileFromProject, setInteractionTrack } from "./spineInteraction";
 
 describe("Spine lobby interaction data", () => {
   test("pairs the game start, follow and release tracks", () => {
@@ -79,6 +79,50 @@ describe("Spine lobby interaction data", () => {
       follow: { main: "Pat_02_M", face: null },
       release: { main: "CustomPatEnd_M", face: null },
     });
+  });
+
+  test("resolves distinct authored animation phases for multiple interactions of the same kind", () => {
+    const animations = [
+      "Touch_Left_Start", "Touch_Left_Follow", "Touch_Left_End", "Touch_Left_Face_Start", "Touch_Left_Face_Follow", "Touch_Left_Face_End",
+      "Touch_Right_Start", "Touch_Right_Follow", "Touch_Right_End", "Touch_Right_Face_Start", "Touch_Right_Face_Follow", "Touch_Right_Face_End",
+    ];
+    const project = normalizeSpineInteractionProject({
+      schemaVersion: 2,
+      assetDirectory: "Airi_home",
+      interactions: [
+        {
+          id: "touch-left",
+          name: "Touch left",
+          startAnimation: "Touch_Left_Start",
+          followAnimation: "Touch_Left_Follow",
+          endAnimation: "Touch_Left_End",
+          faceStartAnimation: "Touch_Left_Face_Start",
+          faceFollowAnimation: "Touch_Left_Face_Follow",
+          faceEndAnimation: "Touch_Left_Face_End",
+          regions: [{ id: "left", name: "Left", anchorBone: "root/LeftHand" }],
+        },
+        {
+          id: "touch-right",
+          name: "Touch right",
+          startAnimation: "Touch_Right_Start",
+          followAnimation: "Touch_Right_Follow",
+          endAnimation: "Touch_Right_End",
+          faceStartAnimation: "Touch_Right_Face_Start",
+          faceFollowAnimation: "Touch_Right_Face_Follow",
+          faceEndAnimation: "Touch_Right_Face_End",
+          regions: [{ id: "right", name: "Right", anchorBone: "root/RightHand" }],
+        },
+      ],
+    })!;
+
+    expect(authoredInteractionAction(animations, project.interactions[0]!)?.start).toEqual({ main: "Touch_Left_Start", face: "Touch_Left_Face_Start" });
+    expect(authoredInteractionAction(animations, project.interactions[1]!)?.follow).toEqual({ main: "Touch_Right_Follow", face: "Touch_Right_Face_Follow" });
+    expect(authoredInteractionAction(animations, project.interactions[1]!)?.release).toEqual({ main: "Touch_Right_End", face: "Touch_Right_Face_End" });
+    expect(profileFromProject(animations, project).touch?.start.main).toBe("Touch_Left_Start");
+    expect(authoredRegions(project).map(({ interactionId, id }) => [interactionId, id])).toEqual([
+      ["touch-left", "left"],
+      ["touch-right", "right"],
+    ]);
   });
 
   test("crossfades when an interaction changes phase", () => {

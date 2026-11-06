@@ -202,6 +202,7 @@ export function normalizeSpineInteractionProject(value: unknown, directory?: str
 
 export interface SpineAuthoredRegion extends SpineInteractionRegion {
   kind: SpineInteractionKind;
+  interactionId: string;
 }
 
 export interface SpineInteractionProfile {
@@ -445,15 +446,31 @@ function authoredAction(animations: string[], interaction: SpineAuthoredInteract
   };
 }
 
+/** Resolve the saved phases for one interaction, falling back to detected tracks when incomplete. */
+export function authoredInteractionAction(animations: string[], interaction: SpineAuthoredInteraction): SpineInteractionAction | null {
+  if (!interaction.enabled) return null;
+  const kind = interactionKind(interaction);
+  if (!kind) return null;
+  return authoredAction(animations, interaction) ?? findInteractionProfile(animations)[kind];
+}
+
 /** Apply saved editor phases without losing automatic look/talk detection. */
 export function profileFromProject(animations: string[], project?: SpineInteractionProject | null): SpineInteractionProfile {
   const detected = findInteractionProfile(animations);
   if (!project) return detected;
   const overrides = new Map<SpineInteractionKind, SpineInteractionAction | null>();
-  for (const item of project.interactions ?? []) {
-    const kind = interactionKind(item);
-    if (!kind || overrides.has(kind)) continue;
-    overrides.set(kind, item.enabled ? authoredAction(animations, item) ?? detected[kind] : null);
+  for (const kind of ["pat", "pinch", "touch"] as const) {
+    const candidates = project.interactions.filter((item) => interactionKind(item) === kind);
+    if (candidates.length === 0) continue;
+    const enabled = candidates.filter((item) => item.enabled);
+    if (enabled.length === 0) {
+      overrides.set(kind, null);
+      continue;
+    }
+    const authored = enabled
+      .map((item) => authoredAction(animations, item))
+      .find((action): action is SpineInteractionAction => action !== null);
+    overrides.set(kind, authored ?? detected[kind]);
   }
   return {
     ...detected,
@@ -468,7 +485,7 @@ export function authoredRegions(project?: SpineInteractionProject | null): Spine
   return project.interactions.flatMap((interaction) => {
     const kind = interactionKind(interaction);
     return kind && interaction.enabled
-      ? interaction.regions.filter((region) => region.enabled).map((region) => ({ ...region, kind }))
+      ? interaction.regions.filter((region) => region.enabled).map((region) => ({ ...region, kind, interactionId: interaction.id }))
       : [];
   });
 }

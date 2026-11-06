@@ -21,11 +21,11 @@ import {
   SceneRenderer,
   Vector3,
 } from "@esotericsoftware/spine-webgl";
-import { authoredViewport, cameraPositionForZoomAnchor, fitScene, interactionKindAtPoint, interactionZonesForDisplay, sceneBounds, type InteractionHitKind, type SceneBounds } from "./spineCamera";
+import { authoredViewport, cameraPositionForZoomAnchor, fitScene, interactionTargetAtPoint, interactionZonesForDisplay, sceneBounds, type InteractionHitKind, type InteractionHitTarget, type SceneBounds } from "./spineCamera";
 import { findIdleAnimation } from "./spineAnimation";
 import { spineCanvasBackingSize } from "./spineCanvasResolution";
 import { DEFAULT_EFFECTS_STRENGTH, drawWithEffectsStrength } from "./spineEffects";
-import { authoredInteraction, authoredRegions, clearInteractionTrack, DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_TALK_MIX_DURATION, interactionPhaseAfterStart, interactionPressReady, normalizeAnimationMixDuration, profileFromProject, queueInteractionFadeOut, setInteractionTrack, type SpineAnimationPair, type SpineInteractionAction, type SpineInteractionProfile, type SpineInteractionProject, type SpineAuthoredInteraction, type SpineAuthoredRegion } from "./spineInteraction";
+import { authoredInteraction, authoredInteractionAction, authoredRegions, clearInteractionTrack, DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_TALK_MIX_DURATION, interactionKind, interactionPhaseAfterStart, interactionPressReady, normalizeAnimationMixDuration, profileFromProject, queueInteractionFadeOut, setInteractionTrack, type SpineAnimationPair, type SpineInteractionAction, type SpineInteractionProfile, type SpineInteractionProject, type SpineAuthoredInteraction, type SpineAuthoredRegion } from "./spineInteraction";
 import {
   applyInteractionMotion,
   applyInteractionMotionReturn,
@@ -640,9 +640,10 @@ export class SpineRenderer {
   private interactionPointer: { x: number; y: number } | null = null;
   private interactionPointerId: number | null = null;
   private interactionPointerHeld = false;
-  private interactionPressedKind: InteractionHitKind | null = null;
+  private interactionPressedTarget: InteractionHitTarget | null = null;
   private interactionPressedTrigger: SpineAuthoredInteraction["trigger"] = "hold";
   private interactionPressOrigin: { x: number; y: number } | null = null;
+  private activeGestureInteractionId: string | null = null;
   private pointerInside = false;
   private interactionState: SpineInteractionState = "idle";
   private interactionTrackName: string | null = null;
@@ -695,6 +696,8 @@ export class SpineRenderer {
   async load(files: SpineFiles, directoryName: string, project?: SpineInteractionProject | null) {
     const serial = ++this.loadSerial;
     this.disposeBundle();
+    this.interactionPressedTarget = null;
+    this.activeGestureInteractionId = null;
     this.fitCameraPose = null;
     this.pendingCameraPose = null;
     this.callbacks.onMeta(null);
@@ -753,9 +756,10 @@ export class SpineRenderer {
     this.interactionPointer = null;
     this.interactionPointerId = null;
     this.interactionPointerHeld = false;
-    this.interactionPressedKind = null;
+    this.interactionPressedTarget = null;
     this.interactionPressedTrigger = "hold";
     this.interactionPressOrigin = null;
+    this.activeGestureInteractionId = null;
     this.pointerInside = false;
     this.interactionState = "idle";
     this.interactionTrackName = null;
@@ -919,9 +923,10 @@ export class SpineRenderer {
     this.interactionPointer = null;
     this.interactionPointerId = null;
     this.interactionPointerHeld = false;
-    this.interactionPressedKind = null;
+    this.interactionPressedTarget = null;
     this.interactionPressedTrigger = "hold";
     this.interactionPressOrigin = null;
+    this.activeGestureInteractionId = null;
     this.pointerInside = false;
     this.interactionState = "idle";
     this.interactionTrackName = null;
@@ -1106,9 +1111,10 @@ export class SpineRenderer {
     this.talkFadeQueued = false;
     this.eyeFollowHold = 0;
     this.interactionFollowWorld = null;
-    this.interactionPressedKind = null;
+    this.interactionPressedTarget = null;
     this.interactionPressedTrigger = "hold";
     this.interactionPressOrigin = null;
+    this.activeGestureInteractionId = null;
     this.interactionReady = this.skipIntro || !(bundle.meta.introAnimation && bundle.meta.idleAnimation);
     const selection = !this.skipIntro && bundle.meta.introAnimation && bundle.meta.idleAnimation
       ? INTRO_ANIMATION
@@ -1209,8 +1215,18 @@ export class SpineRenderer {
     return null;
   }
 
-  private gestureAction(kind: GestureKind): SpineInteractionAction | null {
-    const interaction = this.bundle?.interaction;
+  private gestureInteraction(kind: GestureKind, interactionId?: string | null): SpineAuthoredInteraction | null {
+    const project = this.bundle?.project;
+    if (!interactionId) return authoredInteraction(project, kind);
+    return project?.interactions.find((item) => item.enabled && item.id === interactionId && interactionKind(item) === kind) ?? null;
+  }
+
+  private gestureAction(kind: GestureKind, interactionId: string | null = this.activeGestureInteractionId): SpineInteractionAction | null {
+    const bundle = this.bundle;
+    if (!bundle) return null;
+    const authored = this.gestureInteraction(kind, interactionId);
+    if (authored) return authoredInteractionAction(bundle.meta.animations, authored);
+    const interaction = bundle.interaction;
     return kind === "pat" ? interaction?.pat ?? null : kind === "pinch" ? interaction?.pinch ?? null : interaction?.touch ?? null;
   }
 
@@ -1222,9 +1238,9 @@ export class SpineRenderer {
     if (release) {
       this.interactionState = `${kind}Release` as `${GestureKind}Release`;
       this.interactionTrackName = release.main;
-      this.playOverlayPair(release, 3, 4, false, true, this.interactionMixDuration(kind, "release"));
+      this.playOverlayPair(release, 3, 4, false, true, this.interactionMixDuration(kind, "release", this.activeGestureInteractionId));
     } else {
-      const mix = this.interactionMixDuration(kind, "release");
+      const mix = this.interactionMixDuration(kind, "release", this.activeGestureInteractionId);
       this.clearOverlay(3, true, mix);
       this.clearOverlay(4, true, mix);
       this.interactionState = `${kind}Release` as `${GestureKind}Release`;
@@ -1232,10 +1248,16 @@ export class SpineRenderer {
     }
   }
 
-  private beginGesture(state: GestureKind, action: SpineInteractionAction | null): boolean {
+  private beginGesture(target: InteractionHitTarget): boolean {
+    const state = target.kind as GestureKind;
+    const authored = this.gestureInteraction(state, target.interactionId);
+    const action = authored
+      ? authoredInteractionAction(this.bundle?.meta.animations ?? [], authored)
+      : this.gestureAction(state, null);
     if (!action || this.interactionState !== "idle") return false;
     const bundle = this.bundle;
     if (!bundle) return false;
+    this.activeGestureInteractionId = authored?.id ?? null;
     this.interactionState = `${state}Start` as `${GestureKind}Start`;
     this.interactionTrackName = action.start.main;
     this.eyeFollowHold = 0;
@@ -1243,7 +1265,6 @@ export class SpineRenderer {
     const pointer = this.pointerWorld();
     this.touchPointerOrigin = pointer ? { x: pointer.x, y: pointer.y } : null;
     this.touchFollowOffset = null;
-    const authored = authoredInteraction(bundle.project, state);
     const motion: SpineMotionInteraction = authored ?? {
       startAnimation: action.start.main,
       followTargetBone: null,
@@ -1255,28 +1276,16 @@ export class SpineRenderer {
     beginInteractionMotion(this.motionState(), motion, state, this.touchPointerOrigin);
     this.clearOverlay(5);
     this.clearOverlay(6);
-    this.playOverlayPair(action.start, 3, 4, false, false, this.interactionMixDuration(state, "start"));
+    this.playOverlayPair(action.start, 3, 4, false, false, this.interactionMixDuration(state, "start", this.activeGestureInteractionId));
     return true;
   }
 
-  private interactionMixDuration(kind: GestureKind, phase: "start" | "follow" | "release"): number {
-    const interaction = authoredInteraction(this.bundle?.project, kind);
+  private interactionMixDuration(kind: GestureKind, phase: "start" | "follow" | "release", interactionId: string | null = this.activeGestureInteractionId): number {
+    const interaction = this.gestureInteraction(kind, interactionId);
     const value = phase === "start" ? interaction?.startMixDuration
       : phase === "follow" ? interaction?.followMixDuration
         : interaction?.releaseMixDuration;
     return normalizeAnimationMixDuration(value, DEFAULT_INTERACTION_PHASE_MIX);
-  }
-
-  private beginPat(): boolean {
-    return this.beginGesture("pat", this.bundle?.interaction.pat ?? null);
-  }
-
-  private beginPinch(): boolean {
-    return this.beginGesture("pinch", this.bundle?.interaction.pinch ?? null);
-  }
-
-  private beginTouch(): boolean {
-    return this.beginGesture("touch", this.bundle?.interaction.touch ?? null);
   }
 
   private endGesture() {
@@ -1302,6 +1311,7 @@ export class SpineRenderer {
       if (!interactionMotionReturnComplete(this.motionState())) return;
       this.interactionState = "idle";
       this.interactionTrackName = null;
+      this.activeGestureInteractionId = null;
       this.activeTalkIndex = -1;
       this.talkEventIndex = 0;
       this.talkFadeQueued = false;
@@ -1314,12 +1324,14 @@ export class SpineRenderer {
       if (!this.interactionAnimationFinished(3)) return;
       if (interactionPhaseAfterStart(this.interactionPressedTrigger, this.interactionPointerHeld) === "releasing") {
         this.playGestureRelease(kind);
-      } else if (this.interactionPointerHeld && this.interactionPressedKind === kind) {
+      } else if (this.interactionPointerHeld
+        && this.interactionPressedTarget?.kind === kind
+        && (!this.interactionPressedTarget.interactionId || this.interactionPressedTarget.interactionId === this.activeGestureInteractionId)) {
         const action = this.gestureAction(kind);
         if (!action) return;
         this.interactionState = kind;
         this.interactionTrackName = action.follow.main;
-        this.playOverlayPair(action.follow, 3, 4, true, false, this.interactionMixDuration(kind, "follow"));
+        this.playOverlayPair(action.follow, 3, 4, true, false, this.interactionMixDuration(kind, "follow", this.activeGestureInteractionId));
       } else {
         this.playGestureRelease(kind);
       }
@@ -1339,6 +1351,7 @@ export class SpineRenderer {
       && (bundle.state.getCurrent(5) || bundle.state.getCurrent(6))) return;
     this.interactionState = "idle";
     this.interactionTrackName = null;
+    this.activeGestureInteractionId = null;
     this.activeTalkIndex = -1;
     this.talkEventIndex = 0;
     this.talkFadeQueued = false;
@@ -1364,6 +1377,10 @@ export class SpineRenderer {
       this.interactionState = "idle";
       this.interactionTrackName = null;
       this.interactionReady = false;
+      this.interactionPressedTarget = null;
+      this.interactionPressedTrigger = "hold";
+      this.interactionPressOrigin = null;
+      this.activeGestureInteractionId = null;
     }
     this.animationSelection = INTRO_ANIMATION;
     const { skeleton, state } = bundle;
@@ -1970,9 +1987,9 @@ export class SpineRenderer {
       this.pointerInside = true;
       this.updateInteractionPointer(event);
       this.interactionPressOrigin = this.interactionPointer ? { ...this.interactionPointer } : null;
-      this.interactionPressedKind = this.interactionKindAtEvent(event);
-      this.interactionPressedTrigger = this.interactionPressedKind
-        ? authoredInteraction(this.bundle?.project, this.interactionPressedKind)?.trigger ?? "hold"
+      this.interactionPressedTarget = this.interactionTargetAtEvent(event);
+      this.interactionPressedTrigger = this.interactionPressedTarget
+        ? this.gestureInteraction(this.interactionPressedTarget.kind, this.interactionPressedTarget.interactionId)?.trigger ?? "hold"
         : "hold";
       this.canvas.setPointerCapture(event.pointerId);
       if (this.interactionReady) this.beginPressedGesture();
@@ -2014,7 +2031,7 @@ export class SpineRenderer {
       this.interactionPointer = null;
       this.interactionPointerHeld = false;
       this.interactionPointerId = null;
-      this.interactionPressedKind = null;
+      this.interactionPressedTarget = null;
       this.interactionPressedTrigger = "hold";
       this.interactionPressOrigin = null;
       this.endGesture();
@@ -2059,7 +2076,7 @@ export class SpineRenderer {
     }
   }
 
-  private interactionKindAtEvent(event: PointerEvent): InteractionHitKind | null {
+  private interactionTargetAtEvent(event: PointerEvent): InteractionHitTarget | null {
     const bundle = this.bundle;
     if (!bundle) return null;
     const point = this.pointerWorldFromEvent(event);
@@ -2068,18 +2085,18 @@ export class SpineRenderer {
     if (bundle.interaction.pinch) kinds.push("pinch");
     if (bundle.interaction.touch) kinds.push("touch");
     if (bundle.interaction.pat) kinds.push("pat");
-    return interactionKindAtPoint(bundle.skeleton, point.x, point.y, kinds, bundle.authoredRegions);
+    return interactionTargetAtPoint(bundle.skeleton, point.x, point.y, kinds, bundle.authoredRegions);
   }
 
   private beginPressedGesture() {
     if (this.interactionState !== "idle") return;
+    const target = this.interactionPressedTarget;
+    if (!target) return;
     const origin = this.interactionPressOrigin;
     const pointer = this.interactionPointer;
     const distance = origin && pointer ? Math.hypot(pointer.x - origin.x, pointer.y - origin.y) : 0;
     if (!interactionPressReady(this.interactionPressedTrigger, this.interactionPointerHeld, distance)) return;
-    if (this.interactionPressedKind === "pinch") this.beginPinch();
-    else if (this.interactionPressedKind === "touch") this.beginTouch();
-    else if (this.interactionPressedKind === "pat") this.beginPat();
+    this.beginGesture(target);
   }
 
   private pointerWorld(): Vector3 | null {
