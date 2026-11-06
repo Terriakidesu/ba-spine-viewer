@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   SpineRenderer,
   type SpineEditorFrame,
@@ -58,6 +58,8 @@ import { WaveformProfileRecorder } from "./waveformProfileDiagnostics";
 import type { AudioWaveformMeasurement } from "./AudioWaveform";
 import { DEFAULT_EDITOR_LAYOUT_PREFERENCES, EDITOR_LAYOUT_PREFERENCES_KEY, normalizeEditorLayoutPreferences, type WorkspaceLayoutPreset } from "./editorLayout";
 import { IconAlert, IconCheck, IconChevronDown, IconClose, IconEye, IconExpand, IconFile, IconFolder, IconHand, IconHelp, IconMenu, IconMessage, IconMore, IconPause, IconPlay, IconPlus, IconSave, IconSearch, IconSliders, IconSound, IconTarget } from "@ba-spine/app-ui/icons";
+import { AboutPage } from "@ba-spine/app-ui/AboutPage";
+import { useReleaseUpdates } from "@ba-spine/app-ui/releaseUpdates";
 
 declare const __EDITOR_WAVEFORM_PROFILE__: boolean;
 
@@ -406,6 +408,9 @@ export function Editor() {
   const [leftHidden, setLeftHidden] = useState(storedLayoutPreferences.leftHidden);
   const [rightHidden, setRightHidden] = useState(storedLayoutPreferences.rightHidden);
   const [help, setHelp] = useState(false);
+  const [aboutPage, setAboutPage] = useState(false);
+  const releaseUpdates = useReleaseUpdates(__APP_VERSION__);
+  const closeAboutPage = useCallback(() => setAboutPage(false), []);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const validationDetailsRef = useRef<HTMLDetailsElement>(null);
   const [workspace, setWorkspace] = useState<"interaction" | "timeline" | "camera">("interaction");
@@ -875,6 +880,10 @@ export function Editor() {
   editorKeydownRef.current = (event: KeyboardEvent) => {
     const key = event.key.toLowerCase();
     const modifier = event.ctrlKey || event.metaKey;
+    if (aboutPage) {
+      if (key === "escape") { event.preventDefault(); setAboutPage(false); }
+      return;
+    }
     if (isCommandPaletteShortcut(event)) { event.preventDefault(); setCommandPaletteOpen(true); return; }
     if (key === "escape" && commandPaletteOpen) { event.preventDefault(); setCommandPaletteOpen(false); return; }
     if (isTextEditingTarget(event.target)) return;
@@ -1887,12 +1896,14 @@ export function Editor() {
     { id: "add-region", title: "Add hit region", description: "Add a region to the selected interaction", group: "Edit", keywords: ["new", "target"], disabled: !selectedInteraction || !frame, run: addRegion },
     { id: "project-issues", title: "Show project checks", description: validationWarnings.length ? `${validationWarnings.length} items need review` : "No current validation warnings", group: "Project", keywords: ["issues", "warnings", "validation"], disabled: !assetLoaded, run: showProjectIssues },
     { id: "keyboard-help", title: "Show keyboard shortcuts", description: "Open editor shortcut help", group: "Help", keywords: ["shortcuts", "keys"], run: () => setHelp(true) },
+    { id: "about", title: "About BA Spine Editor", description: "View version, release notes, and update settings", group: "Help", keywords: ["version", "update", "release"], run: () => setAboutPage(true) },
   ];
 
   const companionStatusIsError = Boolean(companionStatus && /(failed|error|could not|did not|unavailable|issue)/i.test(companionStatus));
 
   return (
-    <div className={`editor-app${testing ? " is-testing" : ""}`}>
+    <>
+    <div className={`editor-app${testing ? " is-testing" : ""}`} inert={aboutPage}>
       <header className="editor-header">
         <div className="editor-brand">
           <span className="editor-kicker">BA SPINE SUITE · SPINE 4.2</span>
@@ -1951,6 +1962,9 @@ export function Editor() {
             <div className="editor-header-menu-popover editor-more-popover" role="group" aria-label="More editor actions">
               <button className="editor-header-menu-item" type="button" onClick={(event) => { closeHeaderMenu(event); setHelp((value) => !value); }}>
                 <IconHelp /><span><strong>Help & shortcuts</strong><small>View keyboard shortcuts</small></span>
+              </button>
+              <button className="editor-header-menu-item" type="button" onClick={(event) => { closeHeaderMenu(event); setAboutPage(true); }}>
+                <IconHelp /><span><strong>About BA Spine Editor</strong><small>Version and update information</small></span>
               </button>
             </div>
           </details>
@@ -2226,7 +2240,22 @@ export function Editor() {
       <footer className="editor-statusbar">
         <span className={error ? "editor-error" : ""}>{error ?? status}</span>
         <span>{directory ? `${displayName(directory)} · ${files?.size ?? 0} files` : "No asset loaded"} · {testing ? "TEST MODE" : workspace === "camera" ? "CAMERA" : workspace === "timeline" ? "TIMELINE" : "EDIT MODE"}</span>
+        <button className={`editor-version${releaseUpdates.state.status === "available" ? " is-update-available" : ""}`} type="button" aria-label={`About BA Spine Editor, version ${__APP_VERSION__}${releaseUpdates.state.status === "available" ? ", update available" : ""}`} title="About BA Spine Editor" onClick={() => setAboutPage(true)}>
+          v{__APP_VERSION__}{releaseUpdates.state.status === "available" && <i aria-hidden="true" />}
+        </button>
       </footer>
     </div>
+    {aboutPage && <AboutPage
+      appName="BA Spine Editor"
+      version={__APP_VERSION__}
+      update={releaseUpdates.state}
+      automaticChecks={releaseUpdates.automaticChecks}
+      onAutomaticChecksChange={releaseUpdates.setAutomaticChecks}
+      onCheckNow={releaseUpdates.checkNow}
+      onSkipLatest={releaseUpdates.skipLatest}
+      onShowSkipped={releaseUpdates.showSkipped}
+      onBack={closeAboutPage}
+    />}
+    </>
   );
 }

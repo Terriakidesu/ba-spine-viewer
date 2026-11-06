@@ -472,7 +472,10 @@ a { color: var(--cyan); }
 .spine-sidebar-toggle:hover { border-color: var(--cyan); color: var(--cyan); }
 .spine-sidebar-toggle svg { width: 14px; height: 14px; }
 .spine-page.is-native-fullscreen { position: fixed; z-index: 9999; inset: 0; width: 100vw; height: 100dvh; max-width: none; margin: 0; padding: 0; overflow: hidden; background: #09141e; }
-.spine-page.is-native-fullscreen > :not(.spine-recorder-background) { display: none; }
+.spine-app-version { position: fixed; z-index: 9; right: 10px; bottom: 7px; display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; border: 1px solid color-mix(in srgb, var(--line) 75%, transparent); border-radius: 4px; color: var(--muted); background: color-mix(in srgb, var(--surface) 88%, transparent); font: inherit; font-size: 9px; font-variant-numeric: tabular-nums; letter-spacing: .04em; cursor: pointer; user-select: none; }
+.spine-app-version:hover, .spine-app-version.is-update-available { border-color: var(--cyan); color: var(--cyan); }
+.spine-app-version i { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 3px color-mix(in srgb, var(--gold) 20%, transparent); }
+.spine-page.is-native-fullscreen > :not(.spine-recorder-background):not(.spine-app-version) { display: none; }
 .spine-page.is-native-fullscreen .spine-recorder-background > :not(.spine-layout) { display: none; }
 .spine-page.is-native-fullscreen .spine-layout { position: absolute; inset: 0; width: auto; height: auto; min-width: 0; min-height: 0; margin: 0; }
 .spine-layout.is-fullscreen { position: relative; width: 100vw; height: 100vh; box-sizing: border-box; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 0; margin: 0; padding: 0; overflow: hidden; background: #09141e; }

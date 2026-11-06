@@ -1,13 +1,18 @@
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
+const { version: appVersion } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string };
 
 export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
   base: "./",
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
   resolve: {
     alias: [
       { find: "@ba-spine/spine-runtime/ui", replacement: `${root}/packages/spine-runtime/src/spine` },

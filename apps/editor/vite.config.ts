@@ -1,8 +1,10 @@
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
+const { version: appVersion } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string };
 const waveformProfileEnabled = process.env.BA_SPINE_EDITOR_WAVEFORM_PROFILE === "1";
 
 export default defineConfig({
@@ -11,6 +13,7 @@ export default defineConfig({
   plugins: [react()],
   define: {
     __EDITOR_WAVEFORM_PROFILE__: JSON.stringify(waveformProfileEnabled),
+    __APP_VERSION__: JSON.stringify(appVersion),
   },
   resolve: {
     alias: [

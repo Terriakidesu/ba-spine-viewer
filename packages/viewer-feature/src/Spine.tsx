@@ -1,5 +1,7 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { IconChevronDown, IconChevronRight, IconChevronUp, IconClose, IconCompress, IconDot, IconExpand, IconEye, IconEyeOff, IconFolder, IconHand, IconHelp, IconMessage, IconPause, IconPlay, IconRotate, IconSearch, IconSliders, IconStar, IconSync, IconTarget, IconUsers } from "@ba-spine/app-ui/icons";
+import { AboutPage } from "@ba-spine/app-ui/AboutPage";
+import { useReleaseUpdates } from "@ba-spine/app-ui/releaseUpdates";
 import { LanguageSwitch } from "./components/LanguageSwitch";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { setLanguage, t, useLanguage, type LangKey } from "./i18n";
@@ -596,6 +598,9 @@ function loadingLabel(progress: SpineLoadProgress | null, folderLoading: boolean
 
 export function Spine() {
   const language = useLanguage();
+  const [aboutPage, setAboutPage] = useState(false);
+  const closeAboutPage = useCallback(() => setAboutPage(false), []);
+  const releaseUpdates = useReleaseUpdates(__APP_VERSION__);
   const [characterIndex, setCharacterIndex] = useState<CharacterIndex>(bundledCharacterIndex);
   const characterNames = useMemo(() => Object.keys(characterIndex.characters).sort((a, b) => a.localeCompare(b)), [characterIndex]);
   const firstCharacter = characterNames[0] ?? "";
@@ -3190,6 +3195,10 @@ export function Spine() {
     const onKey = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
       const target = event.target as HTMLElement | null;
+      if (aboutPage) {
+        if (key === "escape") { event.preventDefault(); setAboutPage(false); }
+        return;
+      }
       if (videoRecorderDialog) {
         if (key === "escape") {
           event.preventDefault();
@@ -3274,7 +3283,7 @@ export function Spine() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [cameraMode, compositionActive, compositionSequenceId, fullscreen, fullscreenClean, interactionMode, interactionReady, loop, meta, playing, selectedInteractionProject, showFullscreenControls, showOptions, speed, videoRecorderDialog, voiceLines.length]);
+  }, [aboutPage, cameraMode, compositionActive, compositionSequenceId, fullscreen, fullscreenClean, interactionMode, interactionReady, loop, meta, playing, selectedInteractionProject, showFullscreenControls, showOptions, speed, videoRecorderDialog, voiceLines.length]);
 
   const showAspectRatioControl = interactionMode === "interaction";
   const viewportCameraMode: SpineCameraMode = savedCameraForRecording ? "fit" : interactionMode === "free" ? "artwork" : "fit";
@@ -3549,7 +3558,8 @@ export function Spine() {
                 { label: t("spine.recorder.totalElapsed"), value: formatRecorderDuration(recorderWallElapsed) },
               ];
 
-  return <main className={`spine-page${isDesktopHost() && fullscreen ? " is-native-fullscreen" : ""}`}>
+  return <>
+  <main className={`spine-page${isDesktopHost() && fullscreen ? " is-native-fullscreen" : ""}`} inert={aboutPage}>
     <div className="spine-recorder-background" inert={Boolean(videoRecorderDialog)} aria-hidden={Boolean(videoRecorderDialog)}>
     <header className="spine-header">
       <div className="spine-brand">
@@ -3825,11 +3835,12 @@ export function Spine() {
               {interactionReady && (voiceLines.length > 0 || authoredTalkAutoplayAvailable) ? <button className={`spine-tool-button${talkAutoplay ? " is-active" : ""}`} type="button" onClick={toggleTalkAutoplay} aria-pressed={talkAutoplay} aria-label={t(talkAutoplay ? "spine.autoplayStop" : "spine.autoplayStart")} title={t(talkAutoplay ? "spine.autoplayStop" : "spine.autoplayStart")}><span>{talkAutoplay ? <IconPause /> : <IconPlay />}</span><span>{t("spine.autoplay")}</span></button> : null}
               {interactionMode === "interaction" && <button className="spine-tool-button spine-record-video-button" type="button" disabled={!meta || videoRecorderFormats.length === 0} onClick={openVideoRecorder} aria-label={t("spine.recorder.open")} title={t(videoRecorderFormats.length ? "spine.recorder.open" : "spine.recorder.unsupported")}><IconDot /><span>{t("spine.recorder.open")}</span></button>}
               <button className={`spine-tool-button${showOptions ? " is-active" : ""}`} type="button" aria-expanded={showOptions} aria-controls="spine-options" onClick={() => setShowOptions((shown) => !shown)}><IconSliders /><span>{t("spine.options")}</span></button>
-               <details className="spine-shortcut-help">
-                 <summary className="spine-tool-button" aria-label={t("spine.shortcuts")} title={t("spine.shortcuts")}><IconHelp /><span>{t("spine.shortcuts")}</span></summary>
-                 <div className="spine-shortcut-panel">{t("spine.shortcutsHint")}</div>
-               </details>
-               <button className="spine-tool-button spine-sidebar-toggle" type="button" aria-expanded={showSidebar} aria-controls="spine-sidebar" onClick={() => setShowSidebar((shown) => !shown)} title={t(showSidebar ? "spine.sidebar.hide" : "spine.sidebar.show")}><IconUsers /><span>{t(showSidebar ? "spine.sidebar.hide" : "spine.sidebar.show")}</span></button>
+                <details className="spine-shortcut-help">
+                  <summary className="spine-tool-button" aria-label={t("spine.shortcuts")} title={t("spine.shortcuts")}><IconHelp /><span>{t("spine.shortcuts")}</span></summary>
+                  <div className="spine-shortcut-panel">{t("spine.shortcutsHint")}</div>
+                </details>
+                <button className="spine-tool-button" type="button" onClick={() => { setShowOptions(false); setAboutPage(true); }} aria-label="About BA Spine Viewer" title="About BA Spine Viewer"><IconHelp /><span>About</span></button>
+                <button className="spine-tool-button spine-sidebar-toggle" type="button" aria-expanded={showSidebar} aria-controls="spine-sidebar" onClick={() => setShowSidebar((shown) => !shown)} title={t(showSidebar ? "spine.sidebar.hide" : "spine.sidebar.show")}><IconUsers /><span>{t(showSidebar ? "spine.sidebar.hide" : "spine.sidebar.show")}</span></button>
                {fullscreen && <button className="spine-tool-button spine-clean-mode-toggle" type="button" aria-pressed={fullscreenClean} onClick={fullscreenClean ? exitCleanFullscreen : enterCleanFullscreen} title={t(fullscreenClean ? "spine.cleanMode.exit" : "spine.cleanMode.enter")}><span>{fullscreenClean ? <IconEye /> : <IconEyeOff />}</span><span>{t("spine.cleanMode")}</span></button>}
                 {fullscreen && <button className="spine-tool-button spine-fullscreen-controls-toggle" type="button" aria-expanded={showFullscreenControls} onClick={showFullscreenControls ? hideFullscreenControls : revealFullscreenControls} title={t(showFullscreenControls ? "spine.controls.hide" : "spine.controls.show")}><IconChevronDown /><span>{t(showFullscreenControls ? "spine.controls.hide" : "spine.controls.show")}</span></button>}
                 <button className="spine-tool-button" type="button" onClick={() => void toggleViewerFullscreen()} aria-label={t(fullscreen ? "a11y.fullscreenExit" : "a11y.fullscreenEnter")} title={t(fullscreen ? "a11y.fullscreenExit" : "a11y.fullscreenEnter")}><span>{fullscreen ? <IconCompress /> : <IconExpand />}</span><span className="spine-button-label">{t("spine.fullscreen")}</span></button>
@@ -4127,5 +4138,21 @@ export function Spine() {
         </div>
       </section>
     </div>}
-  </main>;
+    <button type="button" className={`spine-app-version${releaseUpdates.state.status === "available" ? " is-update-available" : ""}`} aria-label={`About BA Spine Viewer, version ${__APP_VERSION__}${releaseUpdates.state.status === "available" ? ", update available" : ""}`} title="About BA Spine Viewer" onClick={() => setAboutPage(true)}>
+      v{__APP_VERSION__}{releaseUpdates.state.status === "available" && <i aria-hidden="true" />}
+    </button>
+  </main>
+  {aboutPage && <AboutPage
+    appName="BA Spine Viewer"
+    version={__APP_VERSION__}
+    update={releaseUpdates.state}
+    automaticChecks={releaseUpdates.automaticChecks}
+    onAutomaticChecksChange={releaseUpdates.setAutomaticChecks}
+    onCheckNow={releaseUpdates.checkNow}
+    onSkipLatest={releaseUpdates.skipLatest}
+    onShowSkipped={releaseUpdates.showSkipped}
+    onBack={closeAboutPage}
+    ffmpegNotice
+  />}
+  </>;
 }
