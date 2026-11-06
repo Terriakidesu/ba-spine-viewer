@@ -4,7 +4,7 @@ export default {
   app: {
     name: "BA Spine Editor",
     identifier: "dev.ba-spine.editor",
-    version: "0.1.0",
+    version: "0.2.0",
     description: "Author Blue Archive Spine lobby interactions and timelines.",
   },
   build: {
