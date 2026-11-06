@@ -52,6 +52,8 @@ bun run portable:package
 
 The ZIP is written to `release/portable/`. It contains the applications, not your local asset library; select or place the library separately.
 
+The first Windows x64 Viewer desktop build downloads the pinned FFmpeg 9.0.1 full build, verifies its SHA-256, and caches the source archive under `.cache/ffmpeg/`. To prefetch it separately, run `bun run download:ffmpeg`. The finished Viewer bundle still includes FFmpeg; the download is only removed from Git history going forward.
+
 ## Data and privacy
 
 - Viewer access to the asset library is read-only.

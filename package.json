@@ -12,6 +12,7 @@
   "scripts": {
     "dev:viewer": "bun --cwd=apps/viewer run desktop:dev",
     "dev:editor": "bun --cwd=apps/editor run desktop:dev",
+    "download:ffmpeg": "bun --cwd=apps/viewer/desktop run download:ffmpeg",
     "build:viewer": "bun --cwd=apps/viewer run desktop:build",
     "build:editor": "bun --cwd=apps/editor run desktop:build",
     "build": "bun run build:viewer && bun run build:editor && bun run audit:release",

@@ -6,8 +6,9 @@ Its complete license is in FFmpeg-LICENSE.txt. Build details and the enabled
 external libraries are listed in FFmpeg-build-notice.txt.
 
 FFmpeg source revision: https://github.com/FFmpeg/FFmpeg/commit/bf1b838f2a
-Gyan build distribution: https://www.gyan.dev/ffmpeg/builds/
-Bundled archive SHA-256: d5d4c1262bb6969c892b054f6b39f877137c5b1dee60c8d5e6a037262f4412e9
+Gyan release archive: https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-full_build.zip
+Source archive SHA-256: 2e8e28af97c2ae338ccef92e36da9b2a4cd21d0cad9dde093545606cb07f5b00
+Bundled ffmpeg.exe SHA-256: 57c56e369d5b4873b4d93fc1a1d833cb7cd8bc9325c14b05c34ce60b22842d8a
 
 FFmpeg is launched as a separate process; it is not linked into the Viewer.
 FFmpeg and its contributors are not affiliated with or endorsed by BA Spine.
