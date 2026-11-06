@@ -91,6 +91,8 @@ export interface SpineInteractionProject {
   interactions: SpineAuthoredInteraction[];
   timeline?: SpineTimeline;
   sequences?: Record<string, SpineTimeline>;
+  sequenceOrder?: string[];
+  deletedSequenceIds?: string[];
 }
 
 export interface SpineInteractionBundle {
@@ -197,6 +199,12 @@ export function normalizeSpineInteractionProject(value: unknown, directory?: str
       .filter((interaction): interaction is SpineAuthoredInteraction => interaction !== null),
     ...(timeline ? { timeline } : {}),
     ...(Object.keys(sequences).length > 0 ? { sequences } : {}),
+    ...(Array.isArray(project.sequenceOrder)
+      ? { sequenceOrder: ["opening", ...new Set(project.sequenceOrder.filter((id): id is string => typeof id === "string" && id !== "opening" && id !== "legacy"))] }
+      : {}),
+    ...(Array.isArray(project.deletedSequenceIds)
+      ? { deletedSequenceIds: [...new Set(project.deletedSequenceIds.filter((id): id is string => typeof id === "string" && id !== "opening" && id !== "legacy"))] }
+      : {}),
   };
 }
 

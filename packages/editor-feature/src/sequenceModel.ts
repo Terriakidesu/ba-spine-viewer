@@ -228,10 +228,108 @@ export function talkSequenceId(animation: string): string {
   return number ? `talk-${Number(number)}` : "opening";
 }
 
-/** Return the next numbered Talk in playback order, optionally wrapping the playlist. */
+function naturalSequenceOrder(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+}
+
+/** Opening is mandatory and fixed first; authored Talk order precedes newly discovered Talks. */
+export function sequenceIdsForProject(
+  project: Pick<EditorProject, "timeline" | "sequences" | "sequenceOrder" | "deletedSequenceIds"> | null | undefined,
+  animations: readonly string[] = [],
+): string[] {
+  const deleted = new Set(project?.deletedSequenceIds ?? []);
+  deleted.delete("opening");
+  const candidates = new Set<string>(["opening"]);
+  for (const animation of animations) {
+    if (/talk[_ -]?\d+/i.test(animation)) candidates.add(talkSequenceId(animation));
+  }
+  for (const id of Object.keys(project?.sequences ?? {})) if (id !== "legacy") candidates.add(id);
+  const activeId = project?.timeline.sequenceId;
+  if (activeId && activeId !== "legacy") candidates.add(activeId);
+  for (const id of deleted) candidates.delete(id);
+
+  const included = new Set(["opening"]);
+  const authored = [...new Set((project?.sequenceOrder ?? []).filter((id) => id !== "opening" && id !== "legacy" && candidates.has(id)))];
+  for (const id of authored) included.add(id);
+  const discovered = [...candidates].filter((id) => !included.has(id)).sort(naturalSequenceOrder);
+  return ["opening", ...authored, ...discovered];
+}
+
+/** Move a sequence without allowing the required Opening sequence to leave position zero. */
+export function moveSequenceId(sequenceIds: readonly string[], id: string, targetIndex: number): string[] {
+  const from = sequenceIds.indexOf(id);
+  if (from <= 0 || sequenceIds.length < 2) return [...sequenceIds];
+  const to = Math.max(1, Math.min(sequenceIds.length - 1, Math.trunc(targetIndex)));
+  if (from === to) return [...sequenceIds];
+  const next = [...sequenceIds];
+  next.splice(from, 1);
+  next.splice(to, 0, id);
+  return next;
+}
+
+export function moveSequenceBy(sequenceIds: readonly string[], id: string, delta: -1 | 1): string[] {
+  const index = sequenceIds.indexOf(id);
+  return moveSequenceId(sequenceIds, id, index + delta);
+}
+
+export function sequenceDisplayName(id: string): string {
+  if (id === "opening") return "Opening";
+  const talk = id.match(/^talk-(\d+)$/i);
+  return talk ? `Talk ${Number(talk[1])}` : id;
+}
+
+export function nextTalkSequenceIdForProject(
+  project: Pick<EditorProject, "timeline" | "sequences" | "sequenceOrder" | "deletedSequenceIds"> | null | undefined,
+  animations: readonly string[] = [],
+): string {
+  const allIds = [
+    ...sequenceIdsForProject(project, animations),
+    ...(project?.sequenceOrder ?? []),
+    ...(project?.deletedSequenceIds ?? []),
+  ];
+  const maxNumber = Math.max(0, ...allIds.map((id) => Number(id.match(/^talk-(\d+)$/i)?.[1] ?? 0)));
+  return `talk-${maxNumber + 1}`;
+}
+
+/** Create and select the next stable Talk ID, without recycling deleted IDs. */
+export function addTalkSequence(project: EditorProject, animations: string[], directories: string[]): EditorProject {
+  const existing = sequenceIdsForProject(project, animations);
+  const id = nextTalkSequenceIdForProject(project, animations);
+  const next = {
+    ...project,
+    sequenceOrder: [...existing, id],
+    deletedSequenceIds: (project.deletedSequenceIds ?? []).filter((deletedId) => deletedId !== id),
+  };
+  return switchSequence(next, id, animations, directories);
+}
+
+/** Remove a sequence while retaining a tombstone so discovered Talk animations stay deleted. */
+export function deleteSequence(project: EditorProject, id: string, animations: string[], directories: string[]): EditorProject {
+  if (id === "opening" || id === "legacy") return project;
+  const sequenceIds = sequenceIdsForProject(project, animations);
+  const index = sequenceIds.indexOf(id);
+  if (index < 0) return project;
+  const sequenceOrder = sequenceIds.filter((sequenceId) => sequenceId !== id);
+  let next = project;
+  if ((project.timeline.sequenceId ?? "legacy") === id) {
+    const nextId = sequenceOrder[Math.min(index, sequenceOrder.length - 1)] ?? "opening";
+    next = switchSequence(project, nextId, animations, directories);
+  }
+  const sequences = { ...(next.sequences ?? {}) };
+  delete sequences[id];
+  const deletedSequenceIds = [...new Set([...(next.deletedSequenceIds ?? []), id])].filter((sequenceId) => sequenceId !== "opening");
+  return {
+    ...next,
+    sequences,
+    sequenceOrder,
+    deletedSequenceIds,
+    ...(next.entrySequence === id ? { entrySequence: "opening" } : {}),
+  };
+}
+
+/** Return the next Talk in authored playback order, optionally wrapping the playlist. */
 export function nextTalkSequenceId(sequenceIds: readonly string[], currentId: string, loop = false): string | null {
-  const ordered = [...new Set(sequenceIds.filter((id) => /^talk-\d+$/i.test(id)))]
-    .sort((a, b) => Number(a.match(/\d+$/)?.[0] ?? 0) - Number(b.match(/\d+$/)?.[0] ?? 0));
+  const ordered = [...new Set(sequenceIds.filter((id) => /^talk-\d+$/i.test(id)))];
   const index = ordered.indexOf(currentId);
   if (index < 0 || ordered.length === 0) return null;
   if (index + 1 < ordered.length) return ordered[index + 1]!;

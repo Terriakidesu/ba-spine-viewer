@@ -463,9 +463,12 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--editor-cy
 .timeline-color-clip.is-disabled { opacity: .4; }
 .timeline-color-clip > span { position: relative; z-index: 1; display: block; overflow: hidden; padding: 5px 9px; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; text-shadow: 0 1px 3px #000; pointer-events: none; }
 .timeline-color-clip-envelope { position: absolute; inset: 0; opacity: .68; pointer-events: none; }
-.timeline-color-fade-handle { position: absolute; top: 0; z-index: 4; width: 7px; height: 50%; min-width: 7px !important; padding: 0 !important; border: 0 !important; border-radius: 0 !important; background: #fffbd8cc !important; box-shadow: 0 0 3px #000; cursor: ew-resize !important; transform: translateX(-50%); }
-.timeline-color-fade-handle.is-fade-out { top: auto; bottom: 0; background: #ff9f68cc !important; }
-.timeline-color-fade-handle:hover, .timeline-color-fade-handle:focus-visible { background: #fff !important; outline: 1px solid #14202a; }
+.timeline-color-fade-handle { position: absolute; top: 0; z-index: 4; width: 18px; height: 100%; min-width: 18px !important; padding: 0 !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; cursor: ew-resize !important; transform: translateX(-50%); }
+.timeline-color-fade-handle::before { position: absolute; top: 3px; bottom: 3px; left: 50%; width: 3px; border-radius: 2px; background: #fffbd8; box-shadow: 0 0 4px #000; content: ""; transform: translateX(-50%); }
+.timeline-color-fade-handle.is-fade-out::before { background: #ff9f68; }
+.timeline-color-fade-handle:hover::before, .timeline-color-fade-handle:focus-visible::before { width: 5px; background: #fff; }
+.timeline-color-fade-handle:focus-visible { outline: 1px solid #14202a; outline-offset: -2px; }
+.timeline-color-fade-controls { display: grid; gap: 12px; }
 .timeline-color-track { background-color: #171e25; }
 .timeline-color-clip .timeline-clip-start-handle, .timeline-color-clip .timeline-clip-end-handle { z-index: 5; }
 .timeline-layer-clip span, .timeline-cue span { display: block; overflow: hidden; padding: 4px 7px; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
@@ -539,8 +542,16 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--editor-cy
 .sequence-browser h2, .timeline-inspector h2 { margin: 6px 0 12px; font-size: 17px; }
 .timeline-talk-playlist-actions { display: grid; gap: 5px; margin: 7px 0; }
 .timeline-talk-playlist-actions > button { width: 100%; justify-content: center; }
-.sequence-button { display: block; width: 100%; padding: 8px 9px; margin-bottom: 4px; border: 1px solid var(--editor-line); border-radius: 4px; text-align: left; color: var(--editor-text); background: #102431; }
-.sequence-button.active { border-color: var(--editor-cyan); background: #164457; }
+.sequence-list-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; gap: 3px; margin-bottom: 4px; }
+.sequence-list-item[draggable="true"] { cursor: grab; }
+.sequence-button { display: grid; min-width: 0; width: 100%; gap: 3px; padding: 8px 9px; margin: 0; border: 1px solid var(--editor-line); border-radius: 4px; text-align: left; color: var(--editor-text); background: #102431; cursor: pointer; }
+.sequence-button strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sequence-button small { color: var(--editor-muted); font-size: 8px; font-weight: 700; }
+.sequence-button.active, .sequence-list-item.active .sequence-button { border-color: var(--editor-cyan); background: #164457; }
+.sequence-reorder-actions { display: flex; align-items: stretch; gap: 2px; }
+.sequence-reorder-actions button { width: 22px; min-width: 22px; padding: 0; border: 1px solid var(--editor-line); border-radius: 4px; color: var(--editor-text); background: #102431; font-size: 12px; font-weight: 800; }
+.sequence-reorder-actions button:disabled { opacity: .35; cursor: not-allowed; }
+.sequence-reorder-actions button.is-delete { color: var(--editor-pink, #ff7c9b); }
 .sequence-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--editor-line); }
 .sequence-heading > div { display: grid; gap: 2px; min-width: 0; }
 .sequence-heading .sequence-heading-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }

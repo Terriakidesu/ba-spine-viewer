@@ -3325,8 +3325,9 @@ export function Spine() {
         : null
     : null;
   const recorderEstimateFrames = recorderEstimate ? videoRecordingFrameCount(recorderEstimate.totalDuration, recorderSettings.frameRate) : 0;
+  const recorderTimelinePlan = activeExportRun?.plan ?? recorderEstimate;
   const recorderTimelineSegments = (() => {
-    const segments = recorderEstimate?.segments ?? [];
+    const segments = recorderTimelinePlan?.segments ?? [];
     if (segments.length === 0) return [];
     let elapsed = 0;
     return segments.map((segment, index) => {
@@ -3342,6 +3343,7 @@ export function Spine() {
       elapsed = end;
       return {
         key: `${segment.kind}:${segment.sequenceId ?? "idle"}:${index}`,
+        index,
         kind: segment.kind === "opening" ? "opening" : segment.kind === "talk" ? "talk" : "idle",
         label,
         duration,
@@ -3363,6 +3365,7 @@ export function Spine() {
   const activeExportProgress = activeExportRun?.plan
     ? videoRecordingProgress(activeExportRun.plan, videoRecorderDialog?.elapsed ?? 0)
     : null;
+  const sequencePreviewIsRendering = videoRecorderDialog?.phase === "recording" || videoRecorderDialog?.phase === "rendering";
   const recorderSegmentLabel = activeExportProgress?.segment
     ? activeExportProgress.segment.kind === "opening" ? t("spine.recorder.segment.opening")
       : activeExportProgress.segment.kind === "initial-idle" ? t("spine.recorder.segment.initialIdle")
@@ -3375,6 +3378,8 @@ export function Spine() {
     && videoRecorderDialog.phase !== "settings"
     && videoRecorderDialog.phase !== "error"
     && videoRecorderDialog.phase !== "complete");
+  const showRecorderSequencePreview = (videoRecorderDialog?.phase === "settings" && videoRecorderDialog.settings.mode === "full-sequence")
+    || (isExportProgressPhase && activeExportRun?.settings.mode === "full-sequence");
   const activeExportUsesFfmpeg = activeExportRun?.useFfmpeg ?? recorderUsesFfmpeg;
   const recorderOutputDimensions = videoRecordingDimensions(recorderSettings.resolution, outputAspectRatio);
   const recorderStageItems = activeExportUsesFfmpeg
@@ -4066,9 +4071,12 @@ export function Spine() {
               </div>}
           </div>
         </div>
-        {videoRecorderDialog.phase === "settings" && videoRecorderDialog.settings.mode === "full-sequence" && <section className="spine-recorder-sequence-preview is-docked" aria-labelledby="spine-recorder-sequence-preview-title">
+        {showRecorderSequencePreview && <section className={`spine-recorder-sequence-preview is-docked${isExportProgressPhase ? " is-progress" : ""}`} aria-labelledby="spine-recorder-sequence-preview-title">
           <div className="spine-recorder-sequence-preview-header">
             <h3 id="spine-recorder-sequence-preview-title">{t("spine.recorder.sequencePreview")}</h3>
+            {sequencePreviewIsRendering && activeExportProgress?.segment && <span className="spine-recorder-sequence-current">
+              {recorderSegmentLabel} · {formatSeconds(activeExportProgress.segmentElapsed ?? 0)} / {formatSeconds(activeExportProgress.segment.duration)}s
+            </span>}
             <div className="spine-recorder-sequence-legend" aria-label={t("spine.recorder.sequenceLegend")}>
               <span><i className="is-opening" />{t("spine.recorder.sequenceLegend.opening")}</span>
               <span><i className="is-talk" />{t("spine.recorder.sequenceLegend.talk")}</span>
@@ -4076,16 +4084,28 @@ export function Spine() {
             </div>
           </div>
           {recorderTimelineSegments.length > 0
-            ? <ol className="spine-recorder-timeline-track" aria-label={t("spine.recorder.sequencePreview")}>
-              {recorderTimelineSegments.map((segment) => <li
-                key={segment.key}
-                className={`spine-recorder-timeline-segment is-${segment.kind}`}
-                style={{ flexGrow: Math.max(segment.duration, 0.05) }}
-                title={`${segment.label} · ${formatSeconds(segment.duration)}s · ${formatSeconds(segment.start)}–${formatSeconds(segment.end)}s`}
-                aria-label={`${segment.label}, ${formatSeconds(segment.duration)} seconds, ${formatSeconds(segment.start)} to ${formatSeconds(segment.end)} seconds`}
-                tabIndex={0}
-              />)}
-            </ol>
+            ? <div className="spine-recorder-timeline-visual">
+              <ol className="spine-recorder-timeline-track" aria-label={t("spine.recorder.sequencePreview")}>
+                {recorderTimelineSegments.map((segment) => {
+                  const isCurrent = sequencePreviewIsRendering && segment.index === activeExportProgress?.segmentIndex;
+                  const isComplete = isExportProgressPhase && !isCurrent && segment.end <= (activeExportProgress?.elapsed ?? 0);
+                  return <li
+                    key={segment.key}
+                    className={`spine-recorder-timeline-segment is-${segment.kind}${isComplete ? " is-complete" : ""}${isCurrent ? " is-current" : ""}`}
+                    style={{ flexGrow: Math.max(segment.duration, 0.05) }}
+                    title={`${segment.label} · ${formatSeconds(segment.duration)}s · ${formatSeconds(segment.start)}–${formatSeconds(segment.end)}s`}
+                    aria-label={`${segment.label}, ${formatSeconds(segment.duration)} seconds, ${formatSeconds(segment.start)} to ${formatSeconds(segment.end)} seconds${isComplete ? " · rendered" : isCurrent ? " · rendering" : ""}`}
+                    aria-current={isCurrent ? "step" : undefined}
+                    tabIndex={0}
+                  />;
+                })}
+              </ol>
+              {isExportProgressPhase && <i
+                className="spine-recorder-timeline-playhead"
+                aria-hidden="true"
+                style={{ left: `${Math.max(0, Math.min(1, activeExportProgress?.fraction ?? 0)) * 100}%` }}
+              />}
+            </div>
             : <p className="spine-recorder-note">{t("spine.recorder.estimateLoading")}</p>}
         </section>}
         <div className="spine-recorder-footer">

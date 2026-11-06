@@ -73,7 +73,7 @@ test("saved project loading falls back to the legacy editor directory", async ()
 
 test("editor restores manifest sequences and keeps the explicit entry sequence separate", async () => {
   const source = sourceFromFiles({
-    "lobbies/Airi_home/interactions.json": JSON.stringify({ interactions: [] }),
+    "lobbies/Airi_home/interactions.json": JSON.stringify({ interactions: [], sequenceOrder: ["talk-5", "opening"], deletedSequenceIds: ["talk-2"] }),
     "lobbies/Airi_home/sequences/opening.json": JSON.stringify({ sequenceId: "opening", duration: 12, layers: [], subtitles: [], audio: [] }),
     "lobbies/Airi_home/sequences/talk-5.json": JSON.stringify({ sequenceId: "talk-5", duration: 19, durationMode: "manual", layers: [], subtitles: [], audio: [] }),
     ".editor/Airi_home.workspace.json": JSON.stringify({ selectedSequenceId: "talk-5", name: "Workspace name" }),
@@ -99,6 +99,44 @@ test("editor restores manifest sequences and keeps the explicit entry sequence s
   expect(project?.timeline.sequenceId).toBe("talk-5");
   expect(project?.timeline.durationMode).toBe("auto");
   expect(project?.name).toBe("Workspace name");
+  expect(project?.sequenceOrder).toEqual(["opening", "talk-5"]);
+  expect(project?.deletedSequenceIds).toEqual(["talk-2"]);
+});
+
+test("manifest saves sequence order and removes intentionally deleted sequence references", async () => {
+  const record: SpineManifestRecord = {
+    path: "lobbies/Airi_home/manifest.json",
+    manifest: {
+      schemaVersion: 1,
+      id: "Airi_home",
+      entrySequence: "opening",
+      entryMode: "authored-sequence",
+      assets: { Airi_home: { atlas: manifestPath("lobby", "spine/a.atlas"), skeletons: [], pages: [], files: [] } },
+      sequences: {
+        opening: manifestPath("lobby", "sequences/opening.json"),
+        "talk-2": manifestPath("lobby", "sequences/talk-2.json"),
+      },
+      interactions: manifestPath("lobby", "interactions.json"),
+      workspace: manifestPath("root", ".editor/Airi_home.workspace.json"),
+    },
+  };
+  const writes: Record<string, string> = {};
+  const source: WritableEditorProjectSource = {
+    readText: async (path) => writes[path] ?? null,
+    saveText: async (path, content) => { writes[path] = content; },
+    getManifest: async () => record,
+  };
+  const project = createProject("Airi_home", [], []);
+  project.timeline.sequenceId = "opening";
+  project.sequences = { "talk-2": { ...project.timeline, sequenceId: "talk-2" } };
+  project.sequenceOrder = ["opening", "talk-3", "talk-1"];
+  project.deletedSequenceIds = ["talk-2"];
+
+  const saved = await saveManifestEditorProject(source, project);
+  expect(saved?.manifest.sequences).toEqual({ opening: manifestPath("lobby", "sequences/opening.json") });
+  expect(writes["lobbies/Airi_home/interactions.json"]).toContain('"sequenceOrder": [\n    "opening",\n    "talk-3",\n    "talk-1"\n  ]');
+  expect(writes["lobbies/Airi_home/interactions.json"]).toContain('"deletedSequenceIds": [\n    "talk-2"\n  ]');
+  expect(writes["lobbies/Airi_home/sequences/talk-2.json"]).toBeUndefined();
 });
 
 test("manifest workspace schema marker persists and preserves a manual Talk override", async () => {

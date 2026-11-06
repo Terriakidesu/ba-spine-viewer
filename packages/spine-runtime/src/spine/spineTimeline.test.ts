@@ -91,6 +91,21 @@ test("authored talk sequences are ordered numerically for autoplay", () => {
   expect(timelineTalkSequenceIds(project)).toEqual(["talk-1", "talk-2", "talk-10"]);
 });
 
+test("authored sequence order keeps Opening first and excludes deleted Talks", () => {
+  const project = {
+    timeline: { sequenceId: "talk-1" } as SpineTimeline,
+    sequences: {
+      opening: {} as SpineTimeline,
+      "talk-2": {} as SpineTimeline,
+      "talk-3": {} as SpineTimeline,
+    },
+    sequenceOrder: ["talk-2", "talk-1", "opening", "talk-3", "talk-2"],
+    deletedSequenceIds: ["talk-3"],
+  };
+  expect(timelineSequenceIds(project)).toEqual(["opening", "talk-2", "talk-1"]);
+  expect(timelineTalkSequenceIds(project)).toEqual(["talk-2", "talk-1"]);
+});
+
 test("automatic Talk duration trims stale saved tails and fits enabled endpoints", () => {
   const timeline: SpineTimeline = {
     sequenceId: "talk-1", openingMode: "direct", sceneDuration: 3, openingIdleDuration: 3,

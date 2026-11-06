@@ -232,6 +232,8 @@ export function normalizeColorClipFades<T extends Pick<SpineTimelineColorClip, "
 export interface SpineTimelineProject {
   timeline?: SpineTimeline;
   sequences?: Record<string, SpineTimeline>;
+  sequenceOrder?: string[];
+  deletedSequenceIds?: string[];
 }
 
 /** Idle is a runtime animation, not an alias for the opening timeline. */
@@ -269,14 +271,22 @@ export function timelineSequenceIds(project: SpineTimelineProject): string[] {
   const ids: string[] = [];
   if (project.timeline) ids.push(project.timeline.sequenceId);
   for (const id of Object.keys(project.sequences ?? {})) if (!ids.includes(id)) ids.push(id);
-  return ids;
+  const deleted = new Set(project.deletedSequenceIds ?? []);
+  const candidates = new Set(ids.filter((id) => id !== "legacy" && !deleted.has(id)));
+  if (!Array.isArray(project.sequenceOrder) || project.sequenceOrder.length === 0) return [...candidates];
+  const ordered = [...new Set([
+    ...(candidates.has("opening") ? ["opening"] : []),
+    ...project.sequenceOrder.filter((id) => id !== "opening" && candidates.has(id)),
+  ])];
+  const included = new Set(ordered);
+  return [...ordered, ...[...candidates].filter((id) => !included.has(id))];
 }
 
 /** Return authored numbered talk sequences in playback order. */
 export function timelineTalkSequenceIds(project: SpineTimelineProject): string[] {
-  return timelineSequenceIds(project)
-    .filter((id) => /^talk-\d+$/i.test(id))
-    .sort((a, b) => Number(a.match(/\d+$/)?.[0] ?? 0) - Number(b.match(/\d+$/)?.[0] ?? 0));
+  const talks = timelineSequenceIds(project).filter((id) => /^talk-\d+$/i.test(id));
+  if (project.sequenceOrder?.some((id) => /^talk-\d+$/i.test(id))) return talks;
+  return talks.sort((a, b) => Number(a.match(/\d+$/)?.[0] ?? 0) - Number(b.match(/\d+$/)?.[0] ?? 0));
 }
 
 /** A talk sequence is still playing until its authored idle tail begins. */

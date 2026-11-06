@@ -138,6 +138,10 @@ export interface EditorTimeline {
 
 export interface EditorProject {
   sequences?: Record<string, EditorTimeline>;
+  /** Authored display/playback order; Opening is always normalized to index zero. */
+  sequenceOrder?: string[];
+  /** Prevent animation-discovered sequences from reappearing after intentional deletion. */
+  deletedSequenceIds?: string[];
   talkMixDuration: number;
   effectsStrength: number;
   schemaVersion: number;
@@ -438,6 +442,7 @@ export function createProject(directory: string, animations: string[], bones: Sp
   if (interactions.length === 0) interactions.push(interaction("New interaction", "custom", animations, bones, 0));
   return {
     schemaVersion: EDITOR_SCHEMA_VERSION,
+    deletedSequenceIds: [],
     talkMixDuration: DEFAULT_TALK_MIX_DURATION,
     effectsStrength: DEFAULT_EFFECTS_STRENGTH,
     name: `${directory} interactions`,
@@ -686,6 +691,11 @@ export function normalizeProject(value: unknown, directory: string): EditorProje
     effectsStrength: Math.max(0, Math.min(1, finiteNumber(project.effectsStrength, DEFAULT_EFFECTS_STRENGTH))),
     ...(project.entrySequence === null || typeof project.entrySequence === "string" ? { entrySequence: project.entrySequence } : {}),
     interactions,
+    ...(Array.isArray(project.sequenceOrder)
+      ? { sequenceOrder: ["opening", ...new Set(project.sequenceOrder.filter((id): id is string => typeof id === "string" && id !== "opening" && id !== "legacy"))] }
+      : {}),
+    deletedSequenceIds: [...new Set((Array.isArray(project.deletedSequenceIds) ? project.deletedSequenceIds : [])
+      .filter((id): id is string => typeof id === "string" && id !== "opening" && id !== "legacy"))],
     selectedInteractionId,
     selectedRegionId,
     selectedBonePath: typeof project.selectedBonePath === "string" ? project.selectedBonePath : null,

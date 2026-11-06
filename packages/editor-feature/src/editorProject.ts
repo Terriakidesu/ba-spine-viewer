@@ -72,6 +72,8 @@ export function editorProjectDraftValue(project: EditorProject): Record<string, 
     name: project.name,
     assetDirectory: project.assetDirectory,
     entrySequence: project.entrySequence ?? null,
+    sequenceOrder: project.sequenceOrder,
+    deletedSequenceIds: project.deletedSequenceIds,
     talkMixDuration: project.talkMixDuration,
     effectsStrength: project.effectsStrength,
     interactions: project.interactions,
@@ -122,8 +124,13 @@ export async function prepareManifestEditorProjectSave(source: SavedEditorProjec
   const record = await source.getManifest(project.assetDirectory);
   if (!record) return null;
   const current = record.manifest;
-  const sequences = Object.fromEntries(Object.entries(projectSequences(project)).map(([id, timeline]) => [id, timelineWithManifestAssetPaths(timeline, current)]));
-  const sequenceRefs: Record<string, SpineManifestPath> = { ...(current.sequences ?? {}) };
+  const deletedSequences = new Set(project.deletedSequenceIds ?? []);
+  const sequences = Object.fromEntries(Object.entries(projectSequences(project))
+    .filter(([id]) => !deletedSequences.has(id))
+    .map(([id, timeline]) => [id, timelineWithManifestAssetPaths(timeline, current)]));
+  const sequenceRefs: Record<string, SpineManifestPath> = Object.fromEntries(
+    Object.entries(current.sequences ?? {}).filter(([id]) => !deletedSequences.has(id)),
+  );
   for (const id of Object.keys(sequences)) sequenceRefs[id] ??= sequencePath(id);
   let entrySequence = project.entrySequence !== undefined ? project.entrySequence : current.entrySequence;
   if (entrySequence === null && sequences.opening && project.timeline.sequenceId === "opening") entrySequence = "opening";
@@ -147,6 +154,8 @@ export async function prepareManifestEditorProjectSave(source: SavedEditorProjec
     talkMixDuration: project.talkMixDuration,
     effectsStrength: project.effectsStrength,
     interactions: project.interactions,
+    sequenceOrder: project.sequenceOrder,
+    deletedSequenceIds: project.deletedSequenceIds,
     }, null, 2) + "\n",
   }];
   const paths: string[] = [];

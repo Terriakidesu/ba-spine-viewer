@@ -34,7 +34,7 @@ describe("Viewer video recording plans", () => {
     expect(videoRecordingProgress(plan, 2.5)).toMatchObject({ phase: "idle", idleLoopsCompleted: 2, total: 25 });
   });
 
-  test("full-sequence plans opening, initial idle, Talks, bridges, and a final idle", () => {
+  test("full-sequence plans Talks in the authored order", () => {
     const plan = createFullSequenceRecordingPlan({
       openingDuration: 4,
       idleDuration: 3,
@@ -55,18 +55,18 @@ describe("Viewer video recording plans", () => {
     expect(plan.segments?.map(({ kind, sequenceId }) => [kind, sequenceId])).toEqual([
       ["opening", "opening"],
       ["initial-idle", "opening"],
-      ["talk", "talk-1"],
+      ["talk", "talk-10"],
       ["between-idle", "opening"],
       ["talk", "talk-2"],
       ["between-idle", "opening"],
-      ["talk", "talk-10"],
+      ["talk", "talk-1"],
       ["final-idle", "opening"],
     ]);
-    expect(videoRecordingSegmentAt(plan, 7.25)).toMatchObject({ index: 2, segment: { kind: "talk", sequenceId: "talk-1" }, elapsed: 0.25 });
+    expect(videoRecordingSegmentAt(plan, 7.25)).toMatchObject({ index: 2, segment: { kind: "talk", sequenceId: "talk-10" }, elapsed: 0.25 });
     expect(videoRecordingProgress(plan, 36)).toMatchObject({ phase: "final-idle", segmentElapsed: 1, finished: false });
     expect(videoRecordingSegmentStart(plan, 2)).toBe(7);
     expect(videoRecordingGlobalTime(plan, 2, 0.25)).toBe(7.25);
-    expect(videoRecordingGlobalTime(plan, 3, 0)).toBe(15);
+    expect(videoRecordingGlobalTime(plan, 3, 0)).toBe(17);
     expect(videoRecordingGlobalTime(plan, 2, 8)).toBe(15);
   });
 

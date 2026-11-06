@@ -51,6 +51,18 @@ test("multi-track color group moves use one shared delta", () => {
   expect(moved.map((clips) => clips.find((item) => item.id === "first" || item.id === "second")?.start)).toEqual([1, 1]);
 });
 
+test("repeated color drag updates stay anchored to the original clips", () => {
+  const baseline = [
+    { clips: [clip("first", 0, 1), clip("first-blocker", 4, 5)], ids: ["first"] },
+    { clips: [clip("second", 0, 1), clip("second-blocker", 3, 4)], ids: ["second"] },
+  ];
+  const startsAtPointerDeltas = [0.5, 1, 1.5, 2, 0.5].map((delta) =>
+    moveColorClipGroups(baseline, delta).map((clips) => clips.find((item) => item.id === "first" || item.id === "second")?.start),
+  );
+
+  expect(startsAtPointerDeltas).toEqual([[0.5, 0.5], [1, 1], [1.5, 1.5], [2, 2], [0.5, 0.5]]);
+});
+
 test("duplicate seeks the next available gap and delete removes only the requested clip", () => {
   const clips = [clip("one", 0, 2), clip("two", 2, 4), clip("three", 4, 6)];
   const duplicated = duplicateColorClip(clips, "one", "copy");

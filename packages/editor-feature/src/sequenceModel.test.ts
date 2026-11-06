@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createProject, normalizeProject } from "./editorModel";
-import { animationClipEnd, animationEndForLayer, authoredTimelineEnd, deleteAnimationClipRipple, duplicateAnimationClipRipple, effectiveAnimationClips, extendTimelineDuration, linkAudioToSubtitle, linkedSubtitleForAudio, matchAudioAndSubtitleLength, matchedAnimationEndpoint, moveAnimationClipRipple, moveAudioClip, nextTalkSequenceId, openingPhaseTimings, openingTimelineDuration, replaceSubtitleImport, resolveTimelineSnap, snapToTargets, splitCue, switchSequence, talkSequenceDuration, talkSequenceId } from "./sequenceModel";
+import { addTalkSequence, animationClipEnd, animationEndForLayer, authoredTimelineEnd, deleteAnimationClipRipple, deleteSequence, duplicateAnimationClipRipple, effectiveAnimationClips, extendTimelineDuration, linkAudioToSubtitle, linkedSubtitleForAudio, matchAudioAndSubtitleLength, matchedAnimationEndpoint, moveAnimationClipRipple, moveAudioClip, moveSequenceBy, moveSequenceId, nextTalkSequenceId, nextTalkSequenceIdForProject, openingPhaseTimings, openingTimelineDuration, replaceSubtitleImport, resolveTimelineSnap, sequenceIdsForProject, snapToTargets, splitCue, switchSequence, talkSequenceDuration, talkSequenceId } from "./sequenceModel";
 import type { SpineMeta } from "@ba-spine/spine-runtime/spine/spineRuntime";
 
 test("talk sequences pair body and face and isolate subtitle clocks", () => {
@@ -18,12 +18,37 @@ test("talk sequences pair body and face and isolate subtitle clocks", () => {
   expect(restored.sequences?.["talk-2"]?.layers[0]?.faceAnimation).toBe("Talk_02_A");
 });
 
-test("Talk autoplay advances numerically and can wrap the playlist", () => {
-  const talks = ["talk-10", "talk-2", "opening", "talk-1", "talk-2"];
+test("Talk autoplay follows the authored order and can wrap the playlist", () => {
+  const talks = ["opening", "talk-1", "talk-2", "talk-10", "talk-2"];
   expect(nextTalkSequenceId(talks, "talk-1")).toBe("talk-2");
   expect(nextTalkSequenceId(talks, "talk-2")).toBe("talk-10");
   expect(nextTalkSequenceId(talks, "talk-10")).toBeNull();
   expect(nextTalkSequenceId(talks, "talk-10", true)).toBe("talk-1");
+  expect(nextTalkSequenceId(["talk-3", "talk-1", "talk-2"], "talk-3")).toBe("talk-1");
+});
+
+test("sequence management keeps Opening fixed and persists Talk order and deletion", () => {
+  const animations = ["Idle_01", "Talk_01_M", "Talk_02_M"];
+  let project = createProject("Airi_home", animations, []);
+  expect(sequenceIdsForProject(project, animations)).toEqual(["opening", "talk-1", "talk-2"]);
+  expect(moveSequenceBy(sequenceIdsForProject(project, animations), "opening", 1)).toEqual(["opening", "talk-1", "talk-2"]);
+  expect(moveSequenceId(["opening", "talk-1", "talk-2", "talk-3"], "talk-1", 3)).toEqual(["opening", "talk-2", "talk-3", "talk-1"]);
+
+  project = { ...project, sequenceOrder: [...moveSequenceBy(sequenceIdsForProject(project, animations), "talk-2", -1), "talk-2"] };
+  expect(sequenceIdsForProject(project, animations)).toEqual(["opening", "talk-2", "talk-1"]);
+  expect(nextTalkSequenceIdForProject(project, animations)).toBe("talk-3");
+
+  project = addTalkSequence(project, animations, []);
+  expect(project.timeline.sequenceId).toBe("talk-3");
+  expect(sequenceIdsForProject(project, animations)).toEqual(["opening", "talk-2", "talk-1", "talk-3"]);
+
+  project = deleteSequence(project, "talk-2", animations, []);
+  expect(sequenceIdsForProject(project, animations)).toEqual(["opening", "talk-1", "talk-3"]);
+  expect(project.deletedSequenceIds).toContain("talk-2");
+  expect(project.sequences?.["talk-2"]).toBeUndefined();
+  expect(deleteSequence(project, "opening", animations, [])).toBe(project);
+  const reloaded = normalizeProject(JSON.parse(JSON.stringify(project)), "Airi_home")!;
+  expect(sequenceIdsForProject(reloaded, animations)).toEqual(["opening", "talk-1", "talk-3"]);
 });
 
 test("reselecting a talk sequence keeps its current imported edits", () => {

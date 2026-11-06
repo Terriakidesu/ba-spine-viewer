@@ -170,13 +170,7 @@ export function createFullSequenceRecordingPlan(options: {
     : 0;
   const selected = new Set(options.selectedTalkSequenceIds);
   const talks = options.talks
-    .filter((talk) => selected.has(talk.sequenceId) && Number.isFinite(talk.duration) && talk.duration > 0)
-    .sort((a, b) => {
-      const aNumber = Number(a.sequenceId.match(/\d+$/)?.[0] ?? Number.NaN);
-      const bNumber = Number(b.sequenceId.match(/\d+$/)?.[0] ?? Number.NaN);
-      if (Number.isFinite(aNumber) && Number.isFinite(bNumber) && aNumber !== bNumber) return aNumber - bNumber;
-      return a.sequenceId.localeCompare(b.sequenceId, undefined, { numeric: true, sensitivity: "base" });
-    });
+    .filter((talk) => selected.has(talk.sequenceId) && Number.isFinite(talk.duration) && talk.duration > 0);
   const segments: VideoRecordingSegment[] = [];
   if (options.includeOpening && options.openingSequenceId && openingDuration > 0) {
     segments.push({ kind: "opening", sequenceId: options.openingSequenceId, duration: openingDuration });

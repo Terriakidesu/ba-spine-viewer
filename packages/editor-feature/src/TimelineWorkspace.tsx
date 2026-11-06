@@ -20,7 +20,7 @@ import type { DesktopAssetSource } from "./desktopSource";
 import { manifestReferenceCandidates } from "@ba-spine/spine-runtime/spine/spineManifest";
 import type { EditorSaveFile } from "./editorProject";
 import { audioPlaybackDecision, clampAudioEnd, clampAudioStart, decodedAudioTiming } from "./audioModel";
-import { animationClipEnd, animationEndForLayer, authoredTimelineEnd, deleteAnimationClipRipple, duplicateAnimationClipRipple, effectiveAnimationClips, extendTimelineDuration, insertAnimationClipRipple, linkAudioToSubtitle, linkedSubtitleForAudio, matchAudioAndSubtitleLength, matchedAnimationEndpoint, moveAnimationClipRipple, nextTalkSequenceId, openingTimelineDuration, replaceSubtitleImport, resolveTimelineSnap, snapToTargets, splitCue, switchSequence, talkSequenceId } from "./sequenceModel";
+import { addTalkSequence, animationClipEnd, animationEndForLayer, authoredTimelineEnd, deleteAnimationClipRipple, deleteSequence, duplicateAnimationClipRipple, effectiveAnimationClips, extendTimelineDuration, insertAnimationClipRipple, linkAudioToSubtitle, linkedSubtitleForAudio, matchAudioAndSubtitleLength, matchedAnimationEndpoint, moveAnimationClipRipple, moveSequenceBy, moveSequenceId, nextTalkSequenceId, nextTalkSequenceIdForProject, openingTimelineDuration, replaceSubtitleImport, resolveTimelineSnap, sequenceDisplayName, sequenceIdsForProject, snapToTargets, splitCue, switchSequence } from "./sequenceModel";
 import { advanceSpineTimeline, normalizeColorClipFades, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineLayerAnimation, timelineMainAnimation, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimelineAudioPreloadState } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import { SpineTimelineLayerCanvas } from "@ba-spine/spine-runtime/ui/SpineTimelineLayerCanvas";
 import { spineAudioPathCandidates } from "@ba-spine/spine-runtime/spine/spineAudio";
@@ -232,6 +232,7 @@ interface TimelineDragState {
   start: number;
   end: number;
   items: TimelineDragItem[];
+  colorLayerSnapshot?: EditorColorLayer[];
 }
 interface TimelineSnapFeedback { time: number; delta: number; source: "target" | "grid" }
 interface TrackLabelResizeState { pointerId: number; x: number; width: number }
@@ -480,6 +481,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const dragRef = useRef<TimelineDragState | null>(null);
   const trackLabelResizeRef = useRef<TrackLabelResizeState | null>(null);
   const trackDragRef = useRef<string | null>(null);
+  const sequenceDragRef = useRef<string | null>(null);
   const subtitleDocumentsRef = useRef<Record<string, Record<string, unknown>>>({});
   const subtitleOriginalsRef = useRef<Record<string, string | null>>({});
   const projectRef = useRef<EditorProject | null>(project);
@@ -700,7 +702,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     } : null;
   })() : null;
   const animations = characterMeta?.animations ?? [];
-  const sequenceIds = useMemo(() => [...new Set(["opening", ...animations.filter((name) => /talk[_ -]?\d+/i.test(name)).map(talkSequenceId), ...Object.keys(project?.sequences ?? {}).filter((id) => id !== "legacy")])], [animations, project?.sequences]);
+  const sequenceIds = useMemo(() => sequenceIdsForProject(project, animations), [animations, project]);
   useEffect(() => {
     if (!initialHandoff || appliedHandoffIdRef.current === initialHandoff.requestId || !timeline) return;
     if (!sequenceIds.includes(initialHandoff.sequenceId)) {
@@ -718,8 +720,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     }
     appliedHandoffIdRef.current = initialHandoff.requestId;
   }, [initialHandoff, sequenceIds, timeline?.sequenceId, timeline?.duration, characterLayer?.id, metas, onError]);
-  const talkSequenceIds = useMemo(() => sequenceIds.filter((id) => /^talk-\d+$/i.test(id))
-    .sort((a, b) => Number(a.match(/\d+$/)?.[0] ?? 0) - Number(b.match(/\d+$/)?.[0] ?? 0)), [sequenceIds]);
+  const talkSequenceIds = useMemo(() => sequenceIds.filter((id) => /^talk-\d+$/i.test(id)), [sequenceIds]);
   sequenceContextRef.current = { animations, directories };
   const isTalkSequence = /^talk-\d+$/i.test(timeline?.sequenceId ?? "");
 
@@ -1766,7 +1767,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       duration: Number(duration.toFixed(3)),
       availableSequences: sequenceIds.map((id) => ({
         id,
-        name: id === "opening" ? "Opening" : id.startsWith("talk-") ? `Talk ${id.slice(5).padStart(2, "0")}` : id,
+        name: sequenceDisplayName(id),
       })),
       playing,
       speed,
@@ -2383,14 +2384,70 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     }), false);
   }
 
-  function chooseSequence(id: string) {
+  function resetSequencePlayback() {
     if (talkAutoplayTimerRef.current !== null) window.clearTimeout(talkAutoplayTimerRef.current);
     talkAutoplayTimerRef.current = null;
     setPendingTalkSequence(null);
     setTalkAutoplayActive(false);
-    onMutate((current) => switchSequence(current, id, animations, directories));
     currentTimeRef.current = 0;
     setCurrentTime(0); setPlaying(false); setPreviewUntil(null); setSelectedClips([]); setSelectedAudioId(null); setInspector("sequence");
+  }
+
+  function chooseSequence(id: string) {
+    resetSequencePlayback();
+    onMutate((current) => switchSequence(current, id, animations, directories));
+  }
+
+  function addTalkSequenceToProject() {
+    if (!project) return;
+    const id = nextTalkSequenceIdForProject(project, animations);
+    resetSequencePlayback();
+    onMutate((current) => addTalkSequence(current, animations, directories));
+    onStatus(`Added ${sequenceDisplayName(id)}.`);
+  }
+
+  function deleteSequenceFromProject(id: string) {
+    if (!project || id === "opening") return;
+    const name = sequenceDisplayName(id);
+    if (!window.confirm(`Delete ${name}? This can be undone with Undo.`)) return;
+    const wasActive = timeline?.sequenceId === id;
+    if (wasActive) resetSequencePlayback();
+    onMutate((current) => deleteSequence(current, id, animations, directories));
+    onStatus(`Deleted ${name}. Undo is available.`);
+  }
+
+  function setSequenceOrder(next: string[]) {
+    if (next.length === sequenceIds.length && next.every((id, index) => id === sequenceIds[index])) return;
+    onMutate((current) => ({ ...current, sequenceOrder: next }));
+  }
+
+  function moveSequenceEarlierOrLater(id: string, direction: -1 | 1) {
+    setSequenceOrder(moveSequenceBy(sequenceIds, id, direction));
+  }
+
+  function beginSequenceReorder(event: ReactDragEvent<HTMLDivElement>, id: string) {
+    if (id === "opening") {
+      event.preventDefault();
+      return;
+    }
+    sequenceDragRef.current = id;
+    event.dataTransfer.setData("text/plain", id);
+    event.dataTransfer.effectAllowed = "move";
+  }
+
+  function dropSequenceReorder(event: ReactDragEvent<HTMLDivElement>, targetId: string) {
+    event.preventDefault();
+    const sourceId = event.dataTransfer.getData("text/plain") || sequenceDragRef.current;
+    sequenceDragRef.current = null;
+    if (!sourceId || targetId === "opening") return;
+    const sourceIndex = sequenceIds.indexOf(sourceId);
+    const targetIndex = sequenceIds.indexOf(targetId);
+    if (sourceIndex < 1 || targetIndex < 1) return;
+    const targetBounds = event.currentTarget.getBoundingClientRect();
+    const insertAfterTarget = event.clientY >= targetBounds.top + targetBounds.height / 2;
+    const insertionIndex = targetIndex + (insertAfterTarget ? 1 : 0);
+    const finalIndex = insertionIndex - (sourceIndex < insertionIndex ? 1 : 0);
+    setSequenceOrder(moveSequenceId(sequenceIds, sourceId, finalIndex));
   }
 
   function startTalkAutoplay() {
@@ -3441,7 +3498,17 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     const items = selected.map((item) => dragItem(item)).filter((item): item is TimelineDragItem => item !== null);
     if (!items.some((item) => item.kind === clipKind && item.id === id)) items.push({ kind: clipKind, id, start, end });
     if (kind === "audio") items.push(...linkedSubtitleItems(items.map((item) => item.kind === "audio" ? { ...item, linked: true } : item)));
-    dragRef.current = { kind, id, x: event.clientX, start, end, items };
+    dragRef.current = {
+      kind,
+      id,
+      x: event.clientX,
+      start,
+      end,
+      items,
+      colorLayerSnapshot: clipKind === "color" && timeline
+        ? timeline.colorLayers.map((layer) => ({ ...layer, clips: layer.clips.map((clip) => ({ ...clip })) }))
+        : undefined,
+    };
     onBeginEdit();
   }
 
@@ -3506,13 +3573,21 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
             const colorSelection = drag.items.filter((candidate) => candidate.kind === "color");
             const owners = colorLayers.filter((layer) => !layer.locked && layer.clips.some((clip) => colorSelection.some((candidate) => candidate.id === clip.id)));
             const groups = owners.map((owner) => ({
-              layer: owner,
+              layerId: owner.id,
+              clips: drag.colorLayerSnapshot?.find((layer) => layer.id === owner.id)?.clips ?? owner.clips,
               ids: colorSelection.filter((candidate) => owner.clips.some((clip) => clip.id === candidate.id)).map((candidate) => candidate.id),
             }));
-            const movedGroups = moveColorClipGroups(groups.map(({ layer, ids }) => ({ clips: layer.clips, ids })), moveDelta);
+            const movedGroups = moveColorClipGroups(groups.map(({ clips, ids }) => ({ clips, ids })), moveDelta);
             colorLayers = colorLayers.map((layer) => {
-              const groupIndex = groups.findIndex((group) => group.layer.id === layer.id);
-              return groupIndex < 0 ? layer : { ...layer, clips: movedGroups[groupIndex]! };
+              const groupIndex = groups.findIndex((group) => group.layerId === layer.id);
+              if (groupIndex < 0) return layer;
+              const group = groups[groupIndex]!;
+              const selectedIds = new Set(group.ids);
+              const movedById = new Map(movedGroups[groupIndex]!.filter((clip) => selectedIds.has(clip.id)).map((clip) => [clip.id, clip]));
+              const clips = layer.clips
+                .map((clip) => movedById.get(clip.id) ?? clip)
+                .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+              return { ...layer, clips };
             });
           }
           else if (item.kind === "cue") subtitles = subtitles.map((cue) => cue.id === item.id ? { ...cue, start, end } : cue);
@@ -4054,8 +4129,8 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
 
       <main className="camera-main">
         <header className="camera-heading">
-          <div><strong>{timeline.sequenceId === "opening" ? "Opening / Intro" : timeline.sequenceId?.startsWith("talk-") ? `Talk ${timeline.sequenceId.replace("talk-", "")}` : "Recovered composition"}</strong><small>Full-scene authoring · {cameraTrack?.aspectRatio ?? "16:9"} constrained output</small></div>
-          <label className="camera-sequence-picker">Sequence<select value={timeline.sequenceId ?? "legacy"} onChange={(event) => chooseSequence(event.target.value)}>{sequenceIds.map((id) => <option key={id} value={id}>{id === "opening" ? "Opening / Intro" : id.startsWith("talk-") ? `Talk ${id.slice(5).padStart(2, "0")}` : id}</option>)}{(!timeline.sequenceId || timeline.sequenceId === "legacy") && <option value="legacy">Recovered composition</option>}</select></label>
+          <div><strong>{timeline.sequenceId === "opening" ? "Opening / Intro" : timeline.sequenceId ? sequenceDisplayName(timeline.sequenceId) : "Recovered composition"}</strong><small>Full-scene authoring · {cameraTrack?.aspectRatio ?? "16:9"} constrained output</small></div>
+          <label className="camera-sequence-picker">Sequence<select value={timeline.sequenceId ?? "legacy"} onChange={(event) => chooseSequence(event.target.value)}>{sequenceIds.map((id) => <option key={id} value={id}>{id === "opening" ? "Opening / Intro" : sequenceDisplayName(id)}</option>)}{(!timeline.sequenceId || timeline.sequenceId === "legacy") && <option value="legacy">Recovered composition</option>}</select></label>
           <button type="button" className={`editor-button${cameraTrack?.enabled ? " active" : ""}`} onClick={() => updateCameraTrack((value) => ({ ...value, enabled: !value.enabled }))} aria-pressed={cameraTrack?.enabled === true}>{cameraTrack?.enabled ? "Camera enabled" : "Enable camera"}</button>
           <button type="button" className={`editor-button${cameraInspectorTarget === "settings" ? " active" : ""}`} onClick={() => setCameraInspectorTarget("settings")} aria-pressed={cameraInspectorTarget === "settings"}>Camera settings</button>
           <button type="button" className="editor-button camera-add-shot" onClick={addCameraKeyframe}><IconPlus /> Add shot at playhead</button>
@@ -4305,12 +4380,31 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         <div className="editor-section">
           <div className="editor-section-title"><strong>Sequences</strong><span>{sequenceIds.length}</span></div>
           <div className="timeline-talk-playlist-actions">
+            <button className="editor-button" type="button" disabled={!project} onClick={addTalkSequenceToProject}><IconPlus /> Add Talk</button>
             {talkAutoplayActive
               ? <button className="editor-preview-button danger" type="button" onClick={stopTalkAutoplay}>Stop Talk autoplay</button>
               : <button className="editor-button" type="button" disabled={!talkSequenceIds.length} onClick={startTalkAutoplay}><IconPlay /> Play Talk list</button>}
           </div>
           <div className="sequence-list">
-            {sequenceIds.map((id) => <button key={id} className={`sequence-button${timeline.sequenceId === id ? " active" : ""}`} onClick={() => chooseSequence(id)}><strong>{id === "opening" ? "Opening" : `Talk ${id.replace("talk-", "").padStart(2, "0")}`}</strong></button>)}
+            {sequenceIds.map((id, index) => <div
+              key={id}
+              className={`sequence-list-item${timeline.sequenceId === id ? " active" : ""}${id === "opening" ? " is-required" : ""}`}
+              draggable={id !== "opening"}
+              onDragStart={(event) => beginSequenceReorder(event, id)}
+              onDragOver={(event) => { if (sequenceDragRef.current && id !== "opening") event.preventDefault(); }}
+              onDrop={(event) => dropSequenceReorder(event, id)}
+              onDragEnd={() => { sequenceDragRef.current = null; }}
+            >
+              <button type="button" className="sequence-button" aria-current={timeline.sequenceId === id ? "page" : undefined} onClick={() => chooseSequence(id)}>
+                <strong>{sequenceDisplayName(id)}</strong>
+                {id === "opening" && <small>Required · fixed first</small>}
+              </button>
+              {id !== "opening" && <div className="sequence-reorder-actions">
+                <button type="button" aria-label={`Move ${sequenceDisplayName(id)} earlier`} title="Move earlier" disabled={index <= 1} onClick={() => moveSequenceEarlierOrLater(id, -1)}>↑</button>
+                <button type="button" aria-label={`Move ${sequenceDisplayName(id)} later`} title="Move later" disabled={index === sequenceIds.length - 1} onClick={() => moveSequenceEarlierOrLater(id, 1)}>↓</button>
+                <button type="button" className="is-delete" aria-label={`Delete ${sequenceDisplayName(id)}`} title="Delete sequence" onClick={() => deleteSequenceFromProject(id)}>×</button>
+              </div>}
+            </div>)}
             {(!timeline.sequenceId || timeline.sequenceId === "legacy") && <button className="sequence-button active"><strong>Recovered composition</strong></button>}
           </div>
         </div>
@@ -4318,7 +4412,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       {!sequencePanelCollapsed && <TimelinePanelResizer side="sequences" value={sequencePanelWidth} onChange={(sequencePanelWidth) => updateTimelineLayout({ sequencePanelWidth })} />}
        <section className="timeline-main">
            <div className="sequence-heading">
-              <div><strong>{timeline.sequenceId === "opening" ? "Opening / Intro" : timeline.sequenceId?.startsWith("talk-") ? `Talk ${timeline.sequenceId.replace("talk-", "")}` : "Recovered composition"}</strong><small>{timeline.sequenceId === "opening" ? "Layered Spine and color composition." : "Synchronized Spine composition"}</small></div>
+              <div><strong>{timeline.sequenceId === "opening" ? "Opening / Intro" : timeline.sequenceId ? sequenceDisplayName(timeline.sequenceId) : "Recovered composition"}</strong><small>{timeline.sequenceId === "opening" ? "Layered Spine and color composition." : "Synchronized Spine composition"}</small></div>
               <div className="sequence-heading-actions">
                 <button type="button" className="editor-button timeline-panel-toggle" aria-controls="timeline-sequence-browser" aria-expanded={!sequencePanelCollapsed} onClick={() => updateTimelineLayout({ sequencePanelCollapsed: !sequencePanelCollapsed })}>{sequencePanelCollapsed ? "Show sequences" : "Hide sequences"}</button>
                 {(timeline.sequenceId === "opening" || isTalkSequence) && <span className="opening-duration-badge">{timeline.durationMode === "auto" ? "AUTO" : "MANUAL"} · {seconds(duration)}</span>}
@@ -4632,11 +4726,12 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
               <label>End (s)<input type="number" min={selectedColorClip.start + 0.01} step="0.001" value={Number(selectedColorClip.end.toFixed(3))} disabled={selectedColorLayer.locked} onChange={(event) => updateColorClip(selectedColorClip.id, { end: Math.max(selectedColorClip.start + 0.01, Number(event.target.value) || selectedColorClip.start + 0.01) })} /></label>
             </div>
              <label>Clip opacity · {Math.round(selectedColorClip.opacity * 100)}%<input type="range" min="0" max="1" step="0.01" value={selectedColorClip.opacity} disabled={selectedColorLayer.locked} onChange={(event) => updateColorClip(selectedColorClip.id, { opacity: Number(event.target.value) })} /></label>
-            <div className="editor-two-fields">
-              <label>Fade in (s)<input type="number" min="0" max={selectedColorClip.end - selectedColorClip.start} step="0.01" value={Number(selectedColorClip.fadeIn.toFixed(3))} disabled={selectedColorLayer.locked} onChange={(event) => updateColorClip(selectedColorClip.id, { fadeIn: Math.max(0, Number(event.target.value) || 0) })} /></label>
-              <label>Fade out (s)<input type="number" min="0" max={selectedColorClip.end - selectedColorClip.start} step="0.01" value={Number(selectedColorClip.fadeOut.toFixed(3))} disabled={selectedColorLayer.locked} onChange={(event) => updateColorClip(selectedColorClip.id, { fadeOut: Math.max(0, Number(event.target.value) || 0) })} /></label>
-            </div>
-            <label>Preset<select value="custom" disabled={selectedColorLayer.locked} onChange={(event) => event.target.value !== "custom" && applyColorClipPreset(event.target.value as ColorClipPreset)}><option value="custom">Custom</option><option value="solid">Solid hold</option><option value="fade-from-black">Fade from black</option><option value="fade-to-black">Fade to black</option><option value="white-flash">White flash</option></select></label>
+             <div className="timeline-color-fade-controls">
+               <BoundedSliderField label="Fade in" value={selectedColorClip.fadeIn} defaultValue={0} min={0} max={selectedColorClip.end - selectedColorClip.start} step={0.01} precision={2} unit="s" disabled={selectedColorLayer.locked} onCommit={(fadeIn) => updateColorClip(selectedColorClip.id, { fadeIn })} />
+               <BoundedSliderField label="Fade out" value={selectedColorClip.fadeOut} defaultValue={0} min={0} max={selectedColorClip.end - selectedColorClip.start} step={0.01} precision={2} unit="s" disabled={selectedColorLayer.locked} onCommit={(fadeOut) => updateColorClip(selectedColorClip.id, { fadeOut })} />
+             </div>
+             <small className="editor-field-hint">Adjust with the sliders or values, or drag the fade markers on the timeline.</small>
+             <label>Preset<select value="custom" disabled={selectedColorLayer.locked} onChange={(event) => event.target.value !== "custom" && applyColorClipPreset(event.target.value as ColorClipPreset)}><option value="custom">Custom</option><option value="solid">Solid hold</option><option value="fade-from-black">Fade from black</option><option value="fade-to-black">Fade to black</option><option value="white-flash">White flash</option></select></label>
             <label><span className="timeline-inline-check"><input type="checkbox" checked={selectedColorClip.enabled} disabled={selectedColorLayer.locked} onChange={(event) => updateColorClip(selectedColorClip.id, { enabled: event.target.checked })} /> Enabled</span></label>
             {selectedColorClip.fadeIn + selectedColorClip.fadeOut >= selectedColorClip.end - selectedColorClip.start - 0.001 && (selectedColorClip.fadeIn > 0 || selectedColorClip.fadeOut > 0) && <small className="editor-field-hint">Fades fill the clip duration; changing one scales both fades to fit.</small>}
           </section>}
