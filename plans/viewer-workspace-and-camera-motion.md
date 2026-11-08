@@ -12,7 +12,7 @@ The work has two feature areas:
 ## Confirmed behavior
 
 - Viewer should behave like an editor workspace: the document itself must not scroll at supported window sizes. Content that can exceed its panel—such as the character list or options—may scroll internally.
-- Viewer must support **16:9**, **4:3**, and **1:1** output frames. Keep 16:9 as the default for backwards visual compatibility. Fit the selected frame into the available area without stretching; letterbox as necessary.
+- Viewer supports **16:9** and **4:3** output frames, with 16:9 as the default. Legacy 1:1 preferences and camera tracks display as 16:9 without rewriting persisted data on load. Fit the selected frame into the available area without stretching; letterbox as necessary.
 - Selecting a character should start preparation of the resources needed to use that character. In particular, pressing Talk after selection should not replace the scene with a loading screen.
 - Editor should visualize the authored camera during playback and scrubbing, with a red camera-frame rectangle and/or center gizmo.
 - Safe bounds constrain the **entire camera frame**, not only its center. If the requested view is too large, zoom in until the whole frame fits; clamp its center to the rectangle; preserve the selected aspect ratio.
@@ -57,7 +57,7 @@ The work has two feature areas:
 
 ### Aspect-ratio selection
 
-- Add a compact, accessible selector with stable values for `16:9`, `4:3`, and `1:1`; default to `16:9`.
+- Keep a compact, accessible selector with stable values for `16:9` and `4:3`; default to `16:9`.
 - Treat the value as the actual rendered camera viewport ratio, not only a CSS decoration. Resize the stage/canvas consistently so the Spine renderer receives the intended output dimensions.
 - Center the output frame within the available stage area and show background/letterboxing around it where the window shape differs. Never distort the skeleton or authored scene.
 - Keep the chosen Viewer ratio across character and variant changes, library refresh, and same-session handoff reloads. Persist it as a versioned Viewer preference (or within the existing Viewer preference layer), not in library/project data. Invalid or unavailable stored values fall back to 16:9.
@@ -101,7 +101,7 @@ Add an optional camera-motion block to each `EditorTimeline`/sequence so its cam
 Proposed normalized model (exact names can follow local conventions during implementation):
 
 ```ts
-type CameraAspectRatio = "16:9" | "4:3" | "1:1";
+type CameraAspectRatio = "16:9" | "4:3";
 type CameraConstraint =
   | { mode: "automatic" }
   | { mode: "manual"; boundId: string }
@@ -172,9 +172,9 @@ Automatic selection should not flicker between overlapping bounds. Authored cons
 |---|---|---|
 | 0. Baseline and instrumentation | Reproduce page scrolling and Talk-time loading with disposable fixtures. Record which state transition turns on the blocking overlay, active-character resource counts, and memory/cache behavior. | Cause is confirmed; a repeatable baseline exists without touching repository `data/`. |
 | 1. Viewer workspace | Rework the Viewer’s windowed page into a viewport-fitted shell; retain local scrolling for long panels and all existing controls. | No document-level vertical or horizontal scroll at supported minimum and common desktop viewports; keyboard and compact layouts remain usable. |
-| 2. Aspect ratios | Add shared 16:9/4:3/1:1 values, stage sizing, canvas resizing, preference persistence, and fullscreen letterboxing. | Each selected ratio measures correctly, renders without distortion, survives selection/refresh, and does not break camera reset or playback. |
+| 2. Aspect ratios | Support shared 16:9/4:3 values, stage sizing, canvas resizing, preference persistence, and fullscreen letterboxing; keep a non-destructive 16:9 fallback for legacy 1:1 data. | Both supported ratios render without distortion; legacy data stays unchanged on load; explicit selection/save updates it. |
 | 3. Character preload lifecycle | Add selection-scoped preparation, stale-work cancellation, non-blocking progress, interaction readiness, bounded audio/resource caches, and cleanup. | After a character is ready, Talk and other supported interactions do not trigger a full-stage loading overlay; switching rapidly cannot display stale content or leak resources. |
-| 4. Camera model and migration | Add pure keyframe interpolation, ratio-aware pose types, safe-bound selection/solve helpers, project normalization, and persistence tests. | Legacy projects load unchanged; new camera data round-trips through legacy and manifest-backed saves and read-only preview. |
+| 4. Camera model and migration | Add pure keyframe interpolation, ratio-aware pose types, safe-bound selection/solve helpers, project normalization, and persistence tests. | Legacy 1:1 camera data falls back in memory to 16:9 without implicit writes; new camera data round-trips through legacy and manifest-backed saves and read-only preview. |
 | 5. Editor authoring and gizmo | Add Camera timeline controls, safe-bound editing, active-bound display, validation diagnostics, and red frame/center overlay. | Scrub/play/seek updates the gizmo deterministically; pan/zoom navigation remains independent; invalid data is explained and cannot corrupt a save. |
 | 6. Shared runtime playback | Apply authored camera poses to single Spine scenes and layered compositions; expose authored/override modes in Viewer and preserve existing camera modes. | Editor and Viewer show the same evaluated frame/bound for the same sequence, time, and ratio; old projects continue using old camera behavior. |
 | 7. Packaged verification | Run automated checks and packaged smoke testing with disposable assets; update documentation and portable artifacts only when requested. | Typecheck, tests, build/audits, aspect/layout/load smoke checks, camera constraint checks, and data-safety audit pass. |
@@ -184,7 +184,7 @@ Automatic selection should not flicker between overlapping bounds. Authored cons
 ### Viewer
 
 - Layout tests at the native minimum and representative viewport sizes: no document overflow, no clipped primary controls, and expected internal scroll ownership for character/options panels. Include a short/tall and narrow/wide viewport, sidebar shown/hidden, options expanded, status banners, and fullscreen.
-- Verify selected ratio dimensions for 16:9, 4:3, and 1:1 in windowed and fullscreen modes; canvas backing dimensions and CSS frame dimensions agree within rounding tolerance.
+- Verify selected ratio dimensions for 16:9 and 4:3 in windowed and fullscreen modes; canvas backing dimensions and CSS frame dimensions agree within rounding tolerance. Verify legacy 1:1 preferences are not rewritten on read.
 - Verify ratio preference defaults, invalid-value fallback, persistence, and preservation through character/variant selection, refresh, and same-session handoff.
 - Test preload state transitions: active selection, all required resources ready, missing optional audio, required-file errors, cancellation, rapid character/variant switching, library identity change, refresh invalidation, and cache eviction.
 - Assert that pending voice-only work never activates the blocking stage overlay and that Talk is not enabled before its playback path is ready. Test the Talk path for interaction and composition-backed sequences.
@@ -193,7 +193,7 @@ Automatic selection should not flicker between overlapping bounds. Authored cons
 ### Editor and camera runtime
 
 - Test interpolation endpoints, ordering, duplicate/non-finite/out-of-range keyframes, easing, playhead seeking, loop boundaries, and ratio-derived frame dimensions.
-- Test safe-bound math for 16:9, 4:3, and square 1:1 frames; overlapping, disabled, missing, and offstage bounds; oversized requested frames; center clamping at every edge; automatic selection stability/ties/fallback; manual assignment; unconstrained mode; and invalid manual references.
+- Test safe-bound math for 16:9 and 4:3 frames using shared world-space bounds; overlapping, disabled, missing, and offstage bounds; oversized requested frames; center clamping at every edge; automatic selection stability/ties/fallback; manual assignment; unconstrained mode; and invalid manual references.
 - Verify the entire calculated camera frame is inside its selected safe rectangle and retains its ratio after every solve.
 - Test schema migration from existing v4 projects, no-camera defaults, current-schema round-trip, sequence save/load, manifest-backed save/load, draft preview, saved preview, and missing bound diagnostics.
 - Verify Editor pan/zoom changes only workspace navigation, while camera-track edits/playback change the camera gizmo and output preview. Ensure camera frame stays correctly registered when stage size and device scale change.
@@ -204,11 +204,11 @@ Automatic selection should not flicker between overlapping bounds. Authored cons
 Use a small valid disposable Spine export and disposable Editor project; do not use the repository library.
 
 1. At the supported minimum window size and a normal desktop size, verify Viewer has no page scrollbar and the stage, character navigation, and essential controls remain usable.
-2. Select each aspect ratio; verify the output is undistorted and letterboxed as needed. Hide/show the sidebar and expand options without losing access to the stage or primary controls.
+2. Select 16:9 and 4:3; verify the output is undistorted and letterboxed as needed. Verify a legacy 1:1 preference is shown as 16:9 and remains unchanged until a ratio is selected. Hide/show the sidebar and expand options without losing access to the stage or primary controls.
 3. Select a character, wait for its ready state, then exercise Talk, autoplay, interaction modes, language choice, and repeated selection. Confirm Talk does not cover the running scene with a loading screen.
 4. Rapidly switch character and variant while files/audio are preparing; confirm the visible character, readiness state, dialogue, and active audio all belong to the latest selection.
 5. In Editor, add and move camera keyframes while paused, scrubbing, and playing. Confirm the red camera frame/center gizmo tracks the playhead.
-6. Create overlapping and non-overlapping safe bounds. Exercise Automatic, Manual, and None modes; verify manual assignment, automatic stability/fallback, zoom-in when the frame is too large, and full-frame edge clamping for all three ratios.
+6. Create overlapping and non-overlapping shared safe bounds. Exercise Automatic, Manual, and None modes; verify manual assignment, automatic stability/fallback, zoom-in when the frame is too large, and full-frame edge clamping at both supported ratios.
 7. Save, close, and reopen a disposable project; verify camera tracks and bounds persist. Preview the saved/draft sequence in Viewer and compare the active frame to Editor.
 8. Confirm Viewer did not write to the asset library and that app preferences/cache remain outside it.
 
@@ -226,9 +226,9 @@ Do not launch packaged applications solely to validate a build without user auth
 ## Completion criteria
 
 - Viewer’s supported windowed workspace does not require document scrolling; internal panels handle their own overflow.
-- Viewer can select 16:9, 4:3, and 1:1 without distortion, and the selection survives expected reload/selection workflows.
+- Viewer can select 16:9 and 4:3 without distortion, and the selection survives expected reload/selection workflows. Legacy 1:1 data falls back visibly to 16:9 and remains unmodified until explicit save/selection.
 - Selecting a character prepares its active variant and interaction/talk resources; Talk no longer causes a blocking loading screen after readiness.
 - Editor can author camera motion and preview the camera frame/center during playback and scrubbing without confusing it with stage pan/zoom.
-- Multiple named safe bounds support automatic and manual selection plus unconstrained shots. The complete camera frame remains inside the active bound and retains its aspect ratio.
+- Multiple named shared world-space safe bounds support automatic and manual selection plus unconstrained shots. The complete camera frame remains inside the active bound at both supported ratios. Per-ratio overrides stay deferred until a concrete scene demonstrates they are needed.
 - Viewer uses the same authored camera evaluation when previewing a camera-enabled sequence, while current modes and projects without camera tracks continue to work.
 - Typecheck, tests, builds, release audits, and disposable packaged smoke checks pass without reading or writing repository `data/`.

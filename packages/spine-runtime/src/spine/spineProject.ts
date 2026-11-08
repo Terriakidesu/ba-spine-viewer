@@ -1,5 +1,6 @@
 import { normalizeSpineInteractionProject, type SpineInteractionProject } from "./spineInteraction";
 import { manifestReferenceCandidates, type SpineManifestRecord, type SpineManifestPath } from "./spineManifest";
+import { hasLegacySquareCameraAspectRatio } from "./spineCameraMotion";
 
 export interface SpineProjectSource {
   getFile: (path: string) => Promise<File | null>;
@@ -110,21 +111,29 @@ export function manifestProjectValue(data: SpineManifestProjectData, directory: 
 }
 
 /** Read the local project companion when the viewer is pointed at an asset root. */
-export async function readLocalInteractionProject(source: SpineProjectSource, directory: string): Promise<SpineInteractionProject | null> {
+export async function readLocalInteractionProject(source: SpineProjectSource, directory: string, onLegacyAspectRatio?: () => void): Promise<SpineInteractionProject | null> {
   const manifestData = await readManifestProjectData(source, directory);
   if (manifestData) {
-    const project = normalizeSpineInteractionProject(manifestProjectValue(manifestData, directory), directory);
-    if (project) return project;
+    const value = manifestProjectValue(manifestData, directory);
+    const project = normalizeSpineInteractionProject(value, directory);
+    if (project) {
+      if (hasLegacySquareCameraAspectRatio(value)) onLegacyAspectRatio?.();
+      return project;
+    }
   }
   for (const path of editorProjectPaths(directory)) {
     const file = await source.getFile(path);
     if (!file) continue;
     try {
-      const project = normalizeSpineInteractionProject(JSON.parse(await file.text()) as unknown, directory);
-      if (project) return {
-        ...project,
-        entrySequence: project.entrySequence !== undefined ? project.entrySequence : (project.sequences?.opening ? "opening" : null),
-      };
+      const value = JSON.parse(await file.text()) as unknown;
+      const project = normalizeSpineInteractionProject(value, directory);
+      if (project) {
+        if (hasLegacySquareCameraAspectRatio(value)) onLegacyAspectRatio?.();
+        return {
+          ...project,
+          entrySequence: project.entrySequence !== undefined ? project.entrySequence : (project.sequences?.opening ? "opening" : null),
+        };
+      }
     } catch {
       // A malformed private project should not prevent the published fallback from loading.
     }

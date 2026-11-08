@@ -54,7 +54,8 @@ import {
 } from "@ba-spine/spine-runtime/spine/spineVoicelines";
 import { SpineCompositionViewport, type SpineCompositionViewportHandle } from "@ba-spine/spine-runtime/ui/SpineCompositionViewport";
 import { timelineAuthoredCueEnd, timelineForSequence, timelineLastDefinedCameraTrack, timelinePlaybackDuration, timelineSequenceIds, timelineTalkInProgress, timelineTalkSequenceIds, type SpineTimeline } from "@ba-spine/spine-runtime/spine/spineTimeline";
-import { readViewerAspectRatio, writeViewerAspectRatio, type ViewerAspectRatio } from "./viewerPresentation";
+import { hasLegacySquareCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
+import { hasLegacyViewerAspectRatio, readViewerAspectRatio, writeViewerAspectRatio, type ViewerAspectRatio } from "./viewerPresentation";
 import { createCanvasFrameCapture, createCanvasRecordingCapture, createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, readVideoRecordingQuality, videoFilenameStem, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingTimelineOffsets, writeVideoRecordingQuality, type AudioRecordingCapture, type CanvasFrameCapture, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
 
 type ViewerDraftPreview = Omit<SpineDraftSnapshot, "project"> & { project: SpineInteractionProject };
@@ -309,6 +310,7 @@ export interface SpineViewportHandle {
   setInteractionMode: (mode: SpineInteractionMode) => void;
   setTalkAudioPending: (pending: boolean) => void;
   isTalkActive: () => boolean;
+  isInteractionBusy: () => boolean;
   triggerTalk: (animation?: string) => void;
   startIntroAudio: () => void;
   replayIntro: () => void;
@@ -457,6 +459,7 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
     setInteractionMode: (value) => rendererRef.current?.setInteractionMode(value),
     setTalkAudioPending: (value) => rendererRef.current?.setTalkAudioPending(value),
     isTalkActive: () => rendererRef.current?.isTalkActive() ?? false,
+    isInteractionBusy: () => rendererRef.current?.isInteractionBusy() ?? false,
     triggerTalk: (value) => rendererRef.current?.triggerTalk(value),
     startIntroAudio: () => rendererRef.current?.startIntroAudio(),
     replayIntro: () => rendererRef.current?.replayIntro(),
@@ -628,6 +631,9 @@ export function Spine() {
   const [voiceAudioProgress, setVoiceAudioProgress] = useState({ loaded: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
   const [handoffStatus, setHandoffStatus] = useState<string | null>(null);
+  const [legacyPreferenceNotice, setLegacyPreferenceNotice] = useState(() => hasLegacyViewerAspectRatio());
+  const [legacyLocalCameraNotice, setLegacyLocalCameraNotice] = useState(false);
+  const [legacyDraftCameraNotice, setLegacyDraftCameraNotice] = useState(false);
   const [meta, setMeta] = useState<SpineMeta | null>(null);
   const [animation, setAnimation] = useState("");
   const [animationSelectionOrigin, setAnimationSelectionOrigin] = useState<"automatic" | "explicit">("automatic");
@@ -863,6 +869,7 @@ export function Spine() {
               throw new Error("The library identity does not match the handoff path.");
             }
             let incomingDraft: ViewerDraftPreview | null = null;
+            let incomingDraftHasLegacyCamera = false;
             if (message.draft) {
               const snapshot = await readDesktopDraftSnapshot(message.draft.sessionId);
               if (!snapshot
@@ -872,6 +879,7 @@ export function Spine() {
                 throw new Error("The unsaved draft preview session is stale or no longer available.");
               }
               if (snapshot.project.assetDirectory !== message.lobbyId) throw new Error("The unsaved draft targets a different lobby.");
+              incomingDraftHasLegacyCamera = hasLegacySquareCameraAspectRatio(snapshot.project);
               const project = normalizeSpineInteractionProject(snapshot.project, message.lobbyId);
               if (!project) throw new Error("The unsaved draft project is not valid for Viewer preview.");
               incomingDraft = { ...snapshot, project };
@@ -916,7 +924,9 @@ export function Spine() {
             setSelectedDirectory(message.lobbyId);
             setAvailableDirectories(new Set(directories));
             setLocalInteractionProject(null);
+            setLegacyLocalCameraNotice(false);
             setDraftPreview(incomingDraft);
+            setLegacyDraftCameraNotice(incomingDraftHasLegacyCamera);
             setDraftPreviewNotice(null);
             setSetFiles(null);
             setSource(nextSource);
@@ -1151,7 +1161,11 @@ export function Spine() {
     setCameraMode("artwork");
     activeViewport()?.resetCamera();
   };
-  useEffect(() => { writeViewerAspectRatio(aspectRatio); }, [aspectRatio]);
+  function changeOutputAspectRatio(value: ViewerAspectRatio) {
+    writeViewerAspectRatio(value);
+    setAspectRatio(value);
+    setLegacyPreferenceNotice(false);
+  }
   useEffect(() => {
     const nextMode: SpineCameraMode = interactionMode === "free"
       ? "artwork"
@@ -1175,6 +1189,7 @@ export function Spine() {
           || snapshot.library.identity !== current.library.identity
           || snapshot.lobbyId !== current.lobbyId) {
           setDraftPreview(null);
+          setLegacyDraftCameraNotice(false);
           setDraftPreviewNotice(t("spine.draft.ended"));
           return;
         }
@@ -1182,11 +1197,13 @@ export function Spine() {
         if (snapshot.revision > current.revision) {
           const project = normalizeSpineInteractionProject(snapshot.project, snapshot.lobbyId);
           if (!project) throw new Error("Draft project is no longer valid.");
+          setLegacyDraftCameraNotice(hasLegacySquareCameraAspectRatio(snapshot.project));
           setDraftPreview((active) => active?.sessionId === draftSessionId ? { ...snapshot, project } : active);
         }
       } catch {
         if (live) {
           setDraftPreview(null);
+          setLegacyDraftCameraNotice(false);
           setDraftPreviewNotice(t("spine.draft.disconnected"));
         }
         return;
@@ -1203,6 +1220,7 @@ export function Spine() {
   useEffect(() => {
     if (draftPreview && draftPreview.lobbyId !== selectedDirectoryName) {
       setDraftPreview(null);
+      setLegacyDraftCameraNotice(false);
       setDraftPreviewNotice(t("spine.draft.ended"));
     }
   }, [draftPreview?.sessionId, selectedDirectoryName]);
@@ -1227,12 +1245,15 @@ export function Spine() {
   useEffect(() => {
     let live = true;
     setLocalInteractionProject(null);
+    setLegacyLocalCameraNotice(false);
     if (!source || !selectedDirectoryName) {
       setInteractionProjectLoading(false);
       return () => { live = false; };
     }
     setInteractionProjectLoading(true);
-    void readLocalInteractionProject(source, selectedDirectoryName).then((project) => {
+    setLegacyPreferenceNotice(hasLegacyViewerAspectRatio());
+    setLegacyLocalCameraNotice(false);
+    void readLocalInteractionProject(source, selectedDirectoryName, () => setLegacyLocalCameraNotice(true)).then((project) => {
       if (!live) return;
       setLocalInteractionProject(project);
       setInteractionProjectLoading(false);
@@ -1494,6 +1515,7 @@ export function Spine() {
   const resetAssetPlayback = () => {
     pendingHandoffRestoreRef.current = null;
     setDraftPreview(null);
+    setLegacyDraftCameraNotice(false);
     setDraftPreviewNotice(null);
     stopVoice();
     setPlaying(true);
@@ -1510,6 +1532,7 @@ export function Spine() {
 
   const returnToSavedFiles = () => {
     setDraftPreview(null);
+    setLegacyDraftCameraNotice(false);
     setDraftPreviewNotice(t("spine.draft.returned"));
   };
 
@@ -2132,13 +2155,13 @@ export function Spine() {
     && progress.animation !== null
     && (skipIntro || !(meta?.introAnimation && meta.idleAnimation) || progress.animation !== meta.introAnimation);
 
+  const rendererInteractionBusy = () => compositionActive
+      ? compositionRef.current?.isInteractionBusy() === true
+      : viewportRef.current?.isInteractionBusy() === true;
   const playTalk = (line?: SpineVoiceLine, preserveAutoplay = false) => {
     if (!interactionReady) return;
-    const rendererTalkActive = compositionActive
-      ? compositionRef.current?.isTalkActive() === true
-      : viewportRef.current?.isTalkActive() === true;
     const authoredTalkActive = compositionActive && timelineTalkInProgress(compositionSequenceId, idleMode);
-    if (rendererTalkActive || authoredTalkActive) return;
+    if (rendererInteractionBusy() || authoredTalkActive) return;
     stopVoice(true, !preserveAutoplay);
     if (compositionActive && selectedInteractionProject && authoredTalkSequenceIds.length > 0) {
       const requestedNumber = line ? Number((line.animation || line.id).match(/(?:Talk_|talk-|_)(\d+)/i)?.[1]) : null;
@@ -2177,6 +2200,7 @@ export function Spine() {
       return;
     }
     if (!interactionReady || (voiceLines.length === 0 && !authoredTalkSequenceIds.length)) return;
+    if (rendererInteractionBusy()) return;
     if (authoredTalkAutoplayAvailable && selectedInteractionProject) {
       stopVoice(true, false);
       authoredTalkIndexRef.current = 0;
@@ -3710,9 +3734,11 @@ export function Spine() {
              <small role={backgroundAudioLoading ? "status" : undefined}>{backgroundAudioLoading
                ? t("spine.loading.audio", { loaded: voiceAudioLoading ? voiceAudioProgress.loaded : compositionLoadProgress?.loaded ?? 0, total: voiceAudioLoading ? voiceAudioProgress.total : compositionLoadProgress?.total ?? 0 })
                : t(meta ? "spine.preview.ready" : "spine.preview.waiting")}</small>
-                {showAspectRatioControl && <label className="spine-output-ratio"><span>{t("spine.aspectRatio")}</span><select value={outputAspectRatio} onChange={(event) => setAspectRatio(event.target.value as ViewerAspectRatio)} aria-label={t("spine.aspectRatioAria")}>
-                <option value="16:9">16:9</option><option value="4:3">4:3</option><option value="1:1">1:1</option>
-              </select></label>}
+                {showAspectRatioControl && <label className="spine-output-ratio"><span>{t("spine.aspectRatio")}</span><select value={outputAspectRatio} onChange={(event) => changeOutputAspectRatio(event.target.value as ViewerAspectRatio)} aria-label={t("spine.aspectRatioAria")}>
+                <option value="16:9">16:9</option><option value="4:3">4:3</option>
+               </select></label>}
+             {legacyPreferenceNotice && <span className="spine-library-change-status" role="status">{t("spine.aspectRatio.legacyPreference")}</span>}
+             {(legacyLocalCameraNotice || legacyDraftCameraNotice) && <span className="spine-library-change-status" role="status">{t("spine.aspectRatio.legacyCamera")}</span>}
             {desktopSource && <div className="spine-library-refresh">
               {libraryChangesAvailable
                 ? <span className="spine-library-change-status" role="status">{t("spine.library.changesAvailable")}</span>

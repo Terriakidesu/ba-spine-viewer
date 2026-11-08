@@ -1,6 +1,6 @@
 import type { SpineCameraFrame, SpineCameraPose } from "./spineRuntime";
 
-export type SpineCameraAspectRatio = "16:9" | "4:3" | "1:1";
+export type SpineCameraAspectRatio = "16:9" | "4:3";
 export type SpineCameraConstraint =
   | { mode: "automatic" }
   | { mode: "manual"; boundId: string }
@@ -64,8 +64,9 @@ export interface SolvedSpineCamera {
 const ASPECTS: Record<SpineCameraAspectRatio, number> = {
   "16:9": 16 / 9,
   "4:3": 4 / 3,
-  "1:1": 1,
 };
+
+const LEGACY_SQUARE_TO_WIDE_HEIGHT_SCALE = 9 / 16;
 
 export function cameraAspectValue(value: SpineCameraAspectRatio): number {
   return ASPECTS[value];
@@ -138,7 +139,27 @@ export function spineCameraBoundFromCanvasDrag(
 }
 
 export function isCameraAspectRatio(value: unknown): value is SpineCameraAspectRatio {
-  return value === "16:9" || value === "4:3" || value === "1:1";
+  return value === "16:9" || value === "4:3";
+}
+
+/** Detect an authored camera track that needs the legacy square-ratio fallback. */
+export function hasLegacySquareCameraAspectRatio(value: unknown): boolean {
+  const pending: unknown[] = [value];
+  const visited = new WeakSet<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== "object") continue;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    if (Array.isArray(current)) {
+      pending.push(...current);
+      continue;
+    }
+    const record = current as Record<string, unknown>;
+    if (record.aspectRatio === "1:1") return true;
+    pending.push(...Object.values(record));
+  }
+  return false;
 }
 
 function finite(value: unknown, fallback: number): number {
@@ -162,6 +183,7 @@ export function normalizeCameraConstraint(value: unknown): SpineCameraConstraint
 
 export function normalizeSpineCameraTrack(value: unknown, duration = Number.POSITIVE_INFINITY): SpineCameraTrack | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const legacySquare = (value as Record<string, unknown>).aspectRatio === "1:1";
   const raw = value as Partial<SpineCameraTrack>;
   const aspectRatio = isCameraAspectRatio(raw.aspectRatio) ? raw.aspectRatio : "16:9";
   const constraint = normalizeCameraConstraint(raw.constraint);
@@ -200,7 +222,8 @@ export function normalizeSpineCameraTrack(value: unknown, duration = Number.POSI
     const time = finite(keyframe.time, Number.NaN);
     const centerX = finite(keyframe.centerX, Number.NaN);
     const centerY = finite(keyframe.centerY, Number.NaN);
-    const frameHeight = finite(keyframe.frameHeight, Number.NaN);
+    const sourceFrameHeight = finite(keyframe.frameHeight, Number.NaN);
+    const frameHeight = legacySquare ? sourceFrameHeight * LEGACY_SQUARE_TO_WIDE_HEIGHT_SCALE : sourceFrameHeight;
     if (!id || keyframeIds.has(id) || ![time, centerX, centerY, frameHeight].every(Number.isFinite) || time < 0 || time > duration || frameHeight <= 0) continue;
     keyframeIds.add(id);
     const easing = keyframe.easing === "smooth" || keyframe.easing === "hold" ? keyframe.easing : "linear";

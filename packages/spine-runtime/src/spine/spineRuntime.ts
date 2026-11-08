@@ -660,6 +660,8 @@ export class SpineRenderer {
   private touchPointerOrigin: { x: number; y: number } | null = null;
   private touchFollowOffset: { x: number; y: number } | null = null;
   private sampledEditorFace = "";
+  private sampledEditorSequenceId: string | null = null;
+  private sampledEditorTalkSequence = false;
   private interactionMotionState: SpineInteractionMotionState = createInteractionMotionState();
   private fitCameraPose: CameraPose | null = null;
   private pendingCameraPose: SpineCameraPose | null = null;
@@ -706,6 +708,8 @@ export class SpineRenderer {
     this.callbacks.onLoadProgress?.({ stage: "files", loaded: 0, total: 0 });
     this.callbacks.onInteractionPoints?.({ canvasWidth: 0, canvasHeight: 0, points: [] });
     this.animationSelection = "";
+    this.sampledEditorSequenceId = null;
+    this.sampledEditorTalkSequence = false;
     this.talkIndex = 0;
     this.activeTalkIndex = -1;
     this.talkEventIndex = 0;
@@ -1030,6 +1034,10 @@ export class SpineRenderer {
 
   isTalkActive(): boolean {
     return this.interactionState === "talk";
+  }
+
+  isInteractionBusy(): boolean {
+    return this.interactionState !== "idle";
   }
 
   /** Attach the intro voice listener after the local voice catalog has loaded. */
@@ -1408,9 +1416,17 @@ export class SpineRenderer {
   }
 
   /** Deterministic authoring sample: idle under body/face tracks, with no event playback. */
-  sampleEditorAnimation(animation: string, face: string, time: number, loop: boolean, idleUnderlay = false, preserveInteractions = false, animationAlpha = 1, faceAlpha = animationAlpha, idleTime = time) {
+  sampleEditorAnimation(animation: string, face: string, time: number, loop: boolean, idleUnderlay = false, preserveInteractions = false, animationAlpha = 1, faceAlpha = animationAlpha, idleTime = time, sequenceId = "legacy") {
     const bundle = this.bundle;
     if (!bundle) return;
+    const sequenceChanged = preserveInteractions && sequenceId !== this.sampledEditorSequenceId;
+    const openingIntro = Boolean(bundle.meta.introAnimation && bundle.meta.idleAnimation && animation === bundle.meta.introAnimation);
+    if (preserveInteractions && (sequenceChanged || (openingIntro && this.interactionReady))) this.resetTimelineInteractionState();
+    if (preserveInteractions) {
+      this.sampledEditorSequenceId = sequenceId;
+      this.sampledEditorTalkSequence = /^talk-\d+$/i.test(sequenceId);
+      this.interactionReady = !openingIntro;
+    }
     if (!preserveInteractions) this.playing = false;
     if (preserveInteractions) this.restoreInteractionPose();
     const previousBase = bundle.state.getCurrent(0);
@@ -1488,6 +1504,31 @@ export class SpineRenderer {
     bundle.state.apply(bundle.skeleton);
     bundle.skeleton.updateWorldTransform(Physics.reset);
     if (preserveInteractions) rebaseInteractionMotion(this.motionState());
+  }
+
+  private resetTimelineInteractionState() {
+    const state = this.bundle?.state;
+    this.resetInteractionTargets();
+    for (const track of [1, 2, 3, 4, 5, 6]) state?.clearTrack(track);
+    this.interactionPointer = null;
+    this.interactionPointerId = null;
+    this.interactionPointerHeld = false;
+    this.interactionPressedTarget = null;
+    this.interactionPressedTrigger = "hold";
+    this.interactionPressOrigin = null;
+    this.activeGestureInteractionId = null;
+    this.pointerInside = false;
+    this.interactionState = "idle";
+    this.interactionTrackName = null;
+    this.talkAudioPending = false;
+    this.talkFadeQueued = false;
+    this.activeTalkIndex = -1;
+    this.talkEventIndex = 0;
+    this.eyeFollowHold = 0;
+    this.interactionFollowWorld = null;
+    this.touchPointerOrigin = null;
+    this.touchFollowOffset = null;
+    this.sampledEditorFace = "";
   }
 
   /** Play an authored interaction phase over the idle pose in the private editor. */
@@ -1979,9 +2020,12 @@ export class SpineRenderer {
     this.canvas.removeEventListener("wheel", this.onWheel);
   }
 
-  private onPointerDown = (event: PointerEvent) => {
+  private onPointerDown = (event: PointerEvent) => this.handlePointerDown(event);
+
+  private handlePointerDown(event: PointerEvent) {
     if (event.button !== 0) return;
     if (this.interactionMode === "interaction") {
+      if (this.interactionPointerHeld) return;
       this.interactionPointerId = event.pointerId;
       this.interactionPointerHeld = true;
       this.pointerInside = true;
@@ -2023,7 +2067,9 @@ export class SpineRenderer {
     this.emitEditorFrame();
   };
 
-  private onPointerUp = (event: PointerEvent) => {
+  private onPointerUp = (event: PointerEvent) => this.handlePointerUp(event);
+
+  private handlePointerUp(event: PointerEvent) {
     if (this.interactionMode === "interaction") {
       if (this.interactionPointerId !== null && this.interactionPointerId !== event.pointerId) return;
       const rect = this.canvas.getBoundingClientRect();
@@ -2048,7 +2094,9 @@ export class SpineRenderer {
     this.updateInteractionPointer(event);
   };
 
-  private onPointerLeave = (event: PointerEvent) => {
+  private onPointerLeave = (event: PointerEvent) => this.handlePointerLeave(event);
+
+  private handlePointerLeave(event: PointerEvent) {
     if (this.interactionMode !== "interaction" || !this.interactionPointerHeld || this.interactionPointerId !== event.pointerId) return;
     this.pointerInside = false;
     this.interactionPointer = null;
@@ -2089,7 +2137,7 @@ export class SpineRenderer {
   }
 
   private beginPressedGesture() {
-    if (this.interactionState !== "idle") return;
+    if (this.interactionState !== "idle" || !this.interactionReady || this.sampledEditorTalkSequence) return;
     const target = this.interactionPressedTarget;
     if (!target) return;
     const origin = this.interactionPressOrigin;

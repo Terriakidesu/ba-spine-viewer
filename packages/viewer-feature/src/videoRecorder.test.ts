@@ -122,12 +122,11 @@ describe("Viewer video recording plans", () => {
     expect(detectSupportedVideoFormats(null)).toEqual([]);
   });
 
-  test("uses even-sized dimensions for the chosen aspect ratio", () => {
+  test("uses even-sized dimensions for supported aspect ratios", () => {
     expect(videoRecordingDimensions(1080, "16:9")).toEqual({ width: 1920, height: 1080 });
     expect(videoRecordingDimensions(1440, "16:9")).toEqual({ width: 2560, height: 1440 });
     expect(videoRecordingDimensions(2160, "16:9")).toEqual({ width: 3840, height: 2160 });
     expect(videoRecordingDimensions(720, "4:3")).toEqual({ width: 960, height: 720 });
-    expect(videoRecordingDimensions(1080, "1:1")).toEqual({ width: 1080, height: 1080 });
   });
 
   test("scales Spine backing pixels to export density after device pixel ratio", () => {

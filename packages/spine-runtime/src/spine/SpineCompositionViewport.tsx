@@ -24,6 +24,7 @@ export interface SpineCompositionViewportHandle {
   triggerTalk: (animation?: string) => void;
   setTalkAudioPending: (pending: boolean) => void;
   isTalkActive: () => boolean;
+  isInteractionBusy: () => boolean;
   startIntroAudio: () => void;
   getTimelinePlaybackDuration: (targetTimeline: SpineTimeline) => number;
   getRecordingMetrics: (targetTimeline?: SpineTimeline, requirePreloads?: boolean) => { openingDuration: number; idleDuration: number; idleAnimation: string; ready: boolean };
@@ -562,6 +563,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
      triggerTalk: (animation) => talkRendererRef.current?.triggerTalk(animation),
      setTalkAudioPending: (pending) => talkRendererRef.current?.setTalkAudioPending(pending),
      isTalkActive: () => talkRendererRef.current?.isTalkActive() ?? false,
+     isInteractionBusy: () => talkRendererRef.current?.isInteractionBusy() ?? false,
      startIntroAudio: () => talkRendererRef.current?.startIntroAudio(),
      getTimelinePlaybackDuration: (targetTimeline) => timelinePlaybackDuration(
        targetTimeline,

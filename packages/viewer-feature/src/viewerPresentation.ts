@@ -17,6 +17,15 @@ export function readViewerAspectRatio(storage?: Pick<Storage, "getItem"> | null)
   }
 }
 
+export function hasLegacyViewerAspectRatio(storage?: Pick<Storage, "getItem"> | null): boolean {
+  try {
+    const target = storage === undefined ? (typeof localStorage === "undefined" ? null : localStorage) : storage;
+    return target?.getItem(VIEWER_ASPECT_RATIO_KEY) === "1:1";
+  } catch {
+    return false;
+  }
+}
+
 export function writeViewerAspectRatio(value: ViewerAspectRatio, storage?: Pick<Storage, "setItem"> | null): void {
   try {
     const target = storage === undefined ? (typeof localStorage === "undefined" ? null : localStorage) : storage;

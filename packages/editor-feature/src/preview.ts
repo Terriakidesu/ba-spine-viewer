@@ -42,7 +42,7 @@ export class InteractionPreview {
   private released = false;
   private elapsed = 0;
   private duration = 0;
-  private pointer = { x: 0, y: 0 };
+  private pointer: { x: number; y: number } | null = { x: 0, y: 0 };
   private motion: SpineInteractionMotionState = createInteractionMotionState();
 
   get progress() {
@@ -87,6 +87,7 @@ export class InteractionPreview {
   }
 
   move(x: number, y: number) { this.pointer = { x, y }; }
+  leave() { this.pointer = null; }
   release() { this.held = false; this.released = true; }
 
   beforeUpdate() {
@@ -127,8 +128,10 @@ export class InteractionPreview {
   update(delta: number, skeleton: Skeleton, state: AnimationState) {
     if (this.pending && this.interaction?.trigger === "drag") {
       if (!this.held) { this.reset(state); return; }
-      const origin = this.motion.origin ?? this.pointer;
-      if (!interactionPressReady(this.interaction.trigger, this.held, Math.hypot(this.pointer.x - origin.x, this.pointer.y - origin.y))) return;
+      const pointer = this.pointer;
+      if (!pointer) return;
+      const origin = this.motion.origin ?? pointer;
+      if (!interactionPressReady(this.interaction.trigger, this.held, Math.hypot(pointer.x - origin.x, pointer.y - origin.y))) return;
     }
     if (this.pending) { this.pending = false; this.enter("starting", state); }
     else this.elapsed += delta;

@@ -3,6 +3,7 @@ import { editorProjectPath, editorProjectPaths } from "./editorStorage";
 import { manifestProjectValue, readManifestProjectData } from "@ba-spine/spine-runtime/spine/spineProject";
 import { SPINE_MANIFEST_SCHEMA_VERSION, manifestPath, manifestReferenceCandidates, sequencePath, type SpineManifest, type SpineManifestRecord, type SpineManifestPath } from "@ba-spine/spine-runtime/spine/spineManifest";
 import { contentVersion } from "@ba-spine/platform-contracts/contentVersion";
+import { hasLegacySquareCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 
 export interface SavedEditorProjectSource {
   readText: (path: string) => Promise<string | null>;
@@ -25,7 +26,7 @@ export interface PreparedEditorProjectSave {
   files: EditorSaveFile[];
 }
 
-export async function readSavedEditorProject(source: SavedEditorProjectSource, directory: string, onError: (message: string) => void): Promise<EditorProject | null> {
+export async function readSavedEditorProject(source: SavedEditorProjectSource, directory: string, onError: (message: string) => void, onLegacyAspectRatio?: () => void): Promise<EditorProject | null> {
   if (source.getManifest) {
     const manifestData = await readManifestProjectData({
       getManifest: source.getManifest,
@@ -35,8 +36,12 @@ export async function readSavedEditorProject(source: SavedEditorProjectSource, d
       },
     }, directory);
     if (manifestData) {
-      const project = normalizeProject(manifestProjectValue(manifestData, directory), directory);
-      if (project) return project;
+      const value = manifestProjectValue(manifestData, directory);
+      const project = normalizeProject(value, directory);
+      if (project) {
+        if (hasLegacySquareCameraAspectRatio(value)) onLegacyAspectRatio?.();
+        return project;
+      }
       onError(`The manifest project for ${directory} is not compatible.`);
     }
   }
@@ -44,8 +49,12 @@ export async function readSavedEditorProject(source: SavedEditorProjectSource, d
     const content = await source.readText(path);
     if (!content) continue;
     try {
-      const project = normalizeProject(JSON.parse(content) as unknown, directory);
-      if (project) return project;
+      const value = JSON.parse(content) as unknown;
+      const project = normalizeProject(value, directory);
+      if (project) {
+        if (hasLegacySquareCameraAspectRatio(value)) onLegacyAspectRatio?.();
+        return project;
+      }
       onError(`Saved editor project is not compatible: ${path}`);
     } catch (value) {
       onError(`Could not read saved editor project ${path}: ${value instanceof Error ? value.message : String(value)}`);

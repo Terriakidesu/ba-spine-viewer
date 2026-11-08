@@ -343,7 +343,7 @@ describe("Spine restart playback", () => {
     expect(clips).toEqual([0]);
   });
 
-  test("Talk requests cannot interrupt an active talk", () => {
+test("Talk requests cannot interrupt an active talk", () => {
     const data = new SkeletonData();
     data.bones.push(new BoneData(0, "root", null));
     data.animations.push(new Animation("Talk_01_M", [], 1), new Animation("Talk_02_M", [], 1));
@@ -369,6 +369,108 @@ describe("Spine restart playback", () => {
     expect(renderer.interactionState).toBe("talk");
     expect(renderer.activeTalkIndex).toBe(0);
     expect(renderer.talkIndex).toBe(1);
+  });
+
+  test("timeline sequence changes cancel overlays and opening/Talk sequences take input precedence", () => {
+    const data = new SkeletonData();
+    data.bones.push(new BoneData(0, "root", null));
+    data.animations.push(
+      new Animation("Idle_01", [], 2),
+      new Animation("Start_Idle_01", [], 1),
+      new Animation("Talk_01_M", [], 1),
+      new Animation("Pat_01_M", [], 1),
+    );
+    const skeleton = new Skeleton(data);
+    const state = new AnimationState(new AnimationStateData(data));
+    const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
+      bundle: { state, skeleton, meta: { introAnimation: "Start_Idle_01", idleAnimation: "Idle_01" } },
+      interactionMode: "interaction",
+      interactionState: "pat",
+      interactionTrackName: "Pat_01_M",
+      interactionReady: true,
+      interactionPointerHeld: true,
+      interactionPointerId: 7,
+      interactionPressedTarget: { kind: "pat" },
+      activeGestureInteractionId: "pat-id",
+    }) as any;
+    state.setAnimation(3, "Pat_01_M", true);
+
+    renderer.sampleEditorAnimation("Start_Idle_01", "", 0, false, false, true, 1, 1, 0, "opening");
+    expect(renderer.interactionState).toBe("idle");
+    expect(renderer.interactionReady).toBe(false);
+    expect(renderer.interactionPointerHeld).toBe(false);
+    expect(state.getCurrent(3)).toBeNull();
+    renderer.interactionPointerHeld = true;
+    renderer.interactionPressedTarget = { kind: "pat" };
+    renderer.beginPressedGesture();
+    expect(renderer.interactionState).toBe("idle");
+
+    renderer.sampleEditorAnimation("Idle_01", "", 0, true, false, true, 1, 1, 0, "opening");
+    expect(renderer.interactionReady).toBe(true);
+
+    state.setAnimation(3, "Pat_01_M", true);
+    renderer.interactionState = "pat";
+    renderer.interactionPointerHeld = true;
+    renderer.sampleEditorAnimation("Talk_01_M", "", 0, false, false, true, 1, 1, 0, "talk-1");
+    expect(renderer.interactionState).toBe("idle");
+    expect(renderer.interactionPointerHeld).toBe(false);
+    expect(state.getCurrent(3)).toBeNull();
+    renderer.interactionPointerHeld = true;
+    renderer.interactionPressedTarget = { kind: "pat" };
+    renderer.beginPressedGesture();
+    expect(renderer.interactionState).toBe("idle");
+    expect(renderer.isInteractionBusy()).toBe(false);
+  });
+
+  test("pointer exit freezes captured motion, while cancel releases only the active pointer", () => {
+    const released: string[] = [];
+    const captured = Object.assign(Object.create(SpineRenderer.prototype), {
+      interactionMode: "interaction",
+      interactionPointerId: 4,
+      interactionPointerHeld: true,
+      interactionPointer: { x: 20, y: 30 },
+      pointerInside: true,
+      eyeFollowHold: 0.5,
+      canvas: { hasPointerCapture: () => true },
+      endGesture: () => released.push("gesture"),
+      endLook: () => released.push("look"),
+    }) as any;
+    captured.handlePointerLeave({ pointerId: 4 });
+    expect(captured.pointerInside).toBe(false);
+    expect(captured.interactionPointer).toBeNull();
+    expect(released).toEqual(["look"]);
+
+    const canceled = Object.assign(Object.create(SpineRenderer.prototype), {
+      interactionMode: "interaction",
+      interactionPointerId: 4,
+      interactionPointerHeld: true,
+      interactionPointer: { x: 20, y: 30 },
+      pointerInside: true,
+      canvas: {
+        getBoundingClientRect: () => ({ left: 0, right: 100, top: 0, bottom: 100 }),
+        hasPointerCapture: () => true,
+        releasePointerCapture: () => released.push("capture"),
+      },
+      endGesture: () => released.push("gesture"),
+      endLook: () => released.push("look"),
+    }) as any;
+    canceled.handlePointerUp({ pointerId: 9, clientX: 50, clientY: 50 });
+    expect(canceled.interactionPointerHeld).toBe(true);
+    canceled.handlePointerUp({ pointerId: 4, clientX: 150, clientY: 50 });
+    expect(canceled.interactionPointerHeld).toBe(false);
+    expect(canceled.pointerInside).toBe(false);
+    expect(released.slice(-3)).toEqual(["gesture", "look", "capture"]);
+  });
+
+  test("ignores a second pointer while one interaction gesture is held", () => {
+    const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
+      interactionMode: "interaction",
+      interactionPointerHeld: true,
+      interactionPointerId: 2,
+    }) as any;
+    renderer.handlePointerDown({ button: 0, pointerId: 3 });
+    expect(renderer.interactionPointerId).toBe(2);
+    expect(renderer.interactionPointerHeld).toBe(true);
   });
 
   test("switches a loaded lobby from intro to idle when skip intro is enabled", () => {

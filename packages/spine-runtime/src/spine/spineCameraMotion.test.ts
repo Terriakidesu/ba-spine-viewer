@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cameraAspectValue, cameraFrameHeightForBound, cameraKeyframeTimeAvailable, changeSpineCameraAspectRatio, defaultSpineCameraSample, evaluateSpineCameraTrack, moveSpineCameraBound, moveSpineCameraKeyframe, normalizeSpineCameraTrack, resizeSpineCameraBound, resizeSpineCameraKeyframe, retimeSpineCameraKeyframe, sampleSpineCameraTrack, sampleSpineCameraTrackWithFallback, solveSpineCamera, spineCameraBoundFromCanvasDrag, type SpineCameraTrack } from "./spineCameraMotion";
+import { cameraAspectValue, cameraFrameHeightForBound, cameraKeyframeTimeAvailable, changeSpineCameraAspectRatio, defaultSpineCameraSample, evaluateSpineCameraTrack, hasLegacySquareCameraAspectRatio, isCameraAspectRatio, moveSpineCameraBound, moveSpineCameraKeyframe, normalizeSpineCameraTrack, resizeSpineCameraBound, resizeSpineCameraKeyframe, retimeSpineCameraKeyframe, sampleSpineCameraTrack, sampleSpineCameraTrackWithFallback, solveSpineCamera, spineCameraBoundFromCanvasDrag, type SpineCameraTrack } from "./spineCameraMotion";
 
 const track = (overrides: Partial<SpineCameraTrack> = {}): SpineCameraTrack => ({
   enabled: true,
@@ -82,7 +82,7 @@ describe("authored camera motion", () => {
     expect(viewer.pose.zoom).not.toBe(editor.pose.zoom);
   });
 
-  test("preserves authored world width across output ratios while boundaries cap the fit", () => {
+  test("preserves authored world width across supported output ratios while boundaries cap the fit", () => {
     const value = track({
       aspectRatio: "16:9",
       constraint: { mode: "manual", boundId: "room" },
@@ -90,25 +90,25 @@ describe("authored camera motion", () => {
       keyframes: [{ id: "wide", time: 0, centerX: 0, centerY: 0, frameHeight: 90 }],
     });
     const sampled = sampleSpineCameraTrack(value, 0)!;
-    const square = solveSpineCamera(sampled, { ...value, aspectRatio: "1:1" }, 900, 900)!;
+    const fourThree = solveSpineCamera(sampled, { ...value, aspectRatio: "4:3" }, 900, 900)!;
     expect(sampled.frameWidth).toBeCloseTo(160);
-    expect(square.frame.width).toBeCloseTo(160);
-    expect(square.frame.height).toBeCloseTo(160);
-    expect(cameraFrameHeightForBound({ width: 400, height: 120 }, "1:1")).toBe(120);
+    expect(fourThree.frame.width).toBeCloseTo(160);
+    expect(fourThree.frame.height).toBeCloseTo(120);
+    expect(cameraFrameHeightForBound({ width: 400, height: 120 }, "4:3")).toBe(120);
 
     const fitHeight = cameraFrameHeightForBound(value.safeBounds[0]!, value.aspectRatio);
     const fitted = solveSpineCamera(
       { ...sampled, frameHeight: fitHeight, frameWidth: fitHeight * 16 / 9 },
-      { ...value, aspectRatio: "1:1" },
+      { ...value, aspectRatio: "4:3" },
       900,
       900,
     )!;
     expect(fitted.frame.width).toBe(400);
-    expect(fitted.frame.height).toBe(400);
+    expect(fitted.frame.height).toBe(300);
 
     const shortBound = { ...value, safeBounds: [{ id: "room", name: "Room", x: -200, y: -60, width: 400, height: 120, enabled: true }] };
-    const constrained = solveSpineCamera(sampled, { ...shortBound, aspectRatio: "1:1" }, 900, 900)!;
-    expect(constrained.frame.width).toBe(120);
+    const constrained = solveSpineCamera(sampled, { ...shortBound, aspectRatio: "4:3" }, 900, 900)!;
+    expect(constrained.frame.width).toBe(160);
     expect(constrained.frame.height).toBe(120);
     expect(constrained.frame.centerY - constrained.frame.height / 2).toBeGreaterThanOrEqual(-60);
     expect(constrained.frame.centerY + constrained.frame.height / 2).toBeLessThanOrEqual(60);
@@ -124,27 +124,28 @@ describe("authored camera motion", () => {
       ],
     });
 
-    const square = changeSpineCameraAspectRatio(original, "1:1");
-    expect(square.aspectRatio).toBe("1:1");
-    expect(square.keyframes.map((keyframe) => keyframe.frameHeight)).toEqual([160, 80]);
-    expect(square.keyframes.map(({ centerX, centerY }) => [centerX, centerY])).toEqual([[18, 24], [-8, 10]]);
-    expect(square.keyframes[1]?.constraint).toEqual({ mode: "manual", boundId: "room" });
+    const fourThree = changeSpineCameraAspectRatio(original, "4:3");
+    expect(fourThree.aspectRatio).toBe("4:3");
+    expect(fourThree.safeBounds).toEqual(original.safeBounds);
+    expect(fourThree.keyframes.map((keyframe) => keyframe.frameHeight)).toEqual([120, 60]);
+    expect(fourThree.keyframes.map(({ centerX, centerY }) => [centerX, centerY])).toEqual([[18, 24], [-8, 10]]);
+    expect(fourThree.keyframes[1]?.constraint).toEqual({ mode: "manual", boundId: "room" });
     expect(original.keyframes[0]?.frameHeight).toBe(90);
 
-    const viewerFrame = evaluateSpineCameraTrack(square, 0, 1600, 900, null)!;
-    expect(viewerFrame.frame).toEqual({ centerX: 18, centerY: 24, width: 160, height: 160 });
+    const viewerFrame = evaluateSpineCameraTrack(fourThree, 0, 1600, 900, null)!;
+    expect(viewerFrame.frame).toEqual({ centerX: 18, centerY: 24, width: 160, height: 120 });
 
     const boundedSquare = changeSpineCameraAspectRatio(track({
       aspectRatio: "16:9",
       constraint: { mode: "manual", boundId: "room" },
       safeBounds: [{ id: "room", name: "Room", x: -200, y: -60, width: 400, height: 120, enabled: true }],
       keyframes: [{ id: "bounded", time: 0, centerX: 0, centerY: 0, frameHeight: 90 }],
-    }), "1:1");
+    }), "4:3");
     const boundedViewerFrame = evaluateSpineCameraTrack(boundedSquare, 0, 1600, 900, null)!;
-    expect(boundedViewerFrame.frame).toMatchObject({ width: 120, height: 120 });
+    expect(boundedViewerFrame.frame).toMatchObject({ width: 160, height: 120 });
 
-    const wideAgain = changeSpineCameraAspectRatio(square, "4:3");
-    expect(wideAgain.keyframes[0]?.frameHeight).toBeCloseTo(120);
+    const wideAgain = changeSpineCameraAspectRatio(fourThree, "16:9");
+    expect(wideAgain.keyframes[0]?.frameHeight).toBeCloseTo(90);
     expect(wideAgain.keyframes[0]!.frameHeight * cameraAspectValue(wideAgain.aspectRatio)).toBeCloseTo(160);
   });
 
@@ -230,44 +231,44 @@ describe("authored camera motion", () => {
     const value = track({ safeBounds: [
       { id: "left", name: "Left", x: 0, y: 0, width: 150, height: 100, enabled: true },
       { id: "right", name: "Right", x: 100, y: 0, width: 100, height: 100, enabled: true },
-    ], aspectRatio: "1:1" });
+    ], aspectRatio: "4:3" });
     const current = solveSpineCamera({ centerX: 110, centerY: 50, frameHeight: 20, constraint: value.constraint }, value, 1600, 900, "left")!;
     expect(current.activeBoundId).toBe("left");
     const nearest = solveSpineCamera({ centerX: 230, centerY: 50, frameHeight: 20, constraint: value.constraint }, value, 1600, 900, null)!;
     expect(nearest.activeBoundId).toBe("right");
-    expect(nearest.frame.centerX).toBe(190);
+    expect(nearest.frame.centerX).toBeCloseTo(186.6666666667);
   });
 
-  test("supports ratio-specific fit limits, unconstrained shots, and invalid manual fallback", () => {
-    const bounds = [{ id: "square", name: "Square", x: 0, y: 0, width: 100, height: 100, enabled: true }];
-    const square = track({ aspectRatio: "1:1", safeBounds: bounds });
-    const fitted = solveSpineCamera({ centerX: 50, centerY: 50, frameHeight: 150, constraint: square.constraint }, square, 800, 800)!;
+  test("supports 4:3 fit limits, unconstrained shots, and invalid manual fallback", () => {
+    const bounds = [{ id: "room", name: "Room", x: 0, y: 0, width: 100, height: 100, enabled: true }];
+    const fourThree = track({ aspectRatio: "4:3", safeBounds: bounds });
+    const fitted = solveSpineCamera({ centerX: 50, centerY: 50, frameHeight: 150, constraint: fourThree.constraint }, fourThree, 800, 800)!;
     expect(fitted.frame.width).toBe(100);
-    expect(fitted.frame.height).toBe(100);
-    const none = solveSpineCamera({ centerX: -20, centerY: -30, frameHeight: 150, constraint: { mode: "none" } }, square, 800, 800)!;
+    expect(fitted.frame.height).toBe(75);
+    const none = solveSpineCamera({ centerX: -20, centerY: -30, frameHeight: 150, constraint: { mode: "none" } }, fourThree, 800, 800)!;
     expect(none.activeBoundId).toBeNull();
     expect(none.frame.centerX).toBe(-20);
-    const invalid = solveSpineCamera({ centerX: 50, centerY: 50, frameHeight: 40, constraint: { mode: "manual", boundId: "missing" } }, square, 800, 800)!;
-    expect(invalid.activeBoundId).toBe("square");
+    const invalid = solveSpineCamera({ centerX: 50, centerY: 50, frameHeight: 40, constraint: { mode: "manual", boundId: "missing" } }, fourThree, 800, 800)!;
+    expect(invalid.activeBoundId).toBe("room");
     expect(invalid.diagnostic).toBe("invalid-manual-bound");
   });
 
   test("keeps the full frame inside bounds for every supported ratio and respects priority", () => {
-    for (const aspectRatio of ["16:9", "4:3", "1:1"] as const) {
+    for (const aspectRatio of ["16:9", "4:3"] as const) {
       const value = track({
         aspectRatio,
         safeBounds: [{ id: "room", name: "Room", x: 10, y: 20, width: 240, height: 120, enabled: true }],
       });
       const solved = solveSpineCamera({ centerX: -50, centerY: 200, frameHeight: 400, constraint: value.constraint }, value, 1600, 900)!;
       expect(solved.frame.height).toBe(120);
-      expect(solved.frame.width).toBeCloseTo(120 * (aspectRatio === "16:9" ? 16 / 9 : aspectRatio === "4:3" ? 4 / 3 : 1));
+      expect(solved.frame.width).toBeCloseTo(120 * (aspectRatio === "16:9" ? 16 / 9 : 4 / 3));
       expect(solved.frame.centerX - solved.frame.width / 2).toBeGreaterThanOrEqual(10 - 1e-6);
       expect(solved.frame.centerX + solved.frame.width / 2).toBeLessThanOrEqual(250 + 1e-6);
       expect(solved.frame.centerY - solved.frame.height / 2).toBeGreaterThanOrEqual(20 - 1e-6);
       expect(solved.frame.centerY + solved.frame.height / 2).toBeLessThanOrEqual(140 + 1e-6);
     }
     const overlap = track({
-      aspectRatio: "1:1",
+      aspectRatio: "4:3",
       safeBounds: [
         { id: "later", name: "Later", x: 0, y: 0, width: 100, height: 100, enabled: true, priority: 9 },
         { id: "first", name: "First", x: 0, y: 0, width: 100, height: 100, enabled: true, priority: 1 },
@@ -311,6 +312,24 @@ describe("authored camera motion", () => {
     expect(normalized?.safeBounds).toHaveLength(1);
     expect(normalized?.safeBounds[0]?.visible).toBe(false);
     expect(normalized?.keyframes.map(({ id }) => id)).toEqual(["a"]);
+  });
+
+  test("falls back legacy square camera tracks to 16:9 without mutating source data", () => {
+    const legacy = {
+      aspectRatio: "1:1",
+      enabled: true,
+      constraint: { mode: "automatic" },
+      safeBounds: [{ id: "room", name: "Room", x: 0, y: 0, width: 320, height: 180, enabled: true }],
+      keyframes: [{ id: "shot", time: 0, centerX: 10, centerY: 20, frameHeight: 160 }],
+    };
+    expect(hasLegacySquareCameraAspectRatio({ sequences: { opening: { camera: legacy } } })).toBe(true);
+    expect(hasLegacySquareCameraAspectRatio({ aspectRatio: "1:1", keyframes: [] })).toBe(true);
+    const normalized = normalizeSpineCameraTrack(legacy)!;
+    expect(normalized.aspectRatio).toBe("16:9");
+    expect(normalized.keyframes[0]?.frameHeight).toBe(90);
+    expect(normalized.keyframes[0]!.frameHeight * cameraAspectValue(normalized.aspectRatio)).toBe(160);
+    expect(legacy.aspectRatio).toBe("1:1");
+    expect(isCameraAspectRatio("1:1")).toBe(false);
   });
 
   test("camera settings and authored motion survive serialization normalization round-trip", () => {

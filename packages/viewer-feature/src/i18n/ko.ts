@@ -615,6 +615,8 @@ export const ko: Record<keyof typeof en, string> = {
   "spine.camera.fill": "화면 채우기",
   "spine.aspectRatio": "출력",
   "spine.aspectRatioAria": "출력 종횡비",
+  "spine.aspectRatio.legacyPreference": "이전 1:1 출력 설정은 16:9로 대체되며 비율을 선택하기 전까지 변경되지 않습니다.",
+  "spine.aspectRatio.legacyCamera": "이전 1:1 카메라 구도는 16:9로 대체됩니다. 프로젝트를 업데이트하려면 편집기에서 저장하세요.",
   "spine.mode": "모드",
   "spine.modeAria": "뷰어 모드",
   "spine.mode.free": "자유 캔버스",

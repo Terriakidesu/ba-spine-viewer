@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { Animation, AnimationState, AnimationStateData, BoneData, Physics, Skeleton, SkeletonData, TransformConstraintData } from "@esotericsoftware/spine-core";
 import { blankInteraction } from "./editorModel";
 import { InteractionPreview } from "./preview";
+import { SpineRenderer } from "@ba-spine/spine-runtime/spine/spineRuntime";
+import { beforeInteractionMotion, beginInteractionMotion, createInteractionMotionState } from "@ba-spine/spine-runtime/spine/spineInteractionMotion";
 
 function fixture() {
   const data = new SkeletonData();
@@ -102,6 +104,49 @@ describe("Authored interaction preview", () => {
     expect(state.getCurrent(1)).toBeNull();
   });
 
+  test("Editor test and Viewer playback apply identical authored follow motion", () => {
+    const editor = fixture();
+    const viewerData = new SkeletonData();
+    const viewerRoot = new BoneData(0, "root", null);
+    const viewerTarget = new BoneData(1, "target", viewerRoot);
+    viewerData.bones.push(viewerRoot, viewerTarget);
+    for (const name of ["idle", "start", "follow", "end"]) viewerData.animations.push(new Animation(name, [], 0.2));
+    const viewerSkeleton = new Skeleton(viewerData);
+    const viewerState = new AnimationState(new AnimationStateData(viewerData));
+    viewerState.setAnimation(0, "idle", true);
+    const viewerMotion = createInteractionMotionState();
+    const pointerOrigin = { x: 0, y: 0 };
+    let pointer = { x: 0, y: 0 };
+    const viewer = Object.assign(Object.create(SpineRenderer.prototype), {
+      bundle: { skeleton: viewerSkeleton, touchTarget: null },
+      interactionState: "touchStart",
+      pointerWorld: () => pointer,
+      interactionMotionState: viewerMotion,
+    }) as any;
+    beginInteractionMotion(viewerMotion, editor.item, "touch", pointerOrigin);
+    editor.preview.press(editor.item, "head", pointerOrigin.x, pointerOrigin.y);
+
+    for (const delta of [0, 1 / 60, 1 / 30, 0.08, 0.1]) {
+      editor.preview.beforeUpdate();
+      editor.state.update(delta);
+      editor.state.apply(editor.skeleton);
+      editor.skeleton.updateWorldTransform(Physics.pose);
+      editor.preview.update(delta, editor.skeleton, editor.state);
+
+      beforeInteractionMotion(viewerMotion);
+      viewerState.update(delta);
+      viewerState.apply(viewerSkeleton);
+      viewerSkeleton.updateWorldTransform(Physics.pose);
+      viewer.applyTouchFollow(delta);
+      expect(viewerMotion.offset.x).toBeCloseTo(editor.preview.debug.offsetX, 8);
+      expect(viewerMotion.offset.y).toBeCloseTo(editor.preview.debug.offsetY, 8);
+      expect(viewerSkeleton.findBone("target")!.x).toBeCloseTo(editor.skeleton.findBone("target")!.x, 8);
+      expect(viewerSkeleton.findBone("target")!.y).toBeCloseTo(editor.skeleton.findBone("target")!.y, 8);
+      pointer = { x: 35, y: 14 };
+      editor.preview.move(pointer.x, pointer.y);
+    }
+  });
+
   test("early release, missing phases, press triggers and cancellation cannot leave a held track", () => {
     for (const trigger of ["hold", "press", "drag"] as const) {
       const { preview, item, state, step } = fixture();
@@ -110,6 +155,32 @@ describe("Authored interaction preview", () => {
       expect(preview.phase).toBe("idle");
       expect(state.getCurrent(1)).toBeNull();
     }
+  });
+
+  test("pointer exit drops the follow pose without ending the held interaction", () => {
+    const { preview, item, skeleton, step } = fixture();
+    preview.press(item, "head", 0, 0);
+    step(0);
+    preview.move(40, 0);
+    step(0.25);
+    const offset = preview.debug.offsetX;
+    expect(offset).toBeGreaterThan(0);
+    expect(skeleton.findBone("target")!.x).toBeCloseTo(offset, 3);
+
+    preview.leave();
+    step(0.1);
+    expect(preview.debug.held).toBe(true);
+    expect(preview.debug.offsetX).toBeCloseTo(offset, 8);
+    expect(skeleton.findBone("target")!.x).toBeCloseTo(0, 8);
+
+    preview.move(20, 0);
+    step(0.1);
+    expect(skeleton.findBone("target")!.x).toBeGreaterThan(0);
+    preview.release();
+    step(0.01);
+    step(0.5);
+    expect(preview.phase).toBe("idle");
+    expect(skeleton.findBone("target")!.x).toBeCloseTo(0, 8);
   });
 
   test("smoothly returns the follow target even when no End animation is assigned", () => {

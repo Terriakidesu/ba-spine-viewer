@@ -286,9 +286,9 @@ export function videoRecordingProgress(plan: VideoRecordingPlan, elapsedSeconds:
   };
 }
 
-export function videoRecordingDimensions(resolution: VideoRecordingResolution, aspectRatio: "16:9" | "4:3" | "1:1"): { width: number; height: number } {
+export function videoRecordingDimensions(resolution: VideoRecordingResolution, aspectRatio: "16:9" | "4:3"): { width: number; height: number } {
   const height = resolution;
-  const ratio = aspectRatio === "4:3" ? 4 / 3 : aspectRatio === "1:1" ? 1 : 16 / 9;
+  const ratio = aspectRatio === "4:3" ? 4 / 3 : 16 / 9;
   const width = Math.round(height * ratio / 2) * 2;
   return { width, height };
 }

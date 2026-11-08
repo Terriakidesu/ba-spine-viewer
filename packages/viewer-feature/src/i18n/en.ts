@@ -631,6 +631,8 @@ export const en = {
   "spine.camera.fill": "Fill viewport",
   "spine.aspectRatio": "Output",
   "spine.aspectRatioAria": "Output aspect ratio",
+  "spine.aspectRatio.legacyPreference": "Legacy 1:1 output preference falls back to 16:9 and remains unchanged until you choose a ratio.",
+  "spine.aspectRatio.legacyCamera": "Legacy 1:1 camera framing falls back to 16:9. Save the project in Editor to update it.",
   "spine.mode": "Mode",
   "spine.modeAria": "Viewer mode",
   "spine.mode.free": "Free canvas",

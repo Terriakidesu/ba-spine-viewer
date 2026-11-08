@@ -8,6 +8,7 @@ import {
   type SpineProgress,
 } from "@ba-spine/spine-runtime/spine/spineRuntime";
 import { DEFAULT_EFFECTS_STRENGTH } from "@ba-spine/spine-runtime/spine/spineEffects";
+import { hasLegacySquareCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import {
   blankInteraction,
   blankRegion,
@@ -449,10 +450,11 @@ export function Editor() {
   const [interactionSearch, setInteractionSearch] = useState("");
   const [status, setStatus] = useState("Open a Spine asset folder to begin.");
   const [error, setError] = useState<string | null>(null);
+  const [legacyAspectRatioNotice, setLegacyAspectRatioNotice] = useState(false);
   const [assetLoading, setAssetLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState<SpineLoadProgress>({ stage: "files", loaded: 0, total: 0 });
   const [saveState, setSaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
-  const [recoveryPrompt, setRecoveryPrompt] = useState<{ rootPath: string; directory: string; current: EditorProject | null; backups: EditorProject[]; savedAt: number } | null>(null);
+  const [recoveryPrompt, setRecoveryPrompt] = useState<{ rootPath: string; directory: string; current: EditorProject | null; backups: EditorProject[]; savedAt: number; legacyCurrent: boolean; legacyBackups: boolean[] } | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>(() => readRecentFiles());
   const [pendingSubtitlePath, setPendingSubtitlePath] = useState<string | null>(null);
@@ -471,7 +473,7 @@ export function Editor() {
   const saveStateRef = useRef(saveState);
   const cameraEditTransactionRef = useRef<{ project: EditorProject; redo: EditorProject[]; saveState: typeof saveState } | null>(null);
   const saveResultRef = useRef<{ ok: boolean; error: string | null; savedDocumentRevision?: number; writtenPaths?: string[]; verifiedVersions?: Record<string, string> } | null>(null);
-  const recoveryPromptRef = useRef<{ rootPath: string; directory: string; current: EditorProject | null; backups: EditorProject[]; savedAt: number } | null>(null);
+  const recoveryPromptRef = useRef<{ rootPath: string; directory: string; current: EditorProject | null; backups: EditorProject[]; savedAt: number; legacyCurrent: boolean; legacyBackups: boolean[] } | null>(null);
   const mcpDocumentFingerprintRef = useRef<string | null>(null);
   const mcpDocumentRevisionRef = useRef(0);
 
@@ -717,37 +719,48 @@ export function Editor() {
     if (timelineMode && (!projectRef.current || projectRef.current.assetDirectory !== directoryRef.current || initializedAssetRef.current !== key)) setFrame(value);
     if (loadedMeta && key !== initializedAssetRef.current) {
       initializedAssetRef.current = key;
-       let recovery: ReturnType<typeof readRecoveryRecord> = null;
-       try {
-         recovery = readRecoveryRecord(localStorage, directoryRef.current)
-           ?? readLegacyRecoveryRecord(localStorage, `shittim-spine-editor:v${LEGACY_EDITOR_SCHEMA_VERSION}:${directoryRef.current}`);
-       } catch {
-         recovery = null;
-       }
-        const original = createProject(directoryRef.current, loadedMeta.animations, value.bones);
-        const pending = pendingProjectForDirectory(pendingProjectRef.current, directoryRef.current);
-        if (pending) pendingProjectRef.current = null;
-        const loadedProject = pending ?? original;
-        const repair = repairPatRegions(loadedProject, headRegionRef.current);
-       const pinchRepair = repairPinchRegions(repair.project, value.bones);
-       const next = withCurrentViewSettings(pinchRepair.project);
-       const recoveryProject = recovery && validRecoveryProject(recovery.current.project, directoryRef.current)
-         ? normalizeProject(recovery.current.project, directoryRef.current)
-         : null;
-       const recoveryBackups = recovery?.backups.flatMap((item) => validRecoveryProject(item.project, directoryRef.current)
-         ? [normalizeProject(item.project, directoryRef.current)].filter((item): item is EditorProject => item !== null)
-         : []) ?? [];
-       const differsFromLoaded = recoveryProject && JSON.stringify(recoveryProject) !== JSON.stringify(next);
-       const prompt = differsFromLoaded || recoveryBackups.length > 0
-         ? { rootPath: sourceRef.current?.rootPath ?? "", directory: directoryRef.current, current: recoveryProject, backups: recoveryBackups, savedAt: recovery?.current.savedAt ?? 0 }
-         : null;
-       recoveryPromptRef.current = prompt;
-       setRecoveryPrompt(prompt);
-       projectRef.current = next;
-       setProject(next);
-       setUndo(repair.repaired ? [loadedProject] : []);
-       setRedo([]);
-       setStatus(repair.repaired ? `${pending ? "Loaded project; repaired" : "Detected"} ${repair.repaired} head region(s). Custom regions kept.` : repair.unresolved ? "Head detection needs review. Uncertain default patting regions were disabled, not guessed." : pending ? "Loaded saved project." : "Created detected interaction presets.");
+      let recovery: ReturnType<typeof readRecoveryRecord> = null;
+      try {
+        recovery = readRecoveryRecord(localStorage, directoryRef.current)
+          ?? readLegacyRecoveryRecord(localStorage, `shittim-spine-editor:v${LEGACY_EDITOR_SCHEMA_VERSION}:${directoryRef.current}`);
+      } catch {
+        recovery = null;
+      }
+      const original = createProject(directoryRef.current, loadedMeta.animations, value.bones);
+      const pending = pendingProjectForDirectory(pendingProjectRef.current, directoryRef.current);
+      if (pending) pendingProjectRef.current = null;
+      const loadedProject = pending ?? original;
+      const repair = repairPatRegions(loadedProject, headRegionRef.current);
+      const pinchRepair = repairPinchRegions(repair.project, value.bones);
+      const next = withCurrentViewSettings(pinchRepair.project);
+      const recoveryProject = recovery && validRecoveryProject(recovery.current.project, directoryRef.current)
+        ? normalizeProject(recovery.current.project, directoryRef.current)
+        : null;
+      const recoveryBackupEntries = recovery?.backups.flatMap((item) => {
+        if (!validRecoveryProject(item.project, directoryRef.current)) return [];
+        const normalized = normalizeProject(item.project, directoryRef.current);
+        return normalized ? [{ project: normalized, legacy: hasLegacySquareCameraAspectRatio(item.project) }] : [];
+      }) ?? [];
+      const recoveryBackups = recoveryBackupEntries.map((item) => item.project);
+      const differsFromLoaded = recoveryProject && JSON.stringify(recoveryProject) !== JSON.stringify(next);
+      const prompt = differsFromLoaded || recoveryBackups.length > 0
+        ? {
+          rootPath: sourceRef.current?.rootPath ?? "",
+          directory: directoryRef.current,
+          current: recoveryProject,
+          backups: recoveryBackups,
+          savedAt: recovery?.current.savedAt ?? 0,
+          legacyCurrent: Boolean(recovery && hasLegacySquareCameraAspectRatio(recovery.current.project)),
+          legacyBackups: recoveryBackupEntries.map((item) => item.legacy),
+        }
+        : null;
+      recoveryPromptRef.current = prompt;
+      setRecoveryPrompt(prompt);
+      projectRef.current = next;
+      setProject(next);
+      setUndo(repair.repaired ? [loadedProject] : []);
+      setRedo([]);
+      setStatus(repair.repaired ? `${pending ? "Loaded project; repaired" : "Detected"} ${repair.repaired} head region(s). Custom regions kept.` : repair.unresolved ? "Head detection needs review. Uncertain default patting regions were disabled, not guessed." : pending ? "Loaded saved project." : "Created detected interaction presets.");
     }
   };
 
@@ -961,6 +974,7 @@ export function Editor() {
   }
 
   async function useSource(next: DesktopAssetSource, preferredDirectory?: string) {
+    setLegacyAspectRatioNotice(false);
     const [found, characterCatalog] = await Promise.all([
       next.getDirectories(),
       (async () => {
@@ -980,7 +994,7 @@ export function Editor() {
     const selectedDirectory = preferredDirectory && found.includes(preferredDirectory) ? preferredDirectory : found[0]!;
     const pending = pendingProjectRef.current;
     if (!pending || pending.assetDirectory !== selectedDirectory) {
-      pendingProjectRef.current = await readSavedEditorProject(next, selectedDirectory, (message) => setError(message));
+      pendingProjectRef.current = await readSavedEditorProject(next, selectedDirectory, (message) => setError(message), () => setLegacyAspectRatioNotice(true));
     }
     const baselineProject = pendingProjectRef.current ?? createProject(selectedDirectory, [], []);
     saveBaselineRef.current = {
@@ -1200,11 +1214,13 @@ export function Editor() {
       if (!assetDirectory) throw new Error("This project file does not identify an asset set.");
       const restored = normalizeProject(raw, assetDirectory);
       if (!restored) throw new Error("The selected file is not a compatible Spine editor project.");
+      const containsLegacySquareCamera = hasLegacySquareCameraAspectRatio(raw);
       pendingProjectRef.current = restored;
       setPendingSubtitlePath(null);
       setPendingAudioPaths(null);
       recordRecentFile({ kind: "project", path: selected.file.path, rootPath: selected.source.rootPath, label: displayName(selected.file.path), directory: restored.assetDirectory });
       await useSource(selected.source, restored.assetDirectory);
+      setLegacyAspectRatioNotice(containsLegacySquareCamera);
       setWorkspace("interaction");
       setStatus(`Opened project ${displayName(selected.file.path)}.`);
     } catch (value) {
@@ -1225,11 +1241,13 @@ export function Editor() {
         const assetDirectory = typeof raw.assetDirectory === "string" ? raw.assetDirectory : item.directory ?? "";
         const restored = normalizeProject(raw, assetDirectory);
         if (!restored) throw new Error("The recent file is not a compatible Spine editor project.");
+        const containsLegacySquareCamera = hasLegacySquareCameraAspectRatio(raw);
         pendingProjectRef.current = restored;
         setPendingSubtitlePath(null);
         setPendingAudioPaths(null);
         recordRecentFile({ ...item, directory: restored.assetDirectory });
         await useSource(next, restored.assetDirectory);
+        setLegacyAspectRatioNotice(containsLegacySquareCamera);
         setWorkspace("interaction");
         setStatus(`Reopened project ${item.label}.`);
       } else {
@@ -1261,7 +1279,8 @@ export function Editor() {
     if (!next || next === directory) return;
     if (!(await confirmOpen())) return;
     try {
-      pendingProjectRef.current = source ? await readSavedEditorProject(source, next, (message) => setError(message)) : null;
+      setLegacyAspectRatioNotice(false);
+      pendingProjectRef.current = source ? await readSavedEditorProject(source, next, (message) => setError(message), () => setLegacyAspectRatioNotice(true)) : null;
       if (source) {
         const baselineProject = pendingProjectRef.current ?? createProject(next, [], []);
         saveBaselineRef.current = {
@@ -1423,6 +1442,7 @@ export function Editor() {
         saveBaselineRef.current = { rootPath: saveSource.rootPath, directory: saveDirectory, versions: nextBaseline };
         const unchangedSinceSave = projectRef.current === latest;
         setSaveState(unchangedSinceSave ? "saved" : "dirty");
+        setLegacyAspectRatioNotice(false);
         if (unchangedSinceSave) setSavedAt(Date.now());
         saveResultRef.current = { ok: true, error: null, savedDocumentRevision, writtenPaths: writes.map((file) => file.path), verifiedVersions };
         if (unchangedSinceSave && draftPreviewSessionRef.current) stopDraftPreview("Draft preview ended after saving; Viewer will return to saved files.");
@@ -1455,7 +1475,7 @@ export function Editor() {
     setRecoveryPrompt(null);
   }
 
-  function restoreRecoveryProject(candidate: EditorProject, label: string) {
+  function restoreRecoveryProject(candidate: EditorProject, label: string, legacyAspectRatio = false) {
     if (candidate.assetDirectory !== directoryRef.current || recoveryPromptRef.current?.rootPath !== sourceRef.current?.rootPath) return;
     const restored = withCurrentViewSettings(cloneProject(candidate));
     recoveryPromptRef.current = null;
@@ -1465,6 +1485,7 @@ export function Editor() {
     setUndo([]);
     setRedo([]);
     setSaveState("dirty");
+    setLegacyAspectRatioNotice(legacyAspectRatio);
     setSavedAt(null);
     setStatus(`${label} restored as an unsaved draft. Save explicitly to write it to the library.`);
   }
@@ -1762,6 +1783,7 @@ export function Editor() {
 
   function stagePress(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0 || !frame || !project) return;
+    if (testing && (testPointerRef.current !== null || previewRef.current.held)) return;
     const point = stagePoint(event);
     if (!point) return;
     event.preventDefault();
@@ -1782,7 +1804,12 @@ export function Editor() {
     if (!frame) return;
     const point = stagePoint(event);
     const world = point && screenToWorld(frame, point.x, point.y);
-    if (world && testing) previewRef.current.move(world.x, world.y);
+    const rect = event.currentTarget.getBoundingClientRect();
+    const pointerInside = event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+    if (testing) {
+      if (world && pointerInside) previewRef.current.move(world.x, world.y);
+      else previewRef.current.leave();
+    }
     if (!testing && drawRef.current && point) {
       const start = drawRef.current;
       const x = frame.screenOriginX + (frame.screenUnitXEndX - frame.screenOriginX) * start.x + (frame.screenUnitYEndX - frame.screenOriginX) * start.y;
@@ -1973,8 +2000,8 @@ export function Editor() {
       {recoveryPrompt && recoveryPrompt.rootPath === source?.rootPath && recoveryPrompt.directory === directory && <section className="editor-recovery-prompt" role="region" aria-label="Project recovery">
         <div><strong>Local recovery snapshots found</strong><span>Nothing was restored automatically. Choose a snapshot to restore as an unsaved draft, or dismiss.</span></div>
         <div className="editor-recovery-actions">
-          {recoveryPrompt.current && <button type="button" onClick={() => restoreRecoveryProject(recoveryPrompt.current!, "Latest recovery snapshot")}>Restore latest ({recoveryPrompt.savedAt ? new Date(recoveryPrompt.savedAt).toLocaleString() : "legacy snapshot"})</button>}
-          {recoveryPrompt.backups[0] && <button type="button" onClick={() => restoreRecoveryProject(recoveryPrompt.backups[0]!, "Previous recovery backup")}>Restore previous backup</button>}
+          {recoveryPrompt.current && <button type="button" onClick={() => restoreRecoveryProject(recoveryPrompt.current!, "Latest recovery snapshot", recoveryPrompt.legacyCurrent)}>Restore latest ({recoveryPrompt.savedAt ? new Date(recoveryPrompt.savedAt).toLocaleString() : "legacy snapshot"})</button>}
+          {recoveryPrompt.backups[0] && <button type="button" onClick={() => restoreRecoveryProject(recoveryPrompt.backups[0]!, "Previous recovery backup", recoveryPrompt.legacyBackups[0])}>Restore previous backup</button>}
           <button type="button" onClick={dismissRecoveryPrompt}>Dismiss</button>
         </div>
       </section>}
@@ -2081,7 +2108,7 @@ export function Editor() {
                 }),
               }))}
              />
-            {(testing || tool === "draw") && <div className={`editor-input-surface${testing ? " testing" : " drawing"}`} aria-label={testing ? "Interaction test surface" : "Draw region surface"} onPointerDown={stagePress} onPointerMove={stageMove} onPointerUp={stageRelease} onPointerCancel={(event) => { if (!testing || testPointerRef.current === null || testPointerRef.current === event.pointerId) { testPointerRef.current = null; previewRef.current.release(); } drawRef.current = null; setDrawBox(null); }} />}
+            {(testing || tool === "draw") && <div className={`editor-input-surface${testing ? " testing" : " drawing"}`} aria-label={testing ? "Interaction test surface" : "Draw region surface"} onPointerDown={stagePress} onPointerMove={stageMove} onPointerLeave={(event) => { if (testing && testPointerRef.current === event.pointerId) previewRef.current.leave(); }} onPointerUp={stageRelease} onPointerCancel={(event) => { if (testing && testPointerRef.current === event.pointerId) { testPointerRef.current = null; previewRef.current.release(); } drawRef.current = null; setDrawBox(null); }} />}
             {drawBox && frame && <svg className="editor-draw-ghost" viewBox={`0 0 ${frame.canvasWidth} ${frame.canvasHeight}`} preserveAspectRatio="none"><ellipse cx={drawBox.x + drawBox.width / 2} cy={drawBox.y + drawBox.height / 2} rx={drawBox.width / 2} ry={drawBox.height / 2} /></svg>}
             {!frame && <div className="editor-empty"><strong>Open a Spine asset folder</strong><span>The desktop editor reads .atlas, .skel, and local texture files from the selected root.</span></div>}
             {frame && <div className="editor-canvas-badge">{frame.animation ?? "No animation"} · {frame.bones.length} bones</div>}
@@ -2238,7 +2265,7 @@ export function Editor() {
       </main>
       {workspace !== "interaction" && assetLoaded && <TimelineWorkspace mode={workspace} onWorkspaceChange={setWorkspace} source={source} directory={directory} directories={directories} directoryLabels={directoryLabels} directoryInfo={directoryInfo} project={project} initialHandoff={initialTimelineHandoff} initialSubtitlePath={pendingSubtitlePath} onSubtitleOpened={() => setPendingSubtitlePath(null)} initialAudioPaths={pendingAudioPaths} onAudioOpened={() => setPendingAudioPaths(null)} onRecentFile={recordRecentFile} onMutate={mutate} onLive={live} onBeginEdit={beginTimelineEdit} onBeginCameraEdit={beginCameraEdit} onEndCameraEdit={endCameraEdit} onCancelCameraEdit={cancelCameraEdit} onSave={() => saveProject()} onRegisterSave={(callback) => { timelineSaveRef.current = callback; }} onStatus={setStatus} onError={setError} onRegisterMcp={registerMcpTimeline} onMcpSnapshot={publishTimelineMcpSnapshot} onAudioWaveformProfile={__EDITOR_WAVEFORM_PROFILE__ ? (clipId: string, measurement: AudioWaveformMeasurement) => waveformProfileRef.current?.recordStage(clipId, measurement) : undefined} />}
       <footer className="editor-statusbar">
-        <span className={error ? "editor-error" : ""}>{error ?? status}</span>
+        <span className={error ? "editor-error" : legacyAspectRatioNotice ? "editor-compatibility-warning" : ""} role={legacyAspectRatioNotice && !error ? "status" : undefined}>{error ?? (legacyAspectRatioNotice ? "Legacy 1:1 camera framing is shown as 16:9. Save to update the project." : status)}</span>
         <span>{directory ? `${displayName(directory)} · ${files?.size ?? 0} files` : "No asset loaded"} · {testing ? "TEST MODE" : workspace === "camera" ? "CAMERA" : workspace === "timeline" ? "TIMELINE" : "EDIT MODE"}</span>
         <button className={`editor-version${releaseUpdates.state.status === "available" ? " is-update-available" : ""}`} type="button" aria-label={`About BA Spine Editor, version ${__APP_VERSION__}${releaseUpdates.state.status === "available" ? ", update available" : ""}`} title="About BA Spine Editor" onClick={() => setAboutPage(true)}>
           v{__APP_VERSION__}{releaseUpdates.state.status === "available" && <i aria-hidden="true" />}

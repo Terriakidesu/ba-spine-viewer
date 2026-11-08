@@ -74,6 +74,32 @@ test("viewer local project loading prefers .editor and falls back to the legacy 
   expect(legacy?.name).toBe("Local project");
 });
 
+test("Viewer camera loading flags the legacy 1:1 fallback without changing the saved project", async () => {
+  const path = editorProjectPath("Airi_home");
+  const content = JSON.stringify({
+    ...editorProject(),
+    timeline: {
+      sequenceId: "opening",
+      duration: 3,
+      layers: [],
+      camera: {
+        enabled: true,
+        aspectRatio: "1:1",
+        safeBounds: [],
+        keyframes: [{ id: "legacy-shot", time: 0, centerX: 5, centerY: 10, frameHeight: 160 }],
+      },
+    },
+  });
+  const files = { [path]: content };
+  let legacyNotice = false;
+  const project = await readLocalInteractionProject(sourceFromFiles(files), "Airi_home", () => { legacyNotice = true; });
+
+  expect(legacyNotice).toBe(true);
+  expect(project?.timeline?.camera).toMatchObject({ aspectRatio: "16:9" });
+  expect(project?.timeline?.camera?.keyframes[0]?.frameHeight).toBe(90);
+  expect(files[path]).toBe(content);
+});
+
 test("Viewer project reload restores the saved camera track and reads refreshed shot data", async () => {
   const path = editorProjectPath("Airi_home");
   const files: Record<string, string> = {

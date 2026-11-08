@@ -57,6 +57,7 @@ button:disabled { cursor: default; opacity: .4; }
 .editor-save-button { border-color: #4f778d; }
 .editor-statusbar { display: flex; justify-content: space-between; gap: 20px; min-height: 29px; padding: 6px 12px; color: var(--editor-muted); border-top: 1px solid var(--editor-line); background: #09131d; font-size: 10px; flex: none; }
 .editor-statusbar .editor-error { color: var(--editor-pink); }
+.editor-statusbar .editor-compatibility-warning { color: var(--editor-yellow); }
 .editor-statusbar .editor-version { display: inline-flex; flex: none; align-items: center; gap: 5px; padding: 0; border: 0; color: var(--editor-muted); background: transparent; font: inherit; font-variant-numeric: tabular-nums; cursor: pointer; }
 .editor-statusbar .editor-version:hover, .editor-statusbar .editor-version.is-update-available { color: var(--editor-cyan); }
 .editor-statusbar .editor-version i { width: 6px; height: 6px; border-radius: 50%; background: var(--editor-yellow); box-shadow: 0 0 0 3px color-mix(in srgb, var(--editor-yellow) 20%, transparent); }

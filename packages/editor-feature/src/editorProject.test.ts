@@ -41,7 +41,7 @@ test("draft preview converts the live project to a Viewer snapshot without invok
   project.effectsStrength = 0.85;
   project.timeline.sequenceId = "opening";
   project.timeline.duration = 12;
-  project.timeline.camera = { enabled: true, aspectRatio: "1:1", constraint: { mode: "none" }, safeBounds: [], keyframes: [{ id: "draft-key", time: 3, centerX: 10, centerY: 20, frameHeight: 300 }] };
+  project.timeline.camera = { enabled: true, aspectRatio: "1:1", constraint: { mode: "none" }, safeBounds: [], keyframes: [{ id: "draft-key", time: 3, centerX: 10, centerY: 20, frameHeight: 300 }] } as unknown as NonNullable<typeof project.timeline.camera>;
   const snapshot = editorProjectDraftValue(project);
   expect(snapshot).toMatchObject({
     schemaVersion: project.schemaVersion,
@@ -58,8 +58,9 @@ test("draft preview converts the live project to a Viewer snapshot without invok
     assetDirectory: "Airi_home",
     effectsStrength: 0.85,
     interactions: [{ id: project.interactions[0]!.id }],
-    sequences: { opening: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "1:1" } } },
+    sequences: { opening: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "16:9" } } },
   });
+  expect(normalizeSpineInteractionProject(snapshot, "Airi_home")?.sequences?.opening?.camera?.keyframes[0]?.frameHeight).toBe(168.75);
 });
 
 test("saved project loading falls back to the legacy editor directory", async () => {
@@ -69,6 +70,32 @@ test("saved project loading falls back to the legacy editor directory", async ()
   }), "Airi_home", () => {});
 
   expect(pending?.assetDirectory).toBe("Airi_home");
+});
+
+test("legacy square camera projects visibly fall back in memory without changing saved data", async () => {
+  const saved = createProject("Airi_home", [], []);
+  const raw = {
+    ...saved,
+    timeline: {
+      ...saved.timeline,
+      camera: {
+        enabled: true,
+        aspectRatio: "1:1",
+        constraint: { mode: "automatic" },
+        safeBounds: [],
+        keyframes: [{ id: "legacy-shot", time: 0, centerX: 0, centerY: 0, frameHeight: 160 }],
+      },
+    },
+  };
+  const content = JSON.stringify(raw);
+  const files = { ".editor/Airi_home.spine-project.json": content };
+  let legacyNotice = false;
+  const pending = await readSavedEditorProject(sourceFromFiles(files), "Airi_home", () => {}, () => { legacyNotice = true; });
+
+  expect(legacyNotice).toBe(true);
+  expect(pending?.timeline.camera).toMatchObject({ aspectRatio: "16:9" });
+  expect(pending?.timeline.camera?.keyframes[0]?.frameHeight).toBe(90);
+  expect(files[".editor/Airi_home.spine-project.json"]).toBe(content);
 });
 
 test("editor restores manifest sequences and keeps the explicit entry sequence separate", async () => {

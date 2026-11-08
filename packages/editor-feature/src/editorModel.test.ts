@@ -151,8 +151,8 @@ test("v4 projects migrate without camera data and camera tracks remain intact in
   }, "Airi_home")!;
   const reopened = normalizeProject(JSON.parse(JSON.stringify(project)), "Airi_home")!;
   expect(reopened.schemaVersion).toBe(EDITOR_SCHEMA_VERSION);
-  expect(reopened.timeline.camera).toMatchObject({ aspectRatio: "1:1", constraint: { mode: "manual", boundId: "room" } });
-  expect(reopened.timeline.camera?.keyframes[0]).toMatchObject({ time: 2, centerX: 30, centerY: 40, frameHeight: 150, easing: "hold" });
+  expect(reopened.timeline.camera).toMatchObject({ aspectRatio: "16:9", constraint: { mode: "manual", boundId: "room" } });
+  expect(reopened.timeline.camera?.keyframes[0]).toMatchObject({ time: 2, centerX: 30, centerY: 40, frameHeight: 84.375, easing: "hold" });
   expect(reopened.sequences?.["talk-1"]?.camera).toMatchObject({ enabled: false, aspectRatio: "4:3" });
 });
 

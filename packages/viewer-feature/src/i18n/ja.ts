@@ -615,6 +615,8 @@ export const ja: Record<keyof typeof en, string> = {
   "spine.camera.fill": "画面いっぱいに表示",
   "spine.aspectRatio": "出力",
   "spine.aspectRatioAria": "出力アスペクト比",
+  "spine.aspectRatio.legacyPreference": "旧形式の1:1出力設定は16:9にフォールバックし、比率を選ぶまで変更されません。",
+  "spine.aspectRatio.legacyCamera": "旧形式の1:1カメラ構図は16:9にフォールバックします。プロジェクトを更新するにはエディターで保存してください。",
   "spine.mode": "モード",
   "spine.modeAria": "ビューワーモード",
   "spine.mode.free": "フリーキャンバス",
