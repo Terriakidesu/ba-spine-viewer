@@ -1,389 +1,68 @@
-# Standalone BA Spine Viewer + Editor — implementation plan
+# Standalone BA Spine Viewer + Editor — active roadmap
 
-## Goal and boundaries
+## Suite scope
 
-Build two independent Electrobun desktop applications in this workspace:
+The suite consists of two independent Electrobun desktop applications:
 
 - **BA Spine Viewer** — browse and play Blue Archive Spine lobby assets.
 - **BA Spine Editor** — author interactions, compositions, timelines, audio, and subtitles.
 
 The applications share implementation packages and project formats. A shared fix propagates to both when rebuilt; neither app launches the other as its UI.
 
-This is a standalone project. `shittim-chest` is only a one-time source reference for extracting the existing viewer/editor code. Do not add runtime imports, symlinks, build dependencies, or ongoing synchronization with that workspace, and do not modify it. The Spine library at `data/` is local user data, not source code or a distributable asset bundle.
-
-## Current local asset library
-
-The library copied from `D:\Misc\ba-spine` is in `./data/`. It contains approximately 6,969 files / 3.37 GB, including:
-
-```text
-data/
-├── .editor/                 # Existing editor projects/workspace state
-├── .editorignore            # Excludes sprites/ from asset discovery
-├── audios/
-├── catalog.json
-├── characters.json
-├── lobbies/
-│   └── <lobby>/             # manifest.json, spine/, sequences/, project data
-└── sprites/                 # Retained on disk; ignored by the library catalog
-```
-
-The existing catalog and lobby manifests are the source of truth for asset and project paths. Preserve their relative paths and schema. Honor `.editorignore`. Do not migrate, normalize, or write to the real library as part of app startup or automated tests.
-
-`/data/` is rooted in `.gitignore`. It must remain untracked and excluded from application build/package inputs. Do not force-add it. Test persistence and migration against small synthetic fixtures or a disposable copy, never against `./data/`.
-
-For local development, the apps may offer `./data/` as the default library when it exists. Packaged builds must not assume the library is beside the executable: prompt for a library, remember its selected path in app settings, and support relocation. Keep the path configurable; do not bake this machine-specific location into code.
-
-## Target codebase
-
-```text
-apps/
-├── viewer/
-│   ├── src/main/             # Electrobun startup, menus, window lifecycle
-│   └── src/renderer/         # Viewer composition and app-specific UI
-└── editor/
-    ├── src/main/
-    └── src/renderer/         # Editor composition and app-specific UI
-packages/
-├── spine-core/               # Schemas, validation, project models, timeline rules
-├── spine-runtime/            # Spine renderer, playback, camera, effects, audio
-├── spine-ui/                 # Shared viewport, composition, subtitles, controls
-├── asset-library/            # Catalog, manifest, character/variant lookup
-├── viewer-feature/           # Viewer browsing and presentation behavior
-├── editor-feature/           # Feature-oriented editor modules
-├── platform-contracts/       # Typed filesystem/settings/companion interfaces
-├── desktop-client/           # Renderer-side implementations of those interfaces
-├── desktop-host/             # Native filesystem, dialogs, IPC, watchers
-├── wasm-kernels/             # Optional Rust→WASM CPU kernels and worker adapters
-└── app-ui/                   # Shared primitives, theme, icons, localization
-scripts/
-tests/
-├── fixtures/                 # Small, synthetic Spine/project fixtures
-└── integration/              # Cross-package and packaged-app workflow tests
-plans/
-data/                         # Local library; gitignored and never packaged
-```
+Keep this suite independent of any legacy source workspace. The Spine library at `data/` is user data, not source code or a distributable asset bundle.
 
-### Dependency rules
+## Current architecture and data safety
 
-- `spine-core` is pure domain code: no React, DOM, filesystem, or Electrobun.
-- `spine-runtime` owns Spine rendering/playback, not editor state.
-- `spine-ui` is shared by both apps; its subtitle rendering matches in both.
-- Features depend on platform contracts, not on native host implementations.
-- Native filesystem access is confined to `desktop-host`; inject it through typed capabilities.
-- Viewer and editor do not import each other. App entrypoints are thin composition roots.
-- Use explicit package exports; do not use deep relative imports across package boundaries.
-- Keep Spine runtime package versions pinned and synchronized during the initial extraction.
-- Keep Spine rendering on the existing WebGL runtime; use WebAssembly only for measured CPU-bound batch work, not as a replacement renderer.
-- Run WASM workloads in workers with a typed JavaScript fallback; transfer batches/buffers rather than making per-item JS↔WASM calls.
-- Keep tests next to the module they exercise; reserve `tests/integration/` for true app/package boundaries.
+Viewer and Editor are separate Electrobun apps composed from shared packages, including `spine-runtime`, `asset-library`, `platform-contracts`, `desktop-host`, and `app-ui`. App-specific UI and workflows stay in `viewer-feature` and `editor-feature`; native filesystem access stays behind the desktop host.
 
-Editor feature modules should be grouped by responsibility, not left as an expanding flat directory:
+The selected library's catalogs and manifests remain authoritative. Preserve relative paths and schemas, honor `.editorignore`, and support library relocation. The local `/data/` library is user data: keep it ignored and out of packages, never migrate or write to it during startup or tests, and use synthetic fixtures or disposable copies for persistence tests. Viewer access remains read-only; Editor writes stay scoped to authored project/workspace files. Keep app settings, caches, and recovery data outside the library.
 
-```text
-editor-feature/src/
-├── workspace/  assets/       interactions/  bones/
-├── timeline/   subtitles/    audio/         inspector/
-├── commands/   persistence/  diagnostics/
-```
+Preserve existing project compatibility and reject path traversal. Do not add asset uploads or telemetry.
 
-### WebAssembly optimization strategy
+## WebAssembly candidates (deferred)
 
-Use WASM deliberately, behind stable TypeScript interfaces, and only where profiling shows CPU time—not filesystem I/O, Spine rendering, or image/audio decoding—is a material bottleneck. The Editor already displays timeline waveforms; **batch waveform-envelope generation** from decoded PCM remains the first candidate only if measurements show the current JS/UI path misses frames. Bulk metadata/project normalization is a secondary candidate only if profiling the real library shows meaningful CPU cost. Do not move directory traversal, filesystem access, WebGL rendering, or native media decoding into WASM.
+WASM is an optimization option, not an implementation goal. Keep it out of the runtime until profiling identifies a CPU-bound batch kernel. A Web Worker may solve responsiveness without WASM; do not move filesystem access, decoding, Spine/WebGL rendering, or UI state into WASM.
 
-- Establish JavaScript baselines first with representative synthetic fixtures and read-only profiling of `data/`; separate disk time, decode time, UI work, and pure computation.
-- Put Rust source and worker glue in `packages/wasm-kernels/`. Build for `wasm32-unknown-unknown`, bind the small public API with `wasm-bindgen`, and optimize release artifacts. Keep generated `.wasm` output out of Git; package it as a lazy-loaded app resource.
-- Run compute in a bounded Web Worker pool so large jobs never block input/animation. Pass validated, transferable typed-array batches; keep filesystem paths and native capabilities entirely in TypeScript host code.
-- Keep a tested JS implementation as the correctness oracle and compatibility fallback. WASM and JS results must match on golden fixtures, malformed inputs, boundary sizes, and cancellation.
-- Enable a kernel by default only when repeatable benchmarks show at least 20% lower kernel CPU time and either a measurable end-to-end win (target ≥5% for the user-visible operation) or removal of a main-thread task exceeding one frame. Otherwise keep it opt-in or defer it.
-- Load kernels on demand, version cache keys with the kernel/API version and input identity, and store derived data outside `data/`. Avoid copying the same large buffer repeatedly between JS and WASM.
-- Do not make Rust a prerequisite for ordinary app development or runtime use. Rust/WASM toolchains are needed only to rebuild kernels; checked-in source plus a reproducible build script produces the packaged artifact.
+| Suitability | Candidate | Scope |
+| --- | --- | --- |
+| High | Batched waveform envelopes | PCM peak generation only; decoding, fetching, and playback stay in the host. |
+| High | Future batch PCM analysis | RMS/peak, normalization, silence detection, or resampling for large batches; no codecs or FFmpeg work. |
+| Moderate | Geometry calculations | Batched transforms, hit tests, and overlap checks; DOM and ordinary interaction state remain TypeScript. |
+| Moderate | Camera bounds and constraints | Numeric bounds/clamping over batches; Spine objects and rendering remain in the runtime. |
+| Moderate | Bulk project validation | Repeated in-memory numeric/timing checks; parsing, paths, migration, and error presentation remain TypeScript. |
 
-#### JavaScript baseline (2026-11-03)
+Profiling is implemented (`bun run profile:wasm-candidates`, `bun run profile:timeline-waveforms`, and the opt-in native Editor waveform profile). A fresh Bun 1.4.2 / Windows x64 baseline measured four decoded 8-second clips at 4.032 ms median / 6.046 ms p95; a synthetic 32×5-second stress batch took 18.235 / 19.553 ms, but that batch is not representative of observed projects. Together with prior foreground Editor captures (sub-millisecond median envelope work per clip and no repeatable end-to-end bottleneck), this does not justify a WASM port. Keep worker and WASM work deferred; revisit only with representative evidence. Any future kernel must match JavaScript and demonstrate at least 20% repeatable kernel CPU improvement plus a user-visible win (target ≥5% end-to-end or removal of a blocking main-thread task over one frame).
 
-`bun run profile:wasm-candidates` measures the production PCM-envelope helper over synthetic decoded mono PCM at 48 kHz (Bun 1.4.2, Windows x64, Intel i3-1115G4). It deliberately excludes file I/O, audio decoding, and UI rendering:
+## Implemented baseline
 
-| Workload | Median JS kernel time | p95 |
-| --- | ---: | ---: |
-| One 5-second clip, 160 peaks | 0.571 ms | 0.751 ms |
-| One 10-second clip, 160 peaks | 1.252 ms | 1.552 ms |
-| One 30-second clip, 160 peaks | 3.723 ms | 4.583 ms |
-| Synthetic batch of 32 five-second clips | 19.591 ms | 21.240 ms |
+The standalone apps, shared runtime, asset-library access, library refresh/search, Viewer playback and presentation, Editor timeline/diagnostics, scoped project saving and recovery, and authenticated Viewer–Editor handoff (including read-only draft preview) are implemented. Release builds also audit packaged artifacts for local library and source-workspace leakage. These are context, not future milestones; change them only to address a demonstrated gap.
 
-Keep WASM deferred. The 32-clip aggregate is deliberately synchronous and not representative of observed project timelines. The Editor computes each waveform on the main thread after `AudioContext.decodeAudioData`; read-only project and decoded-audio samples show the current JS kernel below a frame for the largest observed timeline. The synthetic fixture and three foreground runs of an authored four-OGG-clip sequence below measure different workloads; neither demonstrates a repeatable waveform-attributable end-to-end bottleneck in the packaged runtime. Profile future candidates on representative hardware before considering a bounded worker; WASM must still beat the JS kernel by the documented gate and demonstrate an end-to-end win.
+## Active roadmap
 
-#### Timeline waveform profiling recheck (2026-11-04)
+### Shared interaction parity and look-follow
 
-`TimelineWorkspace` already renders one `AudioWaveform` per timeline clip. It fetches and decodes audio asynchronously, then synchronously runs the production `audioEnvelopePeaks` helper (160 buckets) on the first decoded channel. A read-only aggregate of the local library's authored projects reported 24 projects, 125 sequences, and 168 OGG clip references; timelines had a median of 2 audio clips and a maximum of 4. Authored clip intervals had p50 4.67 s, p95 8.02 s, and maximum 14.08 s. No paths, dialogue, or file contents were recorded.
+- Keep the existing shared interaction model, hit testing, and runtime behavior in `spine-runtime`; do not plan a wholesale re-extraction.
+- The Editor already exposes follow target, sensitivity, translation/rotation limits, axes, smoothing, and release-return controls. Treat this authoring UI as implemented, not a new feature.
+- Audit differences among Editor test mode, Viewer playback, and unsaved-draft preview. Add focused parity coverage and consolidate only behavior that is actually duplicated or divergent.
+- Define and test precedence with opening and Talk sequences, patting/pinch, pointer exit/cancel, sequence changes, and return-to-neutral.
 
-The reproducible synthetic profile now includes a 15-second clip and a data-informed batch of four 8-second clips. On Bun 1.4.2 / Windows x64 / Intel i3-1115G4, that run measured 3.369 ms median / 7.435 ms p95 for one 15-second envelope; four 8-second envelopes measured 6.681 ms / 13.431 ms. The 32×5-second stress batch measured 46.188 ms / 72.293 ms, but exceeds observed timeline clip counts.
+### Aspect ratios and camera boundaries
 
-A separate read-only profile decoded the four OGG files referenced by one maximum-size local sequence to 48 kHz PCM with FFmpeg, then timed the production JS helper: the synchronous four-clip batch measured 5.364 ms median / 8.773 ms p95. This excludes browser decode, fetch, React work, and actual frame scheduling; it supports keeping WASM deferred, not claiming the complete UI path is proven under budget.
+- Remove **1:1** from Viewer, Editor camera-authoring, and recording choices; retain **16:9** and **4:3**.
+- For saved projects or preferences containing 1:1, use a visible 16:9 compatibility fallback without rewriting persisted data until the user explicitly saves.
+- Use named camera bounds as shared world-space safe areas across ratios by default; ratio changes affect fitting/clamping, not the bounds. Add per-ratio overrides only where a real scene needs different safe areas.
+- Keep shot composition separate from safe bounds. Use shot framing for aspect-specific center/zoom changes; make override scope clear in the UI and provide reset-to-shared behavior.
+- Test legacy fallback/no-write behavior, both output ratios, shared-bound inheritance, and override reset.
 
-#### Development waveform fixture (2026-11-04)
+### Suggested order
 
-`bun run profile:timeline-waveforms` starts the Editor renderer's Vite server; open `/?profile=waveforms` to load a development-only fixture (`&autostart=1` may start the default run automatically). It can mount the production `TimelineWorkspace` audio timeline and inspector with an in-memory `DesktopAssetSource` and no Spine visual layers, or mount standalone `AudioWaveform` rows. Inputs are deterministic 8- or 14-second PCM WAVs generated in memory. Choose 1, 2, or 4 concurrent clips and repeat 3–10 trials. The JSON report separates AudioContext creation, Blob fetch/read, decode, JS envelope, context close, React Profiler commits, animation-frame gaps, and Long Task entries. Trials target 60 frame samples or a 1.5-second post-decode window; meeting that sampling floor is not a frame-quality pass. The route bypasses `Editor`, reads no library files, calls no desktop API, and sends no telemetry. It does not model OGG decoder cost, authored project assets, Spine rendering, or the optimized packaged runtime.
+1. Complete the interaction parity and edge-case audit.
+2. Remove 1:1 from the user-facing choices and add the non-destructive legacy fallback.
+3. Add optional boundary overrides only if shared bounds prove insufficient.
 
-Two MCP Playwright runs of the full `TimelineWorkspace` audio surface each used five trials of four synthetic 8-second clips (Chrome 156, four logical processors, page visible). Across 20 per-clip samples per run, the envelope stayed small: 0.8 ms median, with per-run p95s of 1.0 and 1.4 ms and maxima of 1.1 and 1.7 ms. Async stage medians varied between runs (AudioContext creation 116–118 ms, Blob fetch 151–185 ms, byte reads 32–35 ms, decode 30–34 ms); these are wall times, not kernel CPU. React Profiler commit p95s were 35–39 ms. All trials met the fixture's 60-frame sampling floor, but frame gaps still reached 0.87–1.08 seconds (16.7 ms median / 33.4 ms p95), and long tasks ranged up to 0.90–1.11 seconds (329–339 ms median). The route used only generated in-memory WAV blobs and made no `/__spine`/library requests. Treat these automation-browser frame and long-task outliers as inconclusive, not representative packaged-Editor measurements. The low envelope CPU does not justify a worker or WASM; re-profile with representative authored assets and a stable foreground desktop run before deciding on scheduling changes. WASM remains gated on repeatable kernel and end-to-end wins.
+## Validation and known gaps
 
-The component profiler and subsequent full-`TimelineWorkspace` fixture passed typecheck, all 369 tests, and the full Viewer→Editor package build plus archive audit. The built Editor renderer contains no profile-route strings, confirming the fixture is development-only; `data/` remained ignored and untouched.
-
-#### Read-only authored-asset foreground Editor profile (2026-11-04)
-
-The opt-in path is `bun run profile:editor-waveforms`. The native Editor is built with waveform diagnostics only when explicitly requested, runs with its authenticated loopback MCP bridge, and records bounded in-memory summaries. Start capture from the interaction workspace, switch to the timeline, leave the app foreground, and stop through MCP. The capture uses the real `AudioWaveform` path (`AudioContext`, local OGG open/fetch/read/decode, then synchronous `audioEnvelopePeaks`) and records animation-frame gaps plus Long Task entries. It does not persist report data or call the project save path.
-
-Three separate timeline mounts profiled the same authored four-OGG-clip sequence in the Windows native Editor (WebView2 156.0.4314.58, Intel Core i3-1115G4, 2 cores / 4 logical processors). The first mount loaded the saved project; later mounts used its unsaved in-memory auto-end reconciliation. All runs reported visible at start and throughout; the Editor window was foreground at the checked start/stop points, all four clips produced stage samples, and there were no waveform or Editor runtime errors. Each stage/kernel row has only four samples, so the per-run p95 equals its maximum:
-
-| Run | Capture | JS envelope median / max per clip | OGG decode median / max | Frame-gap p95 / max | Long Tasks count / max |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 1 | 52.5 s | 0.8 / 41.9 ms | 103.5 / 107.3 ms | 17.0 / 216.6 ms | 5 / 201 ms |
-| 2 | 27.9 s | 0.9 / 12.0 ms | 35.2 / 51.7 ms | 17.0 / 243.4 ms | 2 / 241 ms |
-| 3 | 35.8 s | 0.6 / 0.9 ms | 26.0 / 36.5 ms | 17.0 / 100.0 ms | 2 / 109 ms |
-
-The frame-gap sample counts were 3,097, 1,652, and 2,132; all three medians were 16.7 ms, and only 3–13 samples per run exceeded 33.33 ms. Per-clip envelope medians stayed below 1 ms, while high individual maxima varied (41.9 ms, 12 ms, then 0.9 ms) and did not reproduce in the third mount. Those `performance.now()` wall-time outliers are not evidence of repeatable kernel CPU cost; the separate decoded-OGG JS baseline above measured the four-clip batch at 5.364 ms median / 8.773 ms p95. Long Tasks and maximum frame gaps were also variable and are not attributable to envelope generation. OGG decode wall times varied with warm/cold asset loading and are not kernel CPU.
-
-This authored run improves the evidence over automation: it used the real foreground native Editor, local authored OGG files, a ready Spine preview renderer, and the actual timeline/inspector. Still, it is a development build with only three mounts and four kernel samples per mount—not a packaged-runtime A/B benchmark. The data show no repeatable kernel bottleneck or measured ≥5% end-to-end win. Although individual frame gaps and Long Tasks exceeded one frame, they were intermittent and not linked to the waveform kernel. The documented gate also requires ≥20% repeatable kernel CPU improvement; no worker/WASM comparison exists. Therefore keep both worker and WASM work deferred.
-
-The Editor reported an unsaved in-memory state after audio auto-end timing was reconciled. No `editor_save` command was sent. The selected authored project file's SHA-256 matched its pre-profile value afterward, and `data/` remains ignored/untracked; no library writes were part of the profile. Verification for this change: typecheck passed, all 371 tests passed, and the default renderer build succeeded. The default renderer bundle contains none of the recorder or frame/Long Task sampling symbols; only the fail-closed MCP command handling remains.
-
-## Shared app and data contracts
-
-### Project and library compatibility
-
-- Read the current `catalog.json` / `characters.json` and manifest-based lobby layout directly.
-- Preserve existing sequence, interaction, subtitle, and workspace formats on initial release.
-- Support legacy editor projects through explicit, tested read/migration paths; never silently rewrite them.
-- Keep authored project data beside its existing manifest-defined assets. Keep app settings, indexes, caches, and recovery snapshots under OS app-data paths.
-- Preserve asset-relative references so moving the library does not invalidate projects.
-- Version future shared protocols and project schemas; reject or explain unsupported versions rather than corrupting data.
-
-### Read/write capabilities
-
-- Viewer gets read-only library access. Its settings and caches live outside the library.
-- Editor gets scoped write access only for supported authored project files and established editor workspace state.
-- Keep original `.skel`, `.atlas`, texture, and audio files untouched.
-- Confine resolved paths to the selected library, including symlink/junction handling; reject traversal.
-- No network requests, uploads, telemetry, or LAN-exposed local services.
-
-### Companion workflow contract
-
-Define a versioned local handoff message with at least: request ID, target app, library identity/path, lobby ID, sequence ID, optional language/playhead, and optional draft session ID. Validate every message. Prefer a supported local IPC/URL handoff; if a loopback transport is needed, bind to loopback only and require an unpredictable per-session token. Expose the transport behind `platform-contracts` so it can change without feature rewrites.
-
-## Viewer/editor quality-of-life features
-
-### Shared library and navigation
-
-- Search character, variant, lobby ID, and asset ID; keyboard navigation; favorites and recent lobbies.
-- Remember last library, selected lobby/sequence, viewer language, and window state.
-- Provide clear loading, retry, missing-resource, and invalid-manifest states with relative paths.
-- Generate thumbnails asynchronously into an external cache; invalidate only affected entries.
-- Debounce file watching, cancel stale loads, and provide a manual refresh fallback.
-
-#### Desktop library refresh slice (2026-11-03)
-
-The Viewer host watches the selected library recursively, coalesces filesystem events over a 300 ms quiet period, ignores `.editorignore`-excluded paths, and reports a revision through its authenticated loopback API. The Viewer polls for changes and shows a non-disruptive "Changes available" status; **Refresh library** remains available if watching is unsupported. Refresh rebuilds the catalog and preserves the selected lobby and still-valid playback, sequence, playhead, camera, language, volume, and playback settings. Primary and composition asset requests are aborted when their load becomes stale. Fake-timer tests cover debounce/cancel behavior; authenticated bridge tests cover change status, refresh, and request cancellation. Manual two-app GUI smoke testing remains a release gate.
-
-#### Timeline diagnostics slice (2026-11-04)
-
-The Editor timeline inspector validates the active sequence without writing files: layer availability and manifest-declared file references, loaded animation names, unsupported manifest versions, clip and sequence bounds, subtitle overlaps, exact same-time duplicate translations, preview-language gaps, missing audio, and stale explicit subtitle links. Each issue navigates to its affected timeline item. Manifest reference checks reuse the already-loaded file set rather than rereading asset bytes; fixes remain explicit authoring actions. Future project schema versions remain rejected with a clear load error.
-
-#### Timeline selection QoL slice (2026-11-04)
-
-The timeline **Fit selection** control calculates a viewport-aware zoom and horizontal scroll for the selected items, preserving the authored timeline and the existing whole-sequence fit action. Unit tests cover padding, zoom limits, and unusable ranges.
-
-The Editor transport also plays the combined selected range once or loops within its start/end; pause/resume retains the loop, while a new selection or seek clears it. Range-clock tests cover start positioning, wraparound, speed, and invalid bounds.
-
-Ctrl/Cmd+C copies selected animation, color, subtitle, and audio clips to an in-memory sequence-local clipboard; Ctrl/Cmd+V pastes at the playhead with relative offsets, link remapping, locked-track skips, and color-track collision handling. It does not use the OS clipboard or write library files until the user saves.
-
-#### Focus-safe shortcut slice (2026-11-04)
-
-Editor global shortcuts yield while text-like controls and editable content are focused. Ctrl/⌘+K now follows the same rule instead of opening the command palette from a search or text field; regression tests cover both modifier variants and text-input focus.
-
-The Editor's context help now lists timeline clip copy/paste and undo/redo alongside its existing bindings. The README documents local package output, library relocation, handoff/save troubleshooting, and current update-feed limitations.
-
-#### Subtitle search and navigation slice (2026-11-04)
-
-The timeline inspector searches English, Japanese, Korean, or all subtitle translations using case-insensitive Unicode-normalized matching. Results are ordered by cue time; choosing one stops playback, selects the cue, moves the playhead, and scrolls the timeline into view. Search/navigation do not modify authored data. Fixture tests cover language filtering, normalization, blank queries, and chronological ordering.
-
-#### Searchable animation picker slice (2026-11-04)
-
-Interaction-phase, preview, and timeline animation fields use a shared searchable picker with normalized, ranked name matching and arrow/Enter/Escape keyboard navigation. Existing values absent from the loaded rig remain selectable and are visibly marked as missing. Picker filtering does not alter authored values; only choosing an option invokes the existing edit action. Tests cover exact/prefix ranking, normalized matching, empty queries, and missing-name retention.
-
-#### Native window restoration slice (2026-11-04)
-
-Viewer and Editor persist versioned window geometry and maximized state separately under OS app data. Native move/resize events are debounced and the latest captured frame is flushed on close/exit. Restore uses Electrobun's display work areas and scale factors, adjusts dimensions for DPI changes, clamps the complete frame to a connected display, and falls back to a centered, bounded default when the saved monitor or state is unavailable. First-run defaults use the same work-area bounds. Tests cover scale changes, unplugged monitors, small work areas, invalid/oversized files, and event flushing; the Editor root can shrink to a small work area without retaining its fixed minimum width.
-
-### Editor-to-viewer handoff
-
-- **Open in Viewer** focuses or starts the viewer and opens the selected lobby/sequence.
-- Offer **Preview saved files** and **Preview unsaved draft** explicitly.
-- Draft preview is read-only, visibly marked as unsaved, debounced, and never written to the library. It has a clear return-to-saved action and ends safely when the editor disconnects.
-- Viewer preserves language, camera, volume, and play state when reloading. It does not restart the opening unless asked.
-- Viewer can turn automatic refresh off and show “Changes available” instead.
-
-### Viewer-to-editor handoff
-
-- **Edit this lobby** opens/focuses the editor with the same library, lobby, sequence, and optional playback context.
-- Never replace an editor project with unsaved changes without confirmation.
-- Reuse an existing editor instance where safe; prevent accidental duplicate edits to the same project.
-- If the companion app is missing or the library cannot be resolved, show a useful selection/recovery action.
-
-### Viewer experience
-
-- Playback controls: play/pause, restart, speed, loop, sequence selection, intro replay, and frame/time stepping where feasible.
-- Subtitle language and fallback, voice volume/mute, camera fit/reset, fullscreen, and hide-UI presentation mode.
-- Optional developer overlay for active tracks and interaction regions.
-- Clear missing-file details, cancellable loading, and proper audio/WebGL resource cleanup on switch/minimize.
-- Optional screenshot export; keep it out of the first parity milestone if it risks delaying reliable playback.
-
-### Editor experience and safety
-
-- Preserve current editor functionality before adding new authoring features.
-- Dirty/saved/error states, reliable undo/redo, close/switch confirmation, and crash-recovery snapshots.
-- Detect external edits and concurrent editor saves; present a conflict decision instead of silently overwriting.
-- Save linked files with staging/atomic replacement where supported; validate all outputs before writing and report partial multi-file failures honestly.
-- Recovery autosaves are separate snapshots, not silent canonical-project overwrites. Add bounded backups and an explicit restore prompt.
-- Timeline QoL: range loop/play selection, snapping controls/feedback, exact time fields, duplicate/copy/paste, multi-select, track lock/mute/visibility, zoom-to-selection, and fit timeline.
-- Subtitle/audio QoL: language-aware search, jump-to-cue, viewer-matched subtitle preview, missing-translation visibility, overlap/duplicate checks, linked-file preview, and timeline waveform previews (implemented; see the profiling gate above).
-- Workspace QoL: command palette, searchable animation/bone pickers, panel presets, shortcut help, focus-safe shortcuts, and DPI/monitor-safe window restoration.
-- Validation panel: broken manifest references, missing files/audio, invalid timeline ranges, unknown animations, missing bones, subtitle bounds, and unsupported versions. Repairs require confirmation and should be undoable.
-
-## Commit-oriented implementation sequence
-
-Keep commits small, reviewable, and buildable. Each commit should include its focused tests and documentation for any changed behavior. Do not combine a broad file move with unrelated UX work. The local `data/` library must never appear in a commit.
-
-### 1. `docs(plan): define standalone spine suite roadmap`
-
-- Add this implementation plan and root `.gitignore` rules for `/data/` and generated outputs.
-- Confirm `git check-ignore data/catalog.json` reports the root ignore rule once Git is initialized.
-- No application behavior changes.
-
-### 2. `chore: scaffold standalone bun workspace`
-
-- Add root workspace scripts, pinned package manager/runtime versions, shared TypeScript configuration, package export conventions, and empty app/package shells.
-- Add separate Electrobun configurations and distinct application IDs for Viewer and Editor.
-- Add build checks proving `data/` is not copied into `dist/`, Electrobun resources, or release staging.
-- Verify workspace install/typecheck/build works with no reference to the original workspace.
-
-### 3. `test: capture spine behavior and compatibility fixtures`
-
-- Copy only relevant existing tests and create small synthetic manifest/project fixtures.
-- Capture character discovery, manifest references, runtime playback, interaction/timeline behavior, subtitle parsing, and persistence round trips.
-- Record supported legacy formats and source provenance/license notices.
-- Tests must not read or write the real `data/` library.
-
-### 4. `refactor(core): extract shared spine domain packages`
-
-- Move schemas, normalizers, project models, manifest/catalog rules, timeline calculations, interactions, and subtitle logic into `spine-core` / `asset-library`.
-- Replace deep relative imports with package exports.
-- Keep serialized output compatible; no feature additions in this commit.
-- Run core tests and workspace typecheck.
-
-### 5. `refactor(runtime): share spine playback and viewport`
-
-- Move Spine renderer, camera, effects, playback, audio scheduling, composition layers, viewport, and subtitle presentation into shared packages.
-- Ensure both app feature layers can mount the same viewport/runtime.
-- Compare viewer/editor playback and subtitle visuals against the existing implementation.
-- Run runtime tests and both renderer builds.
-
-### 6. `refactor(editor): modularize editor feature boundaries`
-
-- Move editor UI into workspace, assets, interactions, bones, timeline, subtitles, audio, inspector, commands, persistence, and diagnostics modules.
-- Keep existing interactions, shortcuts, autosave semantics, and project format intact at this stage.
-- Add dependency-boundary checks so editor-only UI is not pulled into the viewer bundle.
-
-### 7. `feat(desktop): add scoped native library services`
-
-- Isolate native dialogs, settings, file access, library scanning, path confinement, optional watchers, and companion transport in `desktop-host`.
-- Add a read-only Viewer capability and a narrowly scoped Editor write capability.
-- Add tests for traversal, symlink/junction escape policy, ignored paths, missing files, and denied viewer writes.
-- Development can default to `./data/`; packaged builds prompt for the library and store its path in app settings.
-
-### 8. `feat(viewer): ship standalone spine viewer`
-
-- Build the first independent Electrobun app using shared runtime/UI and the native read-only asset service.
-- Add library selection, catalog browsing, search, sequence playback, subtitle/audio controls, and robust loading/error states.
-- Verify on the real library in read-only smoke tests; verify no library file changes.
-- Verify the packaged app contains no `data/` assets.
-
-### 9. `feat(editor): ship standalone spine editor`
-
-- Build the second independent Electrobun app using the modular editor and scoped native writes.
-- Restore existing editing, timeline, subtitle, audio, project-save, and workspace behavior.
-- Round-trip against disposable fixtures; test a real-library open without saving.
-- Verify separate application identity/preferences and no bundled library data.
-
-### 10. `feat(integration): add safe viewer-editor handoff`
-
-- Add versioned local companion messages, open/focus behavior, project/sequence context, duplicate-instance policy, and dirty-project prompts.
-- Add saved-file reload with debounce and state preservation.
-- Add explicitly marked unsaved draft preview and return-to-saved behavior.
-- Test app-missing, app-disconnected, invalid-message, unsaved-project, and stale-draft cases.
-
-### 11. `feat(editor): add conflict-safe saving and recovery`
-
-- Add external-change detection, staged serialization, safe replacement, bounded backups, and recoverable snapshots.
-- Make linked subtitle/project write effects visible before save.
-- Test interruption and partial-failure behavior using fixtures; never run write tests on `data/`.
-
-### 12. `feat(viewer): add library and presentation QoL`
-
-- Add favorites/recent items, thumbnail cache, keyboard browsing, fullscreen/hide-UI, presentation controls, and optional screenshot export if ready.
-- Keep cache outside `data/`; add invalidation and resource-release tests.
-
-### 13. `feat(editor): add timeline and validation QoL`
-
-- Add prioritized timeline editing affordances, diagnostics navigation, searchable pickers, and workspace presets.
-- Add shortcut/accessibility help and verify shortcuts do not intercept text input.
-- Separate any large optional features (waveforms, screenshot tooling) into their own commits.
-
-### 14. `perf(wasm): add a profiled worker kernel`
-
-- First capture and retain JS benchmark baselines. Do not introduce a kernel unless a representative workload is demonstrably CPU-bound.
-- Implement the highest-value measured kernel (initial candidate: waveform-envelope generation), its worker adapter, cancellable batched protocol, JS fallback, and reproducible Rust/WASM build.
-- Test parity against golden fixtures, malformed/edge inputs, cancellation, unavailable-WASM fallback, package loading, and bounded worker/memory behavior.
-- Record before/after numbers and enable WASM by default only when the gates in the WebAssembly strategy section pass; otherwise ship the plumbing behind an opt-in flag or defer the kernel.
-
-### 15. `test(release): harden packaged suite and document workflows`
-
-- Test clean install, relocation, paths containing spaces/non-ASCII characters, companion discovery, app updates, and both packaged executables.
-- Audit bundle contents and build logs for `data/` or source-workspace paths.
-- Document installation, selecting/moving the library, project saves, recovery, shortcuts, and troubleshooting.
-- Verify the packaged WASM artifact is lazy-loaded and that the JS fallback works when WASM initialization fails.
-- Run full tests/typecheck/builds and a final read-only smoke test against the real library.
-
-#### Packaged artifact audit slice (2026-11-04)
-
-The root `bun run build` now runs a streaming audit over every stable Viewer and Editor package, including decompressing `.tar.zst` resources in streams without extraction. It rejects bundled `data/` directories, embedded catalog paths, archive links, symbolic links, and references to the current source workspace; for Windows packages it also requires each app's `bin/launcher.exe` and validates its PE signature. Optional OS-delimited environment lists extend the path check to external source paths and captured build logs. Synthetic tests use temporary directories only; the signature check is not a substitute for interactive launch smoke testing.
-
-#### Per-app last-library preference slice (2026-11-04)
-
-Viewer and Editor now reopen their own last-selected library from a small versioned preference under OS app data when `BA_SPINE_DATA` is unset. The preference stores only the canonical path, is atomically replaced, tolerates malformed/stale state, and is retained if a removable drive is unavailable. Selecting a relocated folder updates the preference; a focused fixture test covers a library and authored project JSON with spaces and non-ASCII names without touching `data/`.
-
-#### Clean source-archive install check (2026-11-04)
-
-A fresh temporary checkout made from the committed Git archive (excluding ignored library/build outputs) installed with `bun install --frozen-lockfile`; typecheck, all 364 tests, and the full Viewer→Editor build plus artifact audit passed without relying on another workspace. The same full check passed with a checkout path containing spaces. Library read/write and companion launch-plan round-trip tests cover paths with spaces and non-ASCII names.
-
-After adding compressed-archive inspection, the clean source-archive check was repeated from a temporary path containing spaces: frozen install, typecheck, all 368 tests, both native builds, and the archive-aware release audit passed. The clean Git archive contains no ignored local `data/` or build output.
-
-After adding the development-only waveform profiler, another clean Git archive was installed with `bun install --frozen-lockfile` from a temporary path containing spaces. Typecheck, all 369 tests, both native builds, and the archive-aware audit passed; the `data/` library remained excluded and untouched. The profile route is absent from the packaged Editor renderer.
-
-#### Remaining release gates (2026-11-04)
-
-- A direct Windows package build from a workspace path containing Japanese characters remains unverified: Electrobun 2.0.5's packaging step passed the path to `System32/tar.exe` with the non-ASCII characters replaced by `?`. No application workaround was added; the supported library-path behavior is covered separately by synthetic tests.
-- The manual Viewer+Editor GUI launch/handoff smoke still requires an interactive desktop and a disposable valid Spine fixture.
-- Update-cycle testing is blocked until a release `baseUrl`/update feed is configured; the current builds explicitly report that no `release.baseUrl` is configured.
-- The optional release audit passed with the prohibited legacy-workspace path supplied only as a forbidden marker; it did not access that workspace.
-
-## Verification gates
-
-Run the narrowest relevant tests for each commit, then the full workspace checks at integration points. Final release gate:
-
-1. Clean dependency install succeeds from this workspace alone.
-2. Viewer and Editor typecheck, test, build, and launch independently.
-3. Shared runtime behavior and subtitle appearance match in both apps.
-4. Existing manifests/projects open without required conversion.
-5. Viewer cannot write to the selected library; Editor writes only intended authored/workspace files.
-6. Handoff, live reload, draft preview, dirty-state protection, and recovery work as described.
-7. Packaged artifacts contain no library files and no dependency on the original workspace path.
-8. `/data/` remains ignored; test saves used disposable fixtures, not the real library.
-9. WASM is used only for a benchmark-proven CPU hotspot, worker execution is cancellable, and JS/WASM outputs match; normal app runtime remains usable if the WASM module fails to load.
+- For code changes, run `bun run typecheck` and `bun test`; `bun run build` builds both apps and runs the release-artifact audit.
+- The last recorded release review (2026-11-04) still listed an interactive Viewer–Editor GUI handoff smoke test with a disposable Spine fixture and a Windows build from a Japanese-character workspace path as unverified.
+- Update-cycle testing still needs a configured release `baseUrl`/feed.
+- WASM remains deferred; no worker or WASM kernel is planned without new profiling evidence.
