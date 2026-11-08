@@ -87,6 +87,7 @@ describe("release artifact audit", () => {
     }
     await writeFile(join(root, "Editor.exe"), "MZ\0\0");
     await writeFile(join(root, "Viewer.exe"), "MZ\0\0");
+    await writeFile(join(root, "SuiteUpdater.exe"), "MZ\0\0");
     await mkdir(join(root, "data"), { recursive: true });
     await writeFile(join(root, "data", "README.txt"), "Keep your library here.");
 

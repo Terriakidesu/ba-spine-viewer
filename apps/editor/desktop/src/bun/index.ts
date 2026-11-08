@@ -1,5 +1,6 @@
 import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { spawn } from "node:child_process";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ApplicationMenu, BrowserWindow, Screen, Utils } from "electrobun/main";
 import { isPathWithinLibrary, resolveExistingLibraryPath } from "@ba-spine/desktop-host/pathPolicy";
 import { createNodeLibraryReader } from "@ba-spine/desktop-host/nodeLibraryReader";
@@ -14,7 +15,12 @@ import { defaultDesktopWindowFrame, enforceDesktopWindowMinimum, readDesktopWind
 import { restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
 import { discoverPortableSuite, firstRecognizableLibraryPath } from "@ba-spine/desktop-host/portableSuite";
 import { installWindowsNativeWindowMinimum } from "@ba-spine/desktop-host/windowsWindowMinimum";
+import { downloadPortableSuiteUpdate, getPortableSuiteUpdateStatus, getStagedPortableSuiteUpdate, hasPortableSuiteUpdater, isNewerPortableSuiteVersion } from "@ba-spine/desktop-host/portableSuiteUpdate";
+import { hasLiveEditorSuiteUpdateChanges, writeEditorSuiteUpdateState } from "@ba-spine/desktop-host/portableSuiteUpdateState";
 
+const suiteUpdateRoamingRoot = process.env.APPDATA && isAbsolute(process.env.APPDATA)
+  ? process.env.APPDATA
+  : join(Utils.paths.home, "AppData", "Roaming");
 const editorLibraryPreferencePath = join(Utils.paths.appData, "BA Spine Suite", "Editor", "library.json");
 const portableSuite = process.env.BA_SPINE_SUITE_ROOT
   ? await discoverPortableSuite(process.env.BA_SPINE_SUITE_ROOT).catch((error) => {
@@ -47,6 +53,8 @@ function launchPlanFor(app: "viewer" | "editor") {
 }
 
 let window: BrowserWindow | null = null;
+let editorHasUnsavedChanges = false;
+await writeEditorSuiteUpdateState(suiteUpdateRoamingRoot, process.pid, false);
 const companionInbox = new CompanionInbox("editor", undefined, () => {
   const current = window;
   if (!current) return;
@@ -137,6 +145,44 @@ function contentType(path: string): string {
 
 async function api(request: Request, url: URL): Promise<Response> {
   try {
+    if (url.pathname === "/__spine/suite-update/status" && request.method === "GET") {
+      if (!portableSuite) return json({ supported: false, suiteVersion: null, status: "unsupported", version: null });
+      const supported = await hasPortableSuiteUpdater(portableSuite.root);
+      const version = url.searchParams.get("version");
+      const update = supported && version
+        ? await getPortableSuiteUpdateStatus(portableSuite.root, version)
+        : { status: supported ? "idle" : "unsupported", version: null };
+      return json({ supported, suiteVersion: portableSuite.manifest.suiteVersion, editorHasUnsavedChanges: editorHasUnsavedChanges || await hasLiveEditorSuiteUpdateChanges(suiteUpdateRoamingRoot), ...update });
+    }
+    if (url.pathname === "/__spine/suite-update/download" && request.method === "POST") {
+      if (!portableSuite || !await hasPortableSuiteUpdater(portableSuite.root)) return errorResponse("Automatic updates are available only in an installed portable suite.", 404);
+      const body = await request.json() as { version?: unknown };
+      if (typeof body.version !== "string" || !isNewerPortableSuiteVersion(body.version, portableSuite.manifest.suiteVersion)) {
+        return errorResponse("The requested suite update version is invalid or not newer than this installation.");
+      }
+      return json(await downloadPortableSuiteUpdate(portableSuite.root, body.version));
+    }
+    if (url.pathname === "/__spine/suite-update/editor-state" && request.method === "POST") {
+      const body = await request.json() as { dirty?: unknown };
+      if (typeof body.dirty !== "boolean") return errorResponse("A valid Editor save state is required.");
+      editorHasUnsavedChanges = body.dirty;
+      await writeEditorSuiteUpdateState(suiteUpdateRoamingRoot, process.pid, body.dirty);
+      return json({ ok: true });
+    }
+    if (url.pathname === "/__spine/suite-update/install" && request.method === "POST") {
+      if (!portableSuite) return errorResponse("Automatic updates are available only in an installed portable suite.", 404);
+      if (editorHasUnsavedChanges) return errorResponse("Save or discard the current Editor changes before installing a suite update.", 409);
+      const body = await request.json() as { version?: unknown };
+      if (typeof body.version !== "string" || !isNewerPortableSuiteVersion(body.version, portableSuite.manifest.suiteVersion)) {
+        return errorResponse("The requested suite update version is invalid or not newer than this installation.");
+      }
+      const updaterPath = join(portableSuite.root, "SuiteUpdater.exe");
+      if (!await hasPortableSuiteUpdater(portableSuite.root)) return errorResponse("The suite updater is missing or invalid. Install the latest portable suite manually.", 409);
+      const staged = await getStagedPortableSuiteUpdate(portableSuite.root, body.version);
+      await startSuiteUpdater(updaterPath, portableSuite.root, staged.archivePath, staged.sha256, staged.version, "editor");
+      setTimeout(() => process.exit(0), 250);
+      return json({ status: "installing", version: staged.version });
+    }
     if (url.pathname === "/__spine/open-root" && request.method === "POST") {
       const selected = await Utils.openFileDialog({
         startingFolder: assetRoot ?? Utils.paths.home,
@@ -305,6 +351,22 @@ async function api(request: Request, url: URL): Promise<Response> {
   } catch (value) {
     return errorResponse(value, value instanceof CompanionUnavailableError ? 503 : 500);
   }
+}
+
+function startSuiteUpdater(executable: string, suiteRoot: string, archivePath: string, sha256: string, version: string, app: "viewer" | "editor"): Promise<void> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(executable, ["--install", archivePath, sha256, version, app], {
+      cwd: suiteRoot,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.once("error", rejectPromise);
+    child.once("spawn", () => {
+      child.unref();
+      resolvePromise();
+    });
+  });
 }
 
 const staticRoot = resolve(import.meta.dir, "../views/editor");

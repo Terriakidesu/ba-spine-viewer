@@ -261,7 +261,7 @@ function failed(value: unknown) {
   };
 }
 
-const server = new McpServer({ name: "ba-spine-editor", version: "0.2.0" }, {
+const server = new McpServer({ name: "ba-spine-editor", version: "0.3.0" }, {
   instructions: "Use the Editor as a safe project assistant. Read editor_state and editor_get_sequence first; documentRevision is stable across playback snapshots. Preview subtitle imports before applying them, then verify with editor_get_sequence or editor_capture_preview. Authored changes stay in memory until editor_save; MCP saves reject external file conflicts and verify written content.",
 });
 

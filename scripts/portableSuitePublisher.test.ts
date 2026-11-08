@@ -20,7 +20,7 @@ async function writeStage(stage: string, marker: string): Promise<void> {
   await mkdir(join(stage, "data"), { recursive: true });
   await mkdir(join(stage, "apps", "editor"), { recursive: true });
   await mkdir(join(stage, "licenses"), { recursive: true });
-  for (const name of ["Editor.exe", "Viewer.exe", "README.txt", "suite.json"]) {
+  for (const name of ["Editor.exe", "Viewer.exe", "SuiteUpdater.exe", "README.txt", "suite.json"]) {
     await writeFile(join(stage, name), `${marker}:${name}`);
   }
   await writeFile(join(stage, "data", "README.txt"), "Portable data placeholder");
@@ -46,6 +46,7 @@ test("publishes portable app files while preserving existing user data", async (
   await publishPortableSuiteDirectory(stage, output);
 
   expect(await readFile(join(output, "Editor.exe"), "utf8")).toBe("new:Editor.exe");
+  expect(await readFile(join(output, "SuiteUpdater.exe"), "utf8")).toBe("new:SuiteUpdater.exe");
   expect(await readFile(join(output, "apps", "editor", "bundle.txt"), "utf8")).toBe("new:bundle");
   expect(await readFile(join(output, "licenses", "license.txt"), "utf8")).toBe("new:license");
   expect((await readdir(join(output, "data"))).sort()).toEqual(["README.txt", "catalog.json"]);

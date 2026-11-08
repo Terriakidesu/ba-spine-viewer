@@ -15,7 +15,7 @@
     },
     "apps/editor": {
       "name": "@ba-spine/editor-app",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@ba-spine/app-ui": "workspace:*",
         "@ba-spine/editor-feature": "workspace:*",
@@ -26,7 +26,7 @@
     },
     "apps/editor/desktop": {
       "name": "@ba-spine/editor-desktop",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@ba-spine/asset-library": "workspace:*",
         "@ba-spine/desktop-host": "workspace:*",
@@ -42,7 +42,7 @@
     },
     "apps/viewer": {
       "name": "@ba-spine/viewer-app",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@ba-spine/app-ui": "workspace:*",
         "@ba-spine/spine-runtime": "workspace:*",
@@ -53,7 +53,7 @@
     },
     "apps/viewer/desktop": {
       "name": "@ba-spine/viewer-desktop",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@ba-spine/asset-library": "workspace:*",
         "@ba-spine/desktop-host": "workspace:*",
@@ -66,21 +66,21 @@
     },
     "packages/app-ui": {
       "name": "@ba-spine/app-ui",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "react": "^19.0.0",
       },
     },
     "packages/asset-library": {
       "name": "@ba-spine/asset-library",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@ba-spine/spine-runtime": "workspace:*",
       },
     },
     "packages/desktop-host": {
       "name": "@ba-spine/desktop-host",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@ba-spine/asset-library": "workspace:*",
         "@ba-spine/platform-contracts": "workspace:*",
@@ -88,7 +88,7 @@
     },
     "packages/editor-feature": {
       "name": "@ba-spine/editor-feature",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@ba-spine/app-ui": "workspace:*",
         "@ba-spine/platform-contracts": "workspace:*",
@@ -100,11 +100,11 @@
     },
     "packages/platform-contracts": {
       "name": "@ba-spine/platform-contracts",
-      "version": "0.2.0",
+      "version": "0.3.0",
     },
     "packages/spine-runtime": {
       "name": "@ba-spine/spine-runtime",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@esotericsoftware/spine-core": "4.2.120",
         "@esotericsoftware/spine-webgl": "4.2.120",
@@ -114,7 +114,7 @@
     },
     "packages/viewer-feature": {
       "name": "@ba-spine/viewer-feature",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@ba-spine/app-ui": "workspace:*",
         "@ba-spine/platform-contracts": "workspace:*",

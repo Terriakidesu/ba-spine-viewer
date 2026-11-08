@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { IconChevronLeft, IconExternal, IconSync, IconCheck } from "./icons";
 import { compareSemanticVersions, RELEASES_URL, RELEASE_REPOSITORY, type ReleaseUpdateState } from "./releaseUpdates";
+import type { PortableSuiteUpdateState } from "./portableSuiteUpdates";
 import "./AboutPage.css";
 
 export interface AboutPageProps {
@@ -13,6 +14,10 @@ export interface AboutPageProps {
   onSkipLatest: () => void;
   onShowSkipped: () => void;
   onBack: () => void;
+  suiteUpdate?: PortableSuiteUpdateState;
+  onDownloadSuiteUpdate?: () => void;
+  onInstallSuiteUpdate?: () => void;
+  canInstallSuiteUpdate?: boolean;
   ffmpegNotice?: boolean;
 }
 
@@ -26,6 +31,10 @@ export function AboutPage({
   onSkipLatest,
   onShowSkipped,
   onBack,
+  suiteUpdate,
+  onDownloadSuiteUpdate,
+  onInstallSuiteUpdate,
+  canInstallSuiteUpdate = true,
   ffmpegNotice = false,
 }: AboutPageProps) {
   const backButtonRef = useRef<HTMLButtonElement>(null);
@@ -34,6 +43,7 @@ export function AboutPage({
   const hasUpdate = Boolean(latest && compareSemanticVersions(latest.version, version) > 0);
   const skipped = update.status === "skipped";
   const windowsPortableAsset = latest?.assets.find((asset) => /^BA-Spine-Suite-.*-win-x64\.zip$/i.test(asset.name));
+  const portableUpdateReady = Boolean(suiteUpdate?.supported && (suiteUpdate.status === "ready" || suiteUpdate.status === "installing") && suiteUpdate.version === latest?.version.replace(/^v/, ""));
 
   useEffect(() => {
     previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -50,7 +60,13 @@ export function AboutPage({
     };
   }, [onBack]);
 
-  const statusMessage = update.status === "checking"
+  const statusMessage = suiteUpdate?.status === "downloading" && suiteUpdate.version === latest?.version.replace(/^v/, "")
+    ? `Downloading suite update ${latest?.version}…`
+    : suiteUpdate?.status === "ready" && portableUpdateReady && latest
+      ? `Suite update ${latest.version} is downloaded and verified.`
+      : suiteUpdate?.status === "installing"
+        ? "Preparing to close both apps and install the suite update…"
+        : update.status === "checking"
     ? "Checking GitHub Releases…"
     : skipped && latest
       ? `Version ${latest.version} is skipped.`
@@ -101,11 +117,13 @@ export function AboutPage({
         </p>
         {update.checkedAt !== null && <p className="suite-about-check-time">Last checked {new Date(update.checkedAt).toLocaleString()}.</p>}
         {update.error && <p className="suite-about-error" role="alert">{update.error}</p>}
+        {suiteUpdate?.error && <p className="suite-about-error" role="alert">{suiteUpdate.error}</p>}
 
         <label className="suite-about-auto-check">
           <input type="checkbox" checked={automaticChecks} onChange={(event) => onAutomaticChecksChange(event.target.checked)} />
           <span>Check for stable releases automatically (at most once a day)</span>
         </label>
+        {suiteUpdate?.supported && <p className="suite-about-update-note">Available suite ZIPs download in the background. Installing always asks first.</p>}
 
         {latest && <div className="suite-about-release">
           <div className="suite-about-release-heading">
@@ -118,13 +136,24 @@ export function AboutPage({
           </div>
 
           <div className="suite-about-release-actions">
-            <a className="suite-about-primary" href={windowsPortableAsset?.downloadUrl ?? latest.url} target="_blank" rel="noreferrer">
-              {windowsPortableAsset ? "Download portable release" : "View release & downloads"}
-              <IconExternal />
-            </a>
+            {suiteUpdate?.supported && hasUpdate && !skipped
+              ? portableUpdateReady
+                ? <button type="button" className="suite-about-primary" onClick={() => {
+                  if (window.confirm("Installing this suite update closes BA Spine Viewer and Editor. Save Editor changes first. The update replaces both apps together and keeps data/ and OS app data intact.")) onInstallSuiteUpdate?.();
+                }} disabled={!canInstallSuiteUpdate || suiteUpdate.editorHasUnsavedChanges || suiteUpdate.status === "installing"}>
+                  Install and restart suite
+                </button>
+                : <button type="button" className="suite-about-primary" onClick={onDownloadSuiteUpdate} disabled={!onDownloadSuiteUpdate || suiteUpdate.status === "downloading"}>
+                  {suiteUpdate.status === "downloading" ? "Downloading suite update…" : suiteUpdate.status === "error" ? "Retry update download" : "Download suite update"}
+                </button>
+              : !suiteUpdate?.supported && <a className="suite-about-primary" href={windowsPortableAsset?.downloadUrl ?? latest.url} target="_blank" rel="noreferrer">
+                {windowsPortableAsset ? "Download portable release" : "View release & downloads"}
+                <IconExternal />
+              </a>}
             {hasUpdate && !skipped && <button type="button" className="suite-about-secondary" onClick={onSkipLatest}>Skip this version</button>}
             {skipped && <button type="button" className="suite-about-secondary" onClick={onShowSkipped}>Show update again</button>}
           </div>
+          {suiteUpdate?.supported && hasUpdate && !skipped && (!canInstallSuiteUpdate || suiteUpdate.editorHasUnsavedChanges) && <p className="suite-about-update-note">Save or discard unsaved Editor changes before installing the update.</p>}
 
           {latest.notes && <details className="suite-about-release-notes">
             <summary>Release notes</summary>
@@ -132,7 +161,9 @@ export function AboutPage({
           </details>}
         </div>}
 
-        <p className="suite-about-update-note">Downloads open GitHub Releases. Updates are not installed automatically.</p>
+        <p className="suite-about-update-note">{suiteUpdate?.supported
+          ? "A verified suite update replaces both apps together after confirmation. The installer waits for both apps to close and preserves data/ and OS app data."
+          : "Downloads open GitHub Releases. Updates are not installed automatically."}</p>
       </section>
 
       <section className="suite-about-card suite-about-credits" aria-labelledby="suite-about-credits-title">

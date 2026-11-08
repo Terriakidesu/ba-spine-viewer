@@ -325,6 +325,14 @@ export async function auditPortableSuiteDirectory(
   catch (error) { return [`suite.json: ${error instanceof Error ? error.message : String(error)}`]; }
 
   for (const name of ["Editor.exe", "Viewer.exe"]) issues.push(...await auditPortableRootLauncher(join(absoluteRoot, name)));
+  try {
+    const updaterInfo = await lstat(join(absoluteRoot, "SuiteUpdater.exe"));
+    if (!updaterInfo.isFile() || updaterInfo.isSymbolicLink() || updaterInfo.size === 0) {
+      issues.push("SuiteUpdater.exe: suite update helper must be a non-empty regular file.");
+    }
+  } catch {
+    issues.push("SuiteUpdater.exe: suite update helper is missing.");
+  }
 
   const dataRoot = suite.dataPath;
   try {

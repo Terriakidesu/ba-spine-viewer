@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { IconChevronDown, IconChevronRight, IconChevronUp, IconClose, IconCompress, IconDot, IconExpand, IconEye, IconEyeOff, IconFolder, IconHand, IconHelp, IconMessage, IconPause, IconPlay, IconRotate, IconSearch, IconSliders, IconStar, IconSync, IconTarget, IconUsers } from "@ba-spine/app-ui/icons";
 import { AboutPage } from "@ba-spine/app-ui/AboutPage";
 import { useReleaseUpdates } from "@ba-spine/app-ui/releaseUpdates";
+import { usePortableSuiteUpdates } from "@ba-spine/app-ui/portableSuiteUpdates";
 import { LanguageSwitch } from "./components/LanguageSwitch";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { setLanguage, t, useLanguage, type LangKey } from "./i18n";
@@ -604,6 +605,11 @@ export function Spine() {
   const [aboutPage, setAboutPage] = useState(false);
   const closeAboutPage = useCallback(() => setAboutPage(false), []);
   const releaseUpdates = useReleaseUpdates(__APP_VERSION__);
+  const suiteUpdates = usePortableSuiteUpdates(
+    releaseUpdates.state.latestRelease,
+    __APP_VERSION__,
+    releaseUpdates.automaticChecks && releaseUpdates.state.status === "available",
+  );
   const [characterIndex, setCharacterIndex] = useState<CharacterIndex>(bundledCharacterIndex);
   const characterNames = useMemo(() => Object.keys(characterIndex.characters).sort((a, b) => a.localeCompare(b)), [characterIndex]);
   const firstCharacter = characterNames[0] ?? "";
@@ -4178,6 +4184,10 @@ export function Spine() {
     onSkipLatest={releaseUpdates.skipLatest}
     onShowSkipped={releaseUpdates.showSkipped}
     onBack={closeAboutPage}
+    suiteUpdate={suiteUpdates.state}
+    onDownloadSuiteUpdate={suiteUpdates.download}
+    onInstallSuiteUpdate={suiteUpdates.install}
+    canInstallSuiteUpdate={!suiteUpdates.state.editorHasUnsavedChanges}
     ffmpegNotice
   />}
   </>;

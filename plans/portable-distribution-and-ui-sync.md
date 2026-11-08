@@ -181,17 +181,20 @@ Add a dedicated suite packaging command while keeping per-app builds:
 
 1. Build production Editor and Viewer bundles.
 2. Stage complete bundles beneath `apps/editor/` and `apps/viewer/`.
-3. Add the two suite launchers, validated `suite.json`, README, and license notices.
+3. Add the two suite launchers, `SuiteUpdater.exe`, validated `suite.json`, README, and license notices.
 4. Include an empty `data/` placeholder, not the repository's local library.
-5. Audit staged content and create a versioned ZIP plus checksum.
+5. Audit staged content and create one versioned suite ZIP plus checksum.
 
-For the first portable release, use manual, coordinated suite updates. Replace root launchers, `apps/`, manifest, docs, and licenses as a unit; retain `data/` and OS app-data. Do not enable an updater that relocates either app to an independent install location. Automatic portable updates are a later, separately tested feature.
+Portable apps use one GitHub stable release and one suite ZIP/checksum; do not configure separate Hutch update feeds for Editor and Viewer. Either app may download and verify the same ZIP into `.ba-spine-update/`. Installation is always confirmed, refuses to proceed while Editor reports unsaved or recoverable work, asks the user to close both apps, and waits for their processes to exit. The updater swaps both root launchers, `apps/`, manifest, docs, and licenses as a recoverable transaction while retaining `data/` and OS app-data. It never relocates either app to an independent install location.
+
+The running `SuiteUpdater.exe` is intentionally retained during its own transaction; the staged helper is not used to replace the currently executing image. Keep the updater command and archive contracts backward-compatible. A future updater-protocol change or helper fix requires a coordinated manual suite replacement. Portable suites predating `SuiteUpdater.exe` likewise require one manual update before automatic installs are available. The current public releases predate this helper, so a complete live update-cycle test still requires an updater-enabled baseline release and a newer suite ZIP. Do not publish either release without explicit authorization.
 
 ## Release audit requirements
 
 Extend or reuse the existing release audit to verify:
 
 - Both launchers and complete app bundles are present.
+- A non-empty regular `SuiteUpdater.exe` is packaged for portable suite installation.
 - Manifest app paths are valid, relative, and contained in the suite.
 - No local `data/`, catalog, authored project, cache, recovery, or profiling fixture is packaged.
 - No developer-machine absolute paths or source-workspace requirements remain.
@@ -199,6 +202,7 @@ Extend or reuse the existing release audit to verify:
 - App versions and suite manifest versions are compatible.
 - The packaged apps launch without Bun/Node installed.
 - The ZIP update procedure preserves an existing `data/` directory.
+- Suite update download and installation contracts validate the GitHub assets, SHA-256, suite version, archive paths, Editor save state, and interrupted-swap recovery.
 
 ## Test plan
 
@@ -225,7 +229,7 @@ Use a clean Windows environment without developer tooling and a small disposable
 4. Confirm saved preview, read-only draft preview, and return-to-saved behavior.
 5. Move the whole suite to a different path, including paths with spaces; launch both again.
 6. Resize each app to its minimum and test menus, dialogs, focus, and responsive content.
-7. Update application bundles and confirm `data/` and OS app-data remain intact.
+7. Download a disposable newer suite ZIP, confirm installation, close both apps, and verify both app bundles update while `data/` and OS app-data remain intact. Also verify cancel, dirty Editor, checksum failure, and interrupted-update recovery.
 8. Verify both apps have the Editor-derived styling without visual regressions in Viewer playback/browsing.
 
 Do not run write-oriented tests or save commands against the existing authored profiling session or repository `data/` library.
@@ -241,8 +245,8 @@ Do not run write-oriented tests or save commands against the existing authored p
 | 5. Editor migration | Move Editor incrementally onto shared tokens/components. | Existing actions, keyboard behavior, and appearance remain intact. |
 | 6. Viewer migration | Restyle Viewer header, browser, playback, menus, feedback, and dialogs. | Viewer uses Editor visual styling with its workflows and playback intact. |
 | 7. Window constraints | Apply native 760 × 560 logical minimum and responsive small-work-area fallback. | Resize, restore, DPI, and small-display checks pass on packaged builds. |
-| 8. Release pipeline | Add suite staging, ZIP, checksum, manifest checks, and asset-preserving update documentation. | Audit excludes local assets and confirms app/data separation. |
-| 9. Final validation | Run automated suites and clean-machine packaged smoke tests. | Both launchers, companion handoff, relocation, minimum sizing, and update safety pass. |
+| 8. Release pipeline | Add suite staging, ZIP, checksum, manifest checks, confirmed suite updates, and asset-preserving recovery. | Audit excludes local assets, confirms app/data separation, and updater tests cover checksums, transaction rollback, and dirty-state protection. |
+| 9. Final validation | Run automated suites and clean-machine packaged smoke tests, including an updater-enabled baseline followed by a newer suite artifact. | Both launchers, companion handoff, relocation, minimum sizing, and the complete update cycle pass. |
 
 ## Completion criteria
 
@@ -255,6 +259,7 @@ Do not run write-oriented tests or save commands against the existing authored p
 - Viewer uses the Editor's shared visual system; there is no separately maintained default styling system.
 - Editor and Viewer functionality, formats, safety boundaries, and existing standalone releases remain supported.
 - Builds, tests, audits, and packaged smoke tests pass without accessing or modifying the real `data/` library.
+- Automatic updates never install without confirmation, update the two portable apps together, preserve suite `data/` and OS app-data, and leave a recoverable journal if replacement is interrupted.
 
 ## Execution evidence (2026-11-04)
 
@@ -273,3 +278,10 @@ The packaged interactive run used a valid, disposable Spine 4.2 Spineboy export 
 - At the current 120-DPI display, both packaged windows were measured at the 950 × 700 physical-pixel minimum (760 × 560 logical); each client area was 932 × 628 physical pixels, approximately 746 × 502 CSS pixels. At the matching compact viewport, Editor command/workspace/action menus, shortcut dialog, keyboard selection, playback controls, inspector, and the native folder picker (opened then canceled) were exercised. Viewer options/help, theme, sidebar, playback, and seek controls were reachable; its content scrolls vertically at this size, and hiding the browsing sidebar gives the player more width.
 - Same-size captures showed the shared dark surfaces, cyan accents, borders, and control styling in both apps. Editor's **Balanced** three-panel layout is notably cramped at the minimum: the canvas shrinks to about 181 CSS pixels and playback controls clip. Selecting **Canvas focus** hides both side panels and restores a full-width canvas and usable playback controls. Treat Canvas focus as the practical minimum-size Editor layout; the Balanced-layout squeeze remains a usability caveat.
 - Live sizing at 100%, 150%, 200%, and on a physically smaller display remains unverified; DPI/work-area conversions are covered by the automated native tests but those do not replace live checks. Packaged smoke testing was performed on the development Windows host, not a separate clean Windows machine, so the clean-machine gate also remains outstanding.
+
+## Suite update implementation verification (2026-11-08)
+
+- Added shared GitHub suite-release asset validation/download, bounded ZIP staging, checksum verification, confirmed install UI, Editor dirty/recovery-state protection shared through a common per-user roaming app-data coordination folder, and a Windows transactional updater with rollback/recovery. The updater preserves `data/` and the existing `SuiteUpdater.exe`; the latter is not replaced while it is running, so changes to the updater protocol still require a manual suite replacement.
+- The suite, both apps, and private workspace packages are aligned at **0.3.0** (minor SemVer bump). `bun run typecheck` passed; `bun test` passed (500 tests across 79 files, 3,661 assertions); suite-updater and portable-launcher Go tests passed.
+- An updater-enabled ZIP and extracted folder were packaged only under `C:\Users\Asus\AppData\Local\Temp\opencode\portable-suite-update-validation-0.3.0-20261108`. Package-time checks, `bun scripts/auditPortableSuite.ts` and `bun run audit:release` passed. ZIP SHA-256: `bb097380a974df643010c0848bd8c1831cff896e8b8049a8b6c42944dd1fcb1b`.
+- No live update cycle was run or release published. Existing public releases predate `SuiteUpdater.exe`; the cycle remains gated on an authorized updater-enabled baseline release and a newer suite artifact. Keep using disposable fixtures; never validate against repository `data/`.

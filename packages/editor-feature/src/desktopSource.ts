@@ -131,6 +131,15 @@ export async function revokeDesktopDraft(sessionId: string): Promise<void> {
   });
 }
 
+export async function publishDesktopEditorSaveState(dirty: boolean): Promise<void> {
+  if (!isDesktopHost()) return;
+  await request("/__spine/suite-update/editor-state", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ dirty }),
+  });
+}
+
 export function sourceFromDesktop(rootPath: string): DesktopAssetSource {
   let catalogPromise: Promise<Catalog> | null = null;
   const manifestPromises = new Map<string, Promise<SpineManifestRecord | null>>();

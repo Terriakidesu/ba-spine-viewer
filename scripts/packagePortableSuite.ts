@@ -90,7 +90,7 @@ try {
   await writeFile(join(stage, "data", "README.txt"), [
     "Place your shared BA Spine asset library in this folder.",
     "The suite does not create, modify, or remove library files during startup or updates.",
-    "Keep this folder when replacing the suite's apps during a manual update.",
+    "Keep this folder when replacing the suite's apps during an update.",
     "",
   ].join("\r\n"), "utf8");
   await writeFile(join(stage, "README.txt"), [
@@ -99,7 +99,9 @@ try {
     "Launch Editor.exe or Viewer.exe. Both applications use the adjacent data\\ folder when it contains a recognizable Spine library.",
     "If no library is found, choose one from the application. Preferences, caches, recovery data, and window state remain in your Windows user profile.",
     "",
-    "Manual update: close both applications, extract the new ZIP elsewhere, then replace Editor.exe, Viewer.exe, suite.json, README.txt, licenses\\, and apps\\ as a coordinated set. Do not replace or delete the existing data\\ folder.",
+    "Automatic suite updates: either app checks the same GitHub Releases feed and downloads the complete suite ZIP in the background. Choose Install and restart suite to update both apps together; save Editor changes and close both apps when prompted.",
+    "The updater verifies the ZIP checksum and suite version, preserves data\\ and OS app-data, and rolls back if replacement fails. Older portable installs without SuiteUpdater.exe must first be replaced manually with an updater-enabled suite ZIP.",
+    "Manual recovery: close both applications, extract the new ZIP elsewhere, then replace Editor.exe, Viewer.exe, SuiteUpdater.exe, suite.json, README.txt, licenses\\, and apps\\ as a coordinated set. Do not replace or delete the existing data\\ folder.",
     "The portable ZIP contains no authored asset library. Copy your own library into data\\ after extraction.",
     "",
     "Viewer video recording includes FFmpeg 9.0.1 under GPLv3. See licenses\\FFmpeg-LICENSE.txt and licenses\\FFmpeg-NOTICE.txt.",
@@ -127,6 +129,14 @@ try {
     await run("go", ["run", "./iconembed", join(stage, rootName)], launcherDirectory, goEnvironment);
   }
 
+  await run("go", [
+    "build",
+    "-trimpath",
+    "-ldflags", "-s -w -H=windowsgui",
+    "-o", join(stage, "SuiteUpdater.exe"),
+    ".",
+  ], join(repositoryRoot, "scripts", "suite-updater"), goEnvironment);
+
   await mkdir(outputRoot, { recursive: true });
   const forbiddenPaths = [repositoryRoot, join(repositoryRoot, "data", "catalog.json")];
   const stageIssues = await auditPortableSuiteDirectory(stage, forbiddenPaths);
@@ -136,7 +146,7 @@ try {
   await rm(checksumPath, { force: true });
   // Avoid a leading "./" in ZIP entry names: Windows Explorer's compressed-folder
   // handler can open such archives but shows the root as empty.
-  const archiveEntries = ["Editor.exe", "Viewer.exe", "README.txt", "suite.json", "apps", "data", "licenses"];
+  const archiveEntries = ["Editor.exe", "Viewer.exe", "SuiteUpdater.exe", "README.txt", "suite.json", "apps", "data", "licenses"];
   await run("tar", ["-a", "-c", "-f", outputArchive, "-C", stage, ...archiveEntries], repositoryRoot);
   await mkdir(verifyExtract, { recursive: true });
   await run("tar", ["-xf", outputArchive, "-C", verifyExtract], repositoryRoot);

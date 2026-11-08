@@ -32,7 +32,7 @@ import { InteractionPreview, type InteractionPreviewDebug } from "./preview";
 import { hitRegion, inversePoint, regionMatrix, screenToWorld } from "./geometry";
 import { detectHeadRegion, repairPatRegions, type HeadRegion } from "./headRegion";
 import { TimelineWorkspace } from "./TimelineWorkspace";
-import { acknowledgeDesktopHandoff, chooseDesktopProject, chooseDesktopSource, chooseDesktopSourceAt, DesktopSaveConflictError, isDesktopHost, publishDesktopDraft, receiveDesktopHandoffs, revokeDesktopDraft, sendDesktopHandoff, type DesktopAssetSource, type DesktopSaveFile } from "./desktopSource";
+import { acknowledgeDesktopHandoff, chooseDesktopProject, chooseDesktopSource, chooseDesktopSourceAt, DesktopSaveConflictError, isDesktopHost, publishDesktopDraft, publishDesktopEditorSaveState, receiveDesktopHandoffs, revokeDesktopDraft, sendDesktopHandoff, type DesktopAssetSource, type DesktopSaveFile } from "./desktopSource";
 import { libraryIdentityForPath, type SpineDraftSnapshot } from "@ba-spine/platform-contracts/handoff";
 import { normalizeRecentFiles, RECENT_FILES_KEY, rememberRecentFile, removeRecentFile, type RecentFile, type RecentFileKind } from "./recentFiles";
 import { AssetPickerModal } from "./AssetPickerModal";
@@ -61,6 +61,7 @@ import { DEFAULT_EDITOR_LAYOUT_PREFERENCES, EDITOR_LAYOUT_PREFERENCES_KEY, norma
 import { IconAlert, IconCheck, IconChevronDown, IconClose, IconEye, IconExpand, IconFile, IconFolder, IconHand, IconHelp, IconMenu, IconMessage, IconMore, IconPause, IconPlay, IconPlus, IconSave, IconSearch, IconSliders, IconSound, IconTarget } from "@ba-spine/app-ui/icons";
 import { AboutPage } from "@ba-spine/app-ui/AboutPage";
 import { useReleaseUpdates } from "@ba-spine/app-ui/releaseUpdates";
+import { usePortableSuiteUpdates } from "@ba-spine/app-ui/portableSuiteUpdates";
 
 declare const __EDITOR_WAVEFORM_PROFILE__: boolean;
 
@@ -411,6 +412,11 @@ export function Editor() {
   const [help, setHelp] = useState(false);
   const [aboutPage, setAboutPage] = useState(false);
   const releaseUpdates = useReleaseUpdates(__APP_VERSION__);
+  const suiteUpdates = usePortableSuiteUpdates(
+    releaseUpdates.state.latestRelease,
+    __APP_VERSION__,
+    releaseUpdates.automaticChecks && releaseUpdates.state.status === "available",
+  );
   const closeAboutPage = useCallback(() => setAboutPage(false), []);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const validationDetailsRef = useRef<HTMLDetailsElement>(null);
@@ -454,6 +460,7 @@ export function Editor() {
   const [assetLoading, setAssetLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState<SpineLoadProgress>({ stage: "files", loaded: 0, total: 0 });
   const [saveState, setSaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
+  const editorUpdateStateWriteRef = useRef<Promise<void>>(Promise.resolve());
   const [recoveryPrompt, setRecoveryPrompt] = useState<{ rootPath: string; directory: string; current: EditorProject | null; backups: EditorProject[]; savedAt: number; legacyCurrent: boolean; legacyBackups: boolean[] } | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>(() => readRecentFiles());
@@ -889,6 +896,14 @@ export function Editor() {
     window.addEventListener("beforeunload", beforeUnload);
     return () => window.removeEventListener("beforeunload", beforeUnload);
   }, [saveState]);
+
+  useEffect(() => {
+    const dirty = recoveryPrompt !== null || saveState === "dirty" || saveState === "error" || saveState === "saving";
+    editorUpdateStateWriteRef.current = editorUpdateStateWriteRef.current
+      .catch(() => undefined)
+      .then(() => publishDesktopEditorSaveState(dirty))
+      .catch(() => { /* A failed native dirty-state notification must not block editing or save recovery. */ });
+  }, [recoveryPrompt, saveState]);
 
   editorKeydownRef.current = (event: KeyboardEvent) => {
     const key = event.key.toLowerCase();
@@ -2282,6 +2297,10 @@ export function Editor() {
       onSkipLatest={releaseUpdates.skipLatest}
       onShowSkipped={releaseUpdates.showSkipped}
       onBack={closeAboutPage}
+      suiteUpdate={suiteUpdates.state}
+      onDownloadSuiteUpdate={suiteUpdates.download}
+      onInstallSuiteUpdate={suiteUpdates.install}
+      canInstallSuiteUpdate={recoveryPrompt === null && saveState !== "dirty" && saveState !== "saving" && saveState !== "error"}
     />}
     </>
   );

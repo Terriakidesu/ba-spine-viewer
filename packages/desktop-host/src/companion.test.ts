@@ -280,7 +280,7 @@ describe("authenticated local companion transport", () => {
           }),
         ]);
         expect(launches).toBe(1);
-        expect(inbox.pending().map((item) => item.requestId)).toEqual(["req_parallel_01", "req_parallel_02"]);
+        expect(inbox.pending().map((item) => item.requestId).sort()).toEqual(["req_parallel_01", "req_parallel_02"]);
       } finally {
         registration?.close();
         server?.stop(true);

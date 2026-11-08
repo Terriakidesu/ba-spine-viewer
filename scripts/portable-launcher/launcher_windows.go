@@ -46,6 +46,25 @@ func launch(args []string) error {
 	if err != nil || !rootInfo.IsDir() {
 		return fmt.Errorf("suite directory is unavailable")
 	}
+	if info, err := os.Lstat(filepath.Join(root, ".ba-spine-update.lock")); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("suite update recovery marker is invalid")
+		}
+		updater := filepath.Join(root, "SuiteUpdater.exe")
+		updaterInfo, err := os.Lstat(updater)
+		if err != nil || !updaterInfo.Mode().IsRegular() || updaterInfo.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("suite update was interrupted and the recovery helper is unavailable")
+		}
+		recovery := exec.Command(updater, "--recover", app)
+		recovery.Dir = root
+		recovery.SysProcAttr = &syscall.SysProcAttr{CreationFlags: detachedProcess | createNewProcessGroup}
+		if err := recovery.Start(); err != nil {
+			return fmt.Errorf("could not start suite update recovery: %w", err)
+		}
+		return recovery.Process.Release()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("suite update state could not be checked: %w", err)
+	}
 	manifest, dataPath, err := parseManifest(root)
 	if err != nil {
 		return err

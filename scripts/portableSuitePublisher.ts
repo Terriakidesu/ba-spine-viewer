@@ -1,7 +1,7 @@
 import { cp, copyFile, lstat, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-const ROOT_FILES = ["Editor.exe", "Viewer.exe", "README.txt", "suite.json"] as const;
+const ROOT_FILES = ["Editor.exe", "Viewer.exe", "SuiteUpdater.exe", "README.txt", "suite.json"] as const;
 const GENERATED_DIRECTORIES = ["apps", "licenses"] as const;
 
 async function existingEntry(path: string) {
