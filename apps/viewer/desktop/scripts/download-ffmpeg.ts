@@ -68,8 +68,13 @@ async function main(): Promise<void> {
   await ensureVerifiedArchive();
   const extractionRoot = mkdtempSync(join(tmpdir(), "ba-spine-ffmpeg-"));
   try {
-    const extract = Bun.spawn(["tar", "-xf", archivePath, "-C", extractionRoot, executableMember], {
-      cwd: repositoryRoot,
+    // Windows tar.exe can fail to open an archive when its CLI path contains
+    // characters outside the active code page. Give tar an ASCII temp path,
+    // while keeping the verified cache at the workspace's Unicode-safe path.
+    const archiveForTar = join(extractionRoot, "ffmpeg-archive.zip");
+    cpSync(archivePath, archiveForTar);
+    const extract = Bun.spawn(["tar", "-xf", archiveForTar, "-C", extractionRoot, executableMember], {
+      cwd: extractionRoot,
       stdout: "inherit",
       stderr: "inherit",
     });
