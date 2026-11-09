@@ -1,5 +1,6 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { IconChevronDown, IconChevronRight, IconChevronUp, IconClose, IconCompress, IconDot, IconExpand, IconEye, IconEyeOff, IconFolder, IconHand, IconHelp, IconMessage, IconPause, IconPlay, IconRotate, IconSearch, IconSliders, IconStar, IconSync, IconTarget, IconUsers } from "@ba-spine/app-ui/icons";
+import { ContextMenu, type ContextMenuAction, isContextMenuShortcut } from "@ba-spine/app-ui/ContextMenu";
 import { AboutPage } from "@ba-spine/app-ui/AboutPage";
 import { useReleaseUpdates } from "@ba-spine/app-ui/releaseUpdates";
 import { usePortableSuiteUpdates } from "@ba-spine/app-ui/portableSuiteUpdates";
@@ -606,9 +607,19 @@ function loadingLabel(progress: SpineLoadProgress | null, folderLoading: boolean
   }
 }
 
+type ViewerContextTarget = { kind: "preview" } | { kind: "lobby"; lobbyId: string };
+
+interface ViewerContextMenuState {
+  x: number;
+  y: number;
+  target: ViewerContextTarget;
+  returnFocusTo: HTMLElement | null;
+}
+
 export function Spine() {
   const language = useLanguage();
   const [aboutPage, setAboutPage] = useState(false);
+  const [contextMenu, setContextMenu] = useState<ViewerContextMenuState | null>(null);
   const closeAboutPage = useCallback(() => setAboutPage(false), []);
   const releaseUpdates = useReleaseUpdates(__APP_VERSION__);
   const suiteUpdates = usePortableSuiteUpdates(
@@ -2186,6 +2197,55 @@ export function Spine() {
     setNavigation((current) => toggleViewerFavorite(current, lobbyId));
   };
 
+  const openViewerContextMenuAt = (x: number, y: number, target: ViewerContextTarget, returnFocusTo: HTMLElement | null) => {
+    if (target.kind === "lobby" && target.lobbyId !== selectedDirectoryName) selectLobby(target.lobbyId);
+    setContextMenu({ x, y, target, returnFocusTo });
+  };
+
+  const openViewerContextMenu = (event: ReactMouseEvent<HTMLElement>, target: ViewerContextTarget) => {
+    if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openViewerContextMenuAt(event.clientX, event.clientY, target, event.currentTarget);
+  };
+
+  const openViewerKeyboardMenu = (event: ReactKeyboardEvent<HTMLElement>, target: ViewerContextTarget) => {
+    if (!isContextMenuShortcut(event)) return;
+    if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    openViewerContextMenuAt(bounds.left, bounds.bottom, target, event.currentTarget);
+  };
+
+  const viewerContextActions = (target: ViewerContextTarget): readonly ContextMenuAction[] => {
+    if (target.kind === "preview") {
+      const actions: ContextMenuAction[] = [
+        { label: t(playing ? "spine.pause" : "spine.play"), disabled: !meta, run: togglePlayback },
+        { label: t("spine.restart"), disabled: !meta, run: restartPlayback },
+        { label: t(interactionMode === "interaction" ? "spine.mode.free" : "spine.mode.interaction"), disabled: !meta, run: () => selectInteractionMode(interactionMode === "interaction" ? "free" : "interaction"), separatorBefore: true },
+      ];
+      if (interactionMode === "free" && !compositionActive) actions.push({ label: t("spine.fitAllArtwork"), disabled: !meta, run: fitAllArtwork });
+      if (canRestartOpening) actions.push({ label: t("spine.restartOpening"), disabled: !meta, run: restartOpening });
+      if (isDesktopHost() && source) actions.push({ label: t("spine.source.editInEditor"), disabled: !selectedDirectoryName, run: () => void openInEditor(), separatorBefore: true });
+      return actions;
+    }
+    const isFavorite = navigation.favorites.includes(target.lobbyId);
+    const actions: ContextMenuAction[] = [
+      { label: t(isFavorite ? "spine.favorite.remove" : "spine.favorite.add"), run: () => toggleFavorite(target.lobbyId) },
+    ];
+    if (isDesktopHost() && source) actions.push({ label: t("spine.source.editInEditor"), disabled: target.lobbyId !== selectedDirectoryName, reason: target.lobbyId !== selectedDirectoryName ? "Select this set first." : undefined, run: () => void openInEditor(), separatorBefore: true });
+    return actions;
+  };
+
+  const characterContextTarget = (availableAssets: ReturnType<typeof indexedAssets>): ViewerContextTarget | null => {
+    const lobbyId = availableAssets.find((variant) => variant.directory === selectedDirectoryName)?.directory ?? availableAssets[0]?.directory;
+    return lobbyId ? { kind: "lobby", lobbyId } : null;
+  };
+
+  const openPreviewContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => openViewerContextMenu(event, { kind: "preview" });
+  const openPreviewKeyboardMenu = (event: ReactKeyboardEvent<HTMLDivElement>) => openViewerKeyboardMenu(event, { kind: "preview" });
+
   const onCharacterListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!filteredCharacters.length || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
     const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button[data-browser-item]")];
@@ -3750,13 +3810,13 @@ export function Spine() {
           <nav className="spine-navigation-links" aria-label={t("spine.quickAccess")}>
             {favoriteLobbies.length > 0 && <section>
               <h3>{t("spine.favorites")}</h3>
-              {favoriteLobbies.map((lobbyId) => <button key={`favorite:${lobbyId}`} type="button" className={lobbyId === selectedDirectoryName ? "is-selected" : undefined} onClick={() => selectLobby(lobbyId)} title={lobbyId}>
+              {favoriteLobbies.map((lobbyId) => <button key={`favorite:${lobbyId}`} type="button" className={lobbyId === selectedDirectoryName ? "is-selected" : undefined} onClick={() => selectLobby(lobbyId)} onContextMenu={(event) => openViewerContextMenu(event, { kind: "lobby", lobbyId })} onKeyDown={(event) => openViewerKeyboardMenu(event, { kind: "lobby", lobbyId })} aria-haspopup="menu" title={lobbyId}>
                 <IconStar /><span>{lobbyLabels[lobbyId] ?? lobbyId}</span>
               </button>)}
             </section>}
             {recentLobbies.length > 0 && <section>
               <h3>{t("spine.recents")}</h3>
-              {recentLobbies.map((lobbyId) => <button key={`recent:${lobbyId}`} type="button" className={lobbyId === selectedDirectoryName ? "is-selected" : undefined} onClick={() => selectLobby(lobbyId)} title={lobbyId}>
+              {recentLobbies.map((lobbyId) => <button key={`recent:${lobbyId}`} type="button" className={lobbyId === selectedDirectoryName ? "is-selected" : undefined} onClick={() => selectLobby(lobbyId)} onContextMenu={(event) => openViewerContextMenu(event, { kind: "lobby", lobbyId })} onKeyDown={(event) => openViewerKeyboardMenu(event, { kind: "lobby", lobbyId })} aria-haspopup="menu" title={lobbyId}>
                 <span className="spine-recent-dot" aria-hidden="true" /><span>{lobbyLabels[lobbyId] ?? lobbyId}</span>
               </button>)}
             </section>}
@@ -3778,11 +3838,14 @@ export function Spine() {
                     data-character={name}
                     aria-expanded={expanded}
                     className={`spine-character-row${name === selectedCharacter ? " is-selected" : ""}`}
+                    aria-haspopup="menu"
                     onClick={() => {
                       if (videoRecordingRunRef.current) return;
                       if (name !== selectedCharacter) selectCharacter(name);
                       else setExpandedCharacter((current) => current === name ? "" : name);
                     }}
+                    onContextMenu={(event) => { const target = characterContextTarget(availableAssets); if (target) openViewerContextMenu(event, target); }}
+                    onKeyDown={(event) => { const target = characterContextTarget(availableAssets); if (target) openViewerKeyboardMenu(event, target); }}
                   >
                     <span className="spine-character-expander" aria-hidden="true">{expanded ? <IconChevronDown /> : <IconChevronRight />}</span>
                     <LobbyThumbnail source={thumbnailSource} directory={availableAssets.find((variant) => variant.directory === selectedDirectory)?.directory ?? availableAssets[0]?.directory ?? ""} kind="face" />
@@ -3791,7 +3854,7 @@ export function Spine() {
                 </div>
                 {expanded && <div className="spine-character-variants" role="group" aria-label={t("spine.characterVariants", { name })}>
                   {visibleVariants.map((variant) => <div key={variant.directory} className="spine-variant-row">
-                    <button type="button" data-browser-item data-character={name} className={`spine-variant-select${variant.directory === selectedDirectoryName ? " is-selected" : ""}`} aria-current={variant.directory === selectedDirectoryName ? "true" : undefined} onClick={() => {
+                    <button type="button" data-browser-item data-character={name} className={`spine-variant-select${variant.directory === selectedDirectoryName ? " is-selected" : ""}`} aria-current={variant.directory === selectedDirectoryName ? "true" : undefined} aria-haspopup="menu" onContextMenu={(event) => openViewerContextMenu(event, { kind: "lobby", lobbyId: variant.directory })} onKeyDown={(event) => openViewerKeyboardMenu(event, { kind: "lobby", lobbyId: variant.directory })} onClick={() => {
                       if (videoRecordingRunRef.current) return;
                       if (variant.directory !== selectedDirectoryName || name !== selectedCharacter) resetAssetPlayback();
                       setSelectedCharacter(name);
@@ -3801,7 +3864,7 @@ export function Spine() {
                       <LobbyThumbnail source={thumbnailSource} directory={variant.directory} kind="lobby" />
                       <span>{variant.extraType ? extraLabel(variant.extraType) : variant.variant}</span>
                     </button>
-                    <button className={`spine-variant-favorite${navigation.favorites.includes(variant.directory) ? " is-favorite" : ""}`} type="button" aria-pressed={navigation.favorites.includes(variant.directory)} aria-label={t(navigation.favorites.includes(variant.directory) ? "spine.favorite.remove" : "spine.favorite.add")} title={t(navigation.favorites.includes(variant.directory) ? "spine.favorite.remove" : "spine.favorite.add")} onClick={() => toggleFavorite(variant.directory)}><IconStar /></button>
+                    <button className={`spine-variant-favorite${navigation.favorites.includes(variant.directory) ? " is-favorite" : ""}`} type="button" aria-pressed={navigation.favorites.includes(variant.directory)} aria-label={t(navigation.favorites.includes(variant.directory) ? "spine.favorite.remove" : "spine.favorite.add")} title={t(navigation.favorites.includes(variant.directory) ? "spine.favorite.remove" : "spine.favorite.add")} onContextMenu={(event) => openViewerContextMenu(event, { kind: "lobby", lobbyId: variant.directory })} onKeyDown={(event) => openViewerKeyboardMenu(event, { kind: "lobby", lobbyId: variant.directory })} onClick={() => toggleFavorite(variant.directory)}><IconStar /></button>
                   </div>)}
                   {visibleVariants.length === 0 && <p className="spine-character-no-variants">{t("spine.noMatchingVariants")}</p>}
                 </div>}
@@ -3849,7 +3912,8 @@ export function Spine() {
             </button>
           </div>
         </div>
-        <div ref={stageFrameRef} className="spine-stage-frame" data-aspect-ratio={outputAspectRatio} data-free-canvas={!compositionActive && interactionMode === "free" ? "true" : "false"} onPointerDown={(event) => {
+        <div ref={stageFrameRef} className="spine-stage-frame" role="group" aria-label={t("spine.stageAria")} aria-haspopup="menu" aria-keyshortcuts="Shift+F10 ContextMenu" tabIndex={0} data-aspect-ratio={outputAspectRatio} data-free-canvas={!compositionActive && interactionMode === "free" ? "true" : "false"} onContextMenu={openPreviewContextMenu} onKeyDown={openPreviewKeyboardMenu} onPointerDown={(event) => {
+          if (event.button !== 0) return;
           stagePointer.current = { x: event.clientX, y: event.clientY };
         }} onPointerUp={(event) => {
           const start = stagePointer.current;
@@ -4268,6 +4332,14 @@ export function Spine() {
       v{__APP_VERSION__}{releaseUpdates.state.status === "available" && <i aria-hidden="true" />}
     </button>
   </main>
+  {contextMenu && <ContextMenu
+    x={contextMenu.x}
+    y={contextMenu.y}
+    label={contextMenu.target.kind === "preview" ? t("spine.viewerAria") : t("spine.characterVariants", { name: lobbyLabels[contextMenu.target.lobbyId] ?? contextMenu.target.lobbyId })}
+    actions={viewerContextActions(contextMenu.target)}
+    onClose={() => setContextMenu(null)}
+    returnFocusTo={contextMenu.returnFocusTo}
+  />}
   {aboutPage && <AboutPage
     appName="BA Spine Viewer"
     version={__APP_VERSION__}

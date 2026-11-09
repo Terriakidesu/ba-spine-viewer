@@ -1,4 +1,4 @@
-import { forwardRef, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { forwardRef, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { SpineCameraKeyframe } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 
 interface CameraKeyframeStripProps {
@@ -15,7 +15,9 @@ interface CameraKeyframeStripProps {
   onRetimeEnd: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onRetimeCancel: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onTrackContextMenu: (event: ReactMouseEvent<HTMLDivElement>, time: number | null) => void;
+  onTrackContextMenuKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
   onKeyframeContextMenu: (event: ReactMouseEvent<HTMLButtonElement>, id: string) => void;
+  onKeyframeContextMenuKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>, id: string) => void;
 }
 
 function seconds(value: number): string {
@@ -36,11 +38,13 @@ export const CameraKeyframeStrip = forwardRef<HTMLDivElement, CameraKeyframeStri
   onRetimeEnd,
   onRetimeCancel,
   onTrackContextMenu,
+  onTrackContextMenuKeyDown,
   onKeyframeContextMenu,
+  onKeyframeContextMenuKeyDown,
 }, ref) {
   return <section className="camera-keyframe-strip" aria-label="Camera shot timeline">
     <header><strong>Camera timeline</strong><small>Drag shots to retime · snap to playhead and neighbors · hold Alt to bypass snapping</small></header>
-    <div ref={ref} className="camera-keyframe-track" onClick={(event) => {
+    <div ref={ref} className="camera-keyframe-track" tabIndex={0} role="group" aria-label="Camera shot timeline" aria-haspopup="menu" aria-keyshortcuts="Shift+F10 ContextMenu" onKeyDown={onTrackContextMenuKeyDown} onClick={(event) => {
       if (event.target === event.currentTarget) onSeek(event.clientX);
     }} onContextMenu={(event) => {
       const bounds = event.currentTarget.getBoundingClientRect();
@@ -57,6 +61,7 @@ export const CameraKeyframeStrip = forwardRef<HTMLDivElement, CameraKeyframeStri
         style={{ left: `${duration > 0 ? keyframe.time / duration * 100 : 0}%` }}
         title={`Shot ${seconds(keyframe.time)} · ${keyframe.easing ?? "linear"} · drag to retime`}
         aria-label={`Camera shot at ${seconds(keyframe.time)}, ${keyframe.easing ?? "linear"} interpolation`}
+        aria-haspopup="menu"
         aria-pressed={selectedId === keyframe.id}
         onPointerDown={(event) => onRetimeStart(event, keyframe.id)}
         onPointerMove={onRetimeMove}
@@ -68,6 +73,7 @@ export const CameraKeyframeStrip = forwardRef<HTMLDivElement, CameraKeyframeStri
           event.stopPropagation();
           onKeyframeContextMenu(event, keyframe.id);
         }}
+        onKeyDown={(event) => onKeyframeContextMenuKeyDown(event, keyframe.id)}
       ><i aria-hidden="true" /><span>{seconds(keyframe.time)}</span><small>{keyframe.easing === "hold" ? "Hold" : keyframe.easing === "smooth" ? "Smooth" : "Linear"}</small></button>)}
       {!keyframes.length && <span className="camera-keyframe-empty">No camera shots yet</span>}
     </div>

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { ContextMenu, type ContextMenuAction, isContextMenuShortcut } from "@ba-spine/app-ui/ContextMenu";
 import {
   SpineRenderer,
   type SpineEditorFrame,
@@ -119,6 +120,7 @@ interface BoneOverlayProps {
   lookFollowVisible: boolean;
   onSelectBone: (path: string) => void;
   onSelectRegion: (interactionId: string, regionId: string) => void;
+  onRegionContextMenu: (x: number, y: number, interactionId: string, regionId: string, returnFocusTo: HTMLElement | SVGElement | null) => void;
   onBeginRegionDrag: () => void;
   onBeginLookFollowEdit: () => void;
   onChangeLookFollowRange: (axis: "x" | "y", value: number) => void;
@@ -146,6 +148,18 @@ interface RegionGeometry {
   rx: number;
   ry: number;
   rotation: number;
+}
+
+type InteractionContextTarget =
+  | { kind: "canvas" }
+  | { kind: "interaction"; interactionId: string }
+  | { kind: "region"; interactionId: string; regionId: string };
+
+interface InteractionContextMenuState {
+  x: number;
+  y: number;
+  target: InteractionContextTarget;
+  returnFocusTo: HTMLElement | SVGElement | null;
 }
 
 interface RegionAnchor {
@@ -248,7 +262,7 @@ function arcPath(cx: number, cy: number, radius: number, startDegrees: number, e
   return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArc} ${sweep} ${end.x} ${end.y}`;
 }
 
-function BoneOverlay({ frame, project, viewSettings, motionLimits, lookFollowVisible, tool, onSelectBone, onSelectRegion, onBeginRegionDrag, onBeginLookFollowEdit, onChangeLookFollowRange, onDragRegion, onChangeRegion }: BoneOverlayProps) {
+function BoneOverlay({ frame, project, viewSettings, motionLimits, lookFollowVisible, tool, onSelectBone, onSelectRegion, onRegionContextMenu, onBeginRegionDrag, onBeginLookFollowEdit, onChangeLookFollowRange, onDragRegion, onChangeRegion }: BoneOverlayProps) {
   const drag = useRef<{ interactionId: string; regionId: string; startX: number; startY: number; offsetX: number; offsetY: number; frame: SpineEditorFrame } | null>(null);
   const handleDrag = useRef<{ interactionId: string; region: EditorRegion; frame: SpineEditorFrame; kind: "resize" | "rotate" } | null>(null);
   const lookRangeDrag = useRef<"x" | "y" | null>(null);
@@ -395,6 +409,7 @@ function BoneOverlay({ frame, project, viewSettings, motionLimits, lookFollowVis
         const transform = `matrix(${matrix.a} ${matrix.b} ${matrix.c} ${matrix.d} ${matrix.e} ${matrix.f})`;
         const selected = project.selectedInteractionId === interaction.id && project.selectedRegionId === region.id;
         const startDrag = (event: ReactPointerEvent<SVGElement>) => {
+          if (event.button !== 0) return;
           event.stopPropagation();
           (event.currentTarget as SVGElement & { setPointerCapture: (pointerId: number) => void }).setPointerCapture(event.pointerId);
           onSelectRegion(interaction.id, region.id);
@@ -409,8 +424,14 @@ function BoneOverlay({ frame, project, viewSettings, motionLimits, lookFollowVis
               height={region.radiusY * 2}
               transform={transform}
               vectorEffect="non-scaling-stroke"
+              tabIndex={0}
+              role="button"
+              aria-haspopup="menu"
+              aria-label={`${region.name}, ${interaction.name} hit region`}
               onPointerDown={startDrag}
               onClick={(event) => { event.stopPropagation(); onSelectRegion(interaction.id, region.id); }}
+              onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onRegionContextMenu(event.clientX, event.clientY, interaction.id, region.id, event.currentTarget); }}
+              onKeyDown={(event) => { if (!isContextMenuShortcut(event)) return; event.preventDefault(); event.stopPropagation(); const bounds = event.currentTarget.getBoundingClientRect(); onRegionContextMenu(bounds.left, bounds.bottom, interaction.id, region.id, event.currentTarget); }}
             />
           : <ellipse
               cx={0}
@@ -419,8 +440,14 @@ function BoneOverlay({ frame, project, viewSettings, motionLimits, lookFollowVis
               ry={region.radiusY}
               transform={transform}
               vectorEffect="non-scaling-stroke"
+              tabIndex={0}
+              role="button"
+              aria-haspopup="menu"
+              aria-label={`${region.name}, ${interaction.name} hit region`}
               onPointerDown={startDrag}
               onClick={(event) => { event.stopPropagation(); onSelectRegion(interaction.id, region.id); }}
+              onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onRegionContextMenu(event.clientX, event.clientY, interaction.id, region.id, event.currentTarget); }}
+              onKeyDown={(event) => { if (!isContextMenuShortcut(event)) return; event.preventDefault(); event.stopPropagation(); const bounds = event.currentTarget.getBoundingClientRect(); onRegionContextMenu(bounds.left, bounds.bottom, interaction.id, region.id, event.currentTarget); }}
             />;
         return (
           <g key={`${interaction.id}-${region.id}`} className={`editor-region${selected ? " is-selected" : ""}`} style={{ color: interaction.color }}>
@@ -430,6 +457,7 @@ function BoneOverlay({ frame, project, viewSettings, motionLimits, lookFollowVis
               const localX = kind === "resize" ? region.radiusX : 0;
               const localY = region.radiusY + (kind === "rotate" ? 35 : 0);
               return <circle key={kind} className={`editor-handle ${kind}`} cx={matrix.e + matrix.a * localX + matrix.c * localY} cy={matrix.f + matrix.b * localX + matrix.d * localY} r={7} onPointerDown={(event) => {
+                if (event.button !== 0) return;
                 event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); onBeginRegionDrag();
                 handleDrag.current = { interactionId: interaction.id, region: { ...region }, frame, kind };
               }}><title>{kind === "resize" ? "Drag to resize" : "Drag to rotate"}</title></circle>;
@@ -513,6 +541,7 @@ export function Editor() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const validationDetailsRef = useRef<HTMLDetailsElement>(null);
   const [workspace, setWorkspace] = useState<"interaction" | "timeline" | "camera">("interaction");
+  const [interactionContextMenu, setInteractionContextMenu] = useState<InteractionContextMenuState | null>(null);
   const [assetPickerOpen, setAssetPickerOpen] = useState(false);
   const [initialTimelineHandoff, setInitialTimelineHandoff] = useState<{ requestId: string; sequenceId: string; playheadSeconds?: number } | null>(null);
   const [companionStatus, setCompanionStatus] = useState<string | null>(null);
@@ -1541,6 +1570,14 @@ export function Editor() {
     setSaveState("dirty");
   }
 
+  function updateProjectSelection(mutator: (current: EditorProject) => EditorProject) {
+    const current = projectRef.current;
+    if (!current) return;
+    const next = mutator(cloneProject(current));
+    projectRef.current = next;
+    setProject(next);
+  }
+
   function beginTimelineEdit() {
     if (!projectRef.current) return;
     setUndo((items) => [...items.slice(-49), projectRef.current!]);
@@ -1844,6 +1881,21 @@ export function Editor() {
     });
   }
 
+  function selectInteractionRegion(interactionId: string, regionId: string) {
+    live((current) => ({ ...current, selectedInteractionId: interactionId, selectedRegionId: regionId }));
+  }
+
+  function contextSelectInteraction(interactionId: string) {
+    updateProjectSelection((current) => {
+      const item = current.interactions.find((interaction) => interaction.id === interactionId);
+      return { ...current, selectedInteractionId: interactionId, selectedRegionId: item?.regions[0]?.id ?? null };
+    });
+  }
+
+  function contextSelectInteractionRegion(interactionId: string, regionId: string) {
+    updateProjectSelection((current) => ({ ...current, selectedInteractionId: interactionId, selectedRegionId: regionId }));
+  }
+
   function addInteraction() {
     if (!project || !frame || !meta) return;
     const item = blankInteraction(meta.animations, frame.bones, project.interactions.length);
@@ -1852,8 +1904,12 @@ export function Editor() {
 
   function deleteInteraction() {
     if (!selectedInteraction) return;
+    deleteInteractionById(selectedInteraction.id);
+  }
+
+  function deleteInteractionById(interactionId: string) {
     mutate((current) => {
-      const remaining = current.interactions.filter((item) => item.id !== selectedInteraction.id);
+      const remaining = current.interactions.filter((item) => item.id !== interactionId);
       const next = remaining[0];
       return { ...current, interactions: remaining, selectedInteractionId: next?.id ?? null, selectedRegionId: next?.regions[0]?.id ?? null };
     });
@@ -1872,10 +1928,14 @@ export function Editor() {
 
   function deleteRegion() {
     if (!selectedInteraction || !selectedRegion) return;
+    deleteRegionById(selectedInteraction.id, selectedRegion.id);
+  }
+
+  function deleteRegionById(interactionId: string, regionId: string) {
     mutate((current) => ({
       ...current,
-      interactions: current.interactions.map((interaction) => interaction.id === selectedInteraction.id ? { ...interaction, regions: interaction.regions.filter((region) => region.id !== selectedRegion.id) } : interaction),
-      selectedRegionId: null,
+      interactions: current.interactions.map((interaction) => interaction.id === interactionId ? { ...interaction, regions: interaction.regions.filter((region) => region.id !== regionId) } : interaction),
+      selectedRegionId: current.selectedRegionId === regionId ? null : current.selectedRegionId,
     }));
   }
 
@@ -1934,24 +1994,25 @@ export function Editor() {
     setStatus("Look-follow test is ready. Press and hold the canvas, then move the pointer to preview gaze and limits.");
   }
 
-  function startSelectedTest() {
-    if (!selectedInteraction || !frame) return;
+  function startSelectedTest(interactionOverride?: EditorInteraction) {
+    const interaction = interactionOverride ?? selectedInteraction;
+    if (!interaction || !frame) return;
     if (lookTesting) stopLookFollowTest();
-    const testRegion = selectedRegion?.enabled && selectedInteraction.regions.some((region) => region.id === selectedRegion.id)
+    const testRegion = !interactionOverride && selectedRegion?.enabled && interaction.regions.some((region) => region.id === selectedRegion.id)
       ? selectedRegion
-      : selectedInteraction.regions.find((region) => region.enabled) ?? null;
+      : interaction.regions.find((region) => region.enabled) ?? null;
     const center = testRegion
       ? regionMatrix(frame, testRegion)
       : { e: frame.canvasWidth / 2, f: frame.canvasHeight / 2 };
     const origin = screenToWorld(frame, center.e, center.f);
     if (!origin) return;
     resetPreview();
-    previewRef.current.press(selectedInteraction, testRegion?.name ?? "Direct test", origin.x, origin.y);
+    previewRef.current.press(interaction, testRegion?.name ?? "Direct test", origin.x, origin.y);
     setPreviewDebug(previewRef.current.debug);
-    setPreviewStatus(`starting · ${selectedInteraction.name}`);
+    setPreviewStatus(`starting · ${interaction.name}`);
     setTesting(true);
     setTool("select");
-    setStatus(`Testing ${selectedInteraction.name} directly. Drag on the stage, or release with the test controls.`);
+    setStatus(`Testing ${interaction.name} directly. Drag on the stage, or release with the test controls.`);
   }
 
   function releaseTest() {
@@ -1989,13 +2050,26 @@ export function Editor() {
 
   function duplicateRegion() {
     if (!selectedRegion || !selectedInteraction) return;
-    const copy = { ...selectedRegion, id: crypto.randomUUID(), name: `${selectedRegion.name} copy`, offsetX: selectedRegion.offsetX + 20, placement: "manual" as const };
-    mutate((current) => ({ ...current, selectedRegionId: copy.id, interactions: current.interactions.map((item) => item.id === selectedInteraction.id ? { ...item, regions: [...item.regions, copy] } : item) }));
+    duplicateRegionById(selectedInteraction.id, selectedRegion.id);
+  }
+
+  function duplicateRegionById(interactionId: string, regionId: string) {
+    const currentInteraction = projectRef.current?.interactions.find((item) => item.id === interactionId);
+    const selected = currentInteraction?.regions.find((item) => item.id === regionId);
+    if (!currentInteraction || !selected) return;
+    const copy = { ...selected, id: crypto.randomUUID(), name: `${selected.name} copy`, offsetX: selected.offsetX + 20, placement: "manual" as const };
+    mutate((current) => ({ ...current, selectedInteractionId: interactionId, selectedRegionId: copy.id, interactions: current.interactions.map((item) => item.id === interactionId ? { ...item, regions: [...item.regions, copy] } : item) }));
   }
 
   function duplicateInteraction() {
     if (!selectedInteraction) return;
-    const copy = structuredClone(selectedInteraction);
+    duplicateInteractionById(selectedInteraction.id);
+  }
+
+  function duplicateInteractionById(interactionId: string) {
+    const selected = projectRef.current?.interactions.find((item) => item.id === interactionId);
+    if (!selected) return;
+    const copy = structuredClone(selected);
     copy.id = crypto.randomUUID(); copy.name += " copy";
     copy.regions = copy.regions.map((region) => ({ ...region, id: crypto.randomUUID(), placement: "manual" }));
     mutate((current) => ({ ...current, interactions: [...current.interactions, copy], selectedInteractionId: copy.id, selectedRegionId: copy.regions[0]?.id ?? null }));
@@ -2049,6 +2123,71 @@ export function Editor() {
     const rect = event.currentTarget.getBoundingClientRect();
     if (!frame || !rect.width || !rect.height) return null;
     return { x: (event.clientX - rect.left) * frame.canvasWidth / rect.width, y: (event.clientY - rect.top) * frame.canvasHeight / rect.height };
+  }
+
+  function openInteractionContextMenuAt(
+    x: number,
+    y: number,
+    target: InteractionContextTarget,
+    returnFocusTo: HTMLElement | SVGElement | null,
+  ) {
+    if (target.kind === "interaction") contextSelectInteraction(target.interactionId);
+    if (target.kind === "region") {
+      contextSelectInteractionRegion(target.interactionId, target.regionId);
+      setInspectorTab("region");
+    }
+    setInteractionContextMenu({ x, y, target, returnFocusTo });
+  }
+
+  function openInteractionContextMenu(event: ReactMouseEvent<Element>, target: InteractionContextTarget) {
+    if (isTextEditingTarget(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openInteractionContextMenuAt(event.clientX, event.clientY, target, event.currentTarget as HTMLElement | SVGElement);
+  }
+
+  function openInteractionKeyboardMenu(event: ReactKeyboardEvent<HTMLElement>, target: InteractionContextTarget) {
+    if (!isContextMenuShortcut(event) || isTextEditingTarget(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    openInteractionContextMenuAt(bounds.left, bounds.bottom, target, event.currentTarget);
+  }
+
+  function interactionContextActions(target: InteractionContextTarget): readonly ContextMenuAction[] {
+    const current = projectRef.current;
+    if (target.kind === "canvas") return [
+      { label: "Add interaction", disabled: !current || !frame || !meta, run: addInteraction },
+      { label: "Add hit region", disabled: !selectedInteraction || !frame, reason: !selectedInteraction ? "Select an interaction first." : undefined, run: addRegion },
+      { label: "Fit artwork", disabled: !frame, run: () => rendererRef.current?.resetCamera(), separatorBefore: true },
+      { label: "Reset idle preview", disabled: !frame, run: resetPreview },
+      { label: testing ? "Exit interaction test" : "Test selected interaction", disabled: !selectedInteraction || !frame, run: toggleTest },
+    ];
+    const interaction = current?.interactions.find((item) => item.id === target.interactionId);
+    if (!interaction) return [];
+    if (target.kind === "interaction") return [
+      { label: "Edit interaction properties", run: () => { contextSelectInteraction(interaction.id); setInspectorTab("region"); } },
+      { label: interaction.enabled ? "Disable interaction" : "Enable interaction", run: () => mutate((value) => ({ ...value, interactions: value.interactions.map((item) => item.id === interaction.id ? { ...item, enabled: !item.enabled } : item) })) },
+      { label: "Duplicate interaction", run: () => duplicateInteractionById(interaction.id) },
+      { label: "Test interaction", disabled: !frame, run: () => startSelectedTest(interaction) },
+      { label: "Delete interaction…", danger: true, separatorBefore: true, run: () => { if (confirm("Delete this interaction and all its regions?")) deleteInteractionById(interaction.id); } },
+    ];
+    const region = interaction.regions.find((item) => item.id === target.regionId);
+    if (!region) return [];
+    return [
+      { label: "Edit region properties", run: () => { contextSelectInteractionRegion(interaction.id, region.id); setInspectorTab("region"); } },
+      { label: region.enabled ? "Disable region" : "Enable region", run: () => mutate((value) => ({ ...value, interactions: value.interactions.map((item) => item.id === interaction.id ? { ...item, regions: item.regions.map((entry) => entry.id === region.id ? { ...entry, enabled: !entry.enabled } : entry) } : item) })) },
+      { label: "Duplicate region", run: () => duplicateRegionById(interaction.id, region.id) },
+      { label: "Delete region", danger: true, separatorBefore: true, run: () => deleteRegionById(interaction.id, region.id) },
+    ];
+  }
+
+  function handleInteractionStageContextMenu(event: ReactMouseEvent<HTMLDivElement>) {
+    openInteractionContextMenu(event, { kind: "canvas" });
+  }
+
+  function handleInteractionStageKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    openInteractionKeyboardMenu(event, { kind: "canvas" });
   }
 
   function stagePress(event: ReactPointerEvent<HTMLDivElement>) {
@@ -2298,6 +2437,14 @@ export function Editor() {
       </section>}
       <AssetPickerModal open={assetPickerOpen} title="Switch character or asset set" eyebrow="CHARACTER / ASSET SET" description="Search the loaded Spine catalog, then choose the set to edit." directories={directories} selected={directory} assetRoot={source?.rootPath ?? ""} directoryInfo={directoryInfo} renderLabel={(item) => characterDirectoryLabel(item, directoryLabels)} getSearchText={(item) => characterDirectoryLabel(item, directoryLabels)} onClose={() => setAssetPickerOpen(false)} onSelect={(next) => { setAssetPickerOpen(false); void changeDirectory(next); }} />
       <CommandPalette open={commandPaletteOpen} commands={commandPaletteCommands} onClose={() => setCommandPaletteOpen(false)} />
+      {interactionContextMenu && <ContextMenu
+        x={interactionContextMenu.x}
+        y={interactionContextMenu.y}
+        label="Interaction studio actions"
+        actions={interactionContextActions(interactionContextMenu.target)}
+        onClose={() => setInteractionContextMenu(null)}
+        returnFocusTo={interactionContextMenu.returnFocusTo}
+      />}
 
         {help && <div className="editor-help" role="region" aria-label="Editor help"><strong>Shortcuts</strong>{workspace === "camera" ? <><span>Camera: use Select, Pan, or Draw tools on the full-scene canvas. Edit selected boundaries and shots in the right inspector.</span><span>Ctrl/⌘ K Commands · Space Play/pause · Use the shared playhead to sync with Timeline · Ctrl/⌘ S Save</span></> : workspace === "timeline" ? <span>Ctrl/⌘ K Commands · Space Play/pause · Left/right Frame · Shift+Left/right 10 frames · Home/End · S Split subtitle · Ctrl/⌘ C/V Copy/paste · Ctrl/⌘ D Duplicate · Ctrl/⌘ Z Undo · Ctrl/⌘ Shift+Z or Y Redo · Delete Remove · F Fit timeline · Select a camera key, then Edit in Camera · Ctrl/⌘ S Save</span> : <><span>Draw a hit region, choose animations, then test it with press, hold, drag, and release.</span><span>Ctrl/⌘ K Commands · V Select · H Pan · R Draw · T Test · F Fit canvas · B Bones · Space Play/pause · Esc Idle/Edit</span><span>Ctrl/⌘ Z Undo · Ctrl/⌘ Shift+Z or Y Redo · Ctrl/⌘ D Duplicate · Delete Remove region · Ctrl/⌘ S Save</span></>}<button className="editor-button" onClick={() => setHelp(false)}><IconClose /> Close</button></div>}
         <main className={`editor-layout${leftHidden ? " hide-left" : ""}${rightHidden ? " hide-right" : ""}${!assetLoaded ? " is-loading" : ""}`} style={{ display: workspace !== "interaction" || behaviorMode ? "none" : undefined, position: workspace !== "interaction" ? "absolute" : undefined, visibility: workspace !== "interaction" ? "hidden" : undefined, inset: workspace !== "interaction" ? "100px 0 40px" : undefined, pointerEvents: workspace !== "interaction" ? "none" : undefined, gridTemplateColumns: `${leftHidden ? "" : `${leftWidth}px `}minmax(180px, 1fr)${rightHidden ? "" : ` ${rightWidth}px`}` }}>
@@ -2369,7 +2516,7 @@ export function Editor() {
             <button className="editor-button" onClick={resetPreview} disabled={!meta}>Reset idle</button>
               <button className="editor-button" onClick={() => { setLayoutPreset("custom"); setRightHidden((value) => !value); }} title="Toggle inspector">Inspector <IconMenu /></button>
           </div>
-          <div className="editor-stage" ref={stageRef} onDoubleClick={(event) => { if (!testing && !lookTesting && event.target === canvasRef.current) rendererRef.current?.resetCamera(); }}>
+          <div className="editor-stage" ref={stageRef} role="group" aria-label="Interaction canvas" aria-haspopup="menu" aria-keyshortcuts="Shift+F10 ContextMenu" tabIndex={0} onContextMenu={handleInteractionStageContextMenu} onKeyDown={handleInteractionStageKeyDown} onDoubleClick={(event) => { if (!testing && !lookTesting && event.target === canvasRef.current) rendererRef.current?.resetCamera(); }}>
             <canvas ref={canvasRef} aria-label="Spine editor canvas" />
             <BoneOverlay
                 frame={frame}
@@ -2390,7 +2537,8 @@ export function Editor() {
                 } : null}
                 tool={testing || lookTesting ? "pan" : tool}
                onSelectBone={(path) => live((current) => ({ ...current, selectedBonePath: path }))}
-               onSelectRegion={(interactionId, regionId) => live((current) => ({ ...current, selectedInteractionId: interactionId, selectedRegionId: regionId }))}
+                onSelectRegion={selectInteractionRegion}
+                onRegionContextMenu={(x, y, interactionId, regionId, returnFocusTo) => openInteractionContextMenuAt(x, y, { kind: "region", interactionId, regionId }, returnFocusTo)}
                onBeginRegionDrag={() => { if (projectRef.current) setUndo((items) => [...items.slice(-49), projectRef.current!]); setRedo([]); }}
                onBeginLookFollowEdit={beginLookFollowEdit}
                onChangeLookFollowRange={changeLookFollowRange}
@@ -2429,7 +2577,7 @@ export function Editor() {
                <span>Rotation <b>{previewDebug.rotation.toFixed(1)}°</b></span>
               </div>
               <div className="editor-test-controls">
-                <button className="editor-preview-button" disabled={!selectedInteraction || !frame} onClick={startSelectedTest}><IconPlay /> Test selected</button>
+                 <button className="editor-preview-button" disabled={!selectedInteraction || !frame} onClick={() => startSelectedTest()}><IconPlay /> Test selected</button>
                 <button className="editor-preview-button" disabled={previewDebug.phase === "idle" || previewDebug.phase === "releasing"} onClick={releaseTest}>Release</button>
                 <button className="editor-preview-button" disabled={!selectedInteraction || !frame} onClick={replayTest}>Replay</button>
               </div>
@@ -2452,8 +2600,8 @@ export function Editor() {
           <section className="editor-section editor-interactions-section">
              <div className="editor-section-title"><strong>Interactions</strong><button onClick={addInteraction} disabled={!project || !frame}><IconPlus /> Add</button></div>
             <input className="editor-search" value={interactionSearch} onChange={(event) => setInteractionSearch(event.target.value)} placeholder="Filter interactions…" />
-            <div className="editor-interaction-list">
-              {visibleInteractions.map((item) => <button key={item.id} className={item.id === project?.selectedInteractionId ? "is-selected" : ""} onClick={() => selectInteraction(item.id)}><i style={{ background: item.color }} />{item.name}<small>{item.regions.length} region{item.regions.length === 1 ? "" : "s"}</small></button>)}
+             <div className="editor-interaction-list">
+              {visibleInteractions.map((item) => <button key={item.id} className={item.id === project?.selectedInteractionId ? "is-selected" : ""} aria-haspopup="menu" onClick={() => selectInteraction(item.id)} onContextMenu={(event) => openInteractionContextMenu(event, { kind: "interaction", interactionId: item.id })} onKeyDown={(event) => openInteractionKeyboardMenu(event, { kind: "interaction", interactionId: item.id })}><i style={{ background: item.color }} />{item.name}<small>{item.regions.length} region{item.regions.length === 1 ? "" : "s"}</small></button>)}
             </div>
           </section>
           <details ref={validationDetailsRef} className={`editor-section editor-validation${validationWarnings.length ? " has-warnings" : ""}`}>
@@ -2533,8 +2681,8 @@ export function Editor() {
              </details>
               <div className="editor-region-fields">
               <div className="editor-subheading editor-region-heading"><span>Hit regions</span><button onClick={addRegion}><IconPlus /> Add region</button></div>
-            <div className="editor-region-list">
-              {selectedInteraction.regions.map((region) => <button key={region.id} className={region.id === project?.selectedRegionId ? "is-selected" : ""} onClick={() => live((current) => ({ ...current, selectedRegionId: region.id }))}><i style={{ background: selectedInteraction.color }} />{region.name}<small>{region.shape}</small></button>)}
+             <div className="editor-region-list">
+              {selectedInteraction.regions.map((region) => <button key={region.id} className={region.id === project?.selectedRegionId ? "is-selected" : ""} aria-haspopup="menu" onClick={() => live((current) => ({ ...current, selectedRegionId: region.id }))} onContextMenu={(event) => openInteractionContextMenu(event, { kind: "region", interactionId: selectedInteraction.id, regionId: region.id })} onKeyDown={(event) => openInteractionKeyboardMenu(event, { kind: "region", interactionId: selectedInteraction.id, regionId: region.id })}><i style={{ background: selectedInteraction.color }} />{region.name}<small>{region.shape}</small></button>)}
               {!selectedInteraction.regions.length && <p className="editor-muted">No hit regions. Add one to make this interaction clickable.</p>}
              </div>
               </div>
@@ -2639,7 +2787,7 @@ export function Editor() {
         onTestEvent={(machineId, event, regionId) => rendererRef.current?.testBehaviorEvent(machineId, event, regionId)}
         onCancelTest={() => rendererRef.current?.cancelBehaviorTest()}
       />}
-      {workspace !== "interaction" && assetLoaded && <TimelineWorkspace mode={workspace} onWorkspaceChange={setWorkspace} source={source} directory={directory} directories={directories} directoryLabels={directoryLabels} directoryInfo={directoryInfo} project={project} initialHandoff={initialTimelineHandoff} initialSubtitlePath={pendingSubtitlePath} onSubtitleOpened={() => setPendingSubtitlePath(null)} initialAudioPaths={pendingAudioPaths} onAudioOpened={() => setPendingAudioPaths(null)} onRecentFile={recordRecentFile} onMutate={mutate} onLive={live} onBeginEdit={beginTimelineEdit} onBeginCameraEdit={beginCameraEdit} onEndCameraEdit={endCameraEdit} onCancelCameraEdit={cancelCameraEdit} onSave={() => saveProject()} onRegisterSave={(callback) => { timelineSaveRef.current = callback; }} onStatus={setStatus} onError={setError} onRegisterMcp={registerMcpTimeline} onMcpSnapshot={publishTimelineMcpSnapshot} onAudioWaveformProfile={__EDITOR_WAVEFORM_PROFILE__ ? (clipId: string, measurement: AudioWaveformMeasurement) => waveformProfileRef.current?.recordStage(clipId, measurement) : undefined} />}
+      {workspace !== "interaction" && assetLoaded && <TimelineWorkspace mode={workspace} onWorkspaceChange={setWorkspace} source={source} directory={directory} directories={directories} directoryLabels={directoryLabels} directoryInfo={directoryInfo} project={project} initialHandoff={initialTimelineHandoff} initialSubtitlePath={pendingSubtitlePath} onSubtitleOpened={() => setPendingSubtitlePath(null)} initialAudioPaths={pendingAudioPaths} onAudioOpened={() => setPendingAudioPaths(null)} onRecentFile={recordRecentFile} onMutate={mutate} onLive={live} onSelectProject={updateProjectSelection} onBeginEdit={beginTimelineEdit} onBeginCameraEdit={beginCameraEdit} onEndCameraEdit={endCameraEdit} onCancelCameraEdit={cancelCameraEdit} onSave={() => saveProject()} onRegisterSave={(callback) => { timelineSaveRef.current = callback; }} onStatus={setStatus} onError={setError} onRegisterMcp={registerMcpTimeline} onMcpSnapshot={publishTimelineMcpSnapshot} onAudioWaveformProfile={__EDITOR_WAVEFORM_PROFILE__ ? (clipId: string, measurement: AudioWaveformMeasurement) => waveformProfileRef.current?.recordStage(clipId, measurement) : undefined} />}
       <footer className="editor-statusbar">
         <span className={error ? "editor-error" : legacyAspectRatioNotice ? "editor-compatibility-warning" : ""} role={legacyAspectRatioNotice && !error ? "status" : undefined}>{error ?? (legacyAspectRatioNotice ? "Legacy 1:1 camera framing is shown as 16:9. Save to update the project." : status)}</span>
          <span>{directory ? `${displayName(directory)} · ${files?.size ?? 0} files` : "No asset loaded"} · {testing ? "TEST MODE" : workspace === "camera" ? "CAMERA" : workspace === "timeline" ? "TIMELINE" : behaviorMode ? "BEHAVIOR GRAPH" : "EDIT MODE"}</span>

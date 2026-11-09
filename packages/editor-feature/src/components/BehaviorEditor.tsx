@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ContextMenuAction } from "@ba-spine/app-ui/ContextMenu";
 import { normalizeSpineBehaviorMachine, normalizeSpineBehaviorMachines, type SpineBehaviorAction, type SpineBehaviorCondition, type SpineBehaviorEvent, type SpineBehaviorMachine, type SpineBehaviorState, type SpineBehaviorTransition } from "@ba-spine/spine-runtime/spine/spineBehavior";
 import type { SpineBehaviorDebugMachine } from "@ba-spine/spine-runtime/spine/spineBehaviorRuntime";
 import { applySpineBehaviorPreset, SPINE_BEHAVIOR_PRESETS, type SpineBehaviorPresetId } from "../behaviorPresets";
 import { normalizeBehaviorGraphLayouts, type BehaviorMachineGraphLayout, type BehaviorGraphLayouts } from "../behaviorGraph";
-import { BehaviorGraph } from "./BehaviorGraph";
+import { BehaviorGraph, type BehaviorGraphContextTarget } from "./BehaviorGraph";
 
 const events: SpineBehaviorEvent[] = ["pointer-press", "pointer-release", "pointer-drag", "pointer-cancel", "pointer-leave", "timer-elapsed", "animation-complete", "state-entered", "manual"];
 const actions = ["play-animation", "pointer-follow", "drag-bone", "rotate-bone", "play-audio", "show-subtitle", "set-variable", "wait", "restore-resource"] as const;
@@ -119,13 +120,36 @@ export function BehaviorEditor({ machines, animations, debug, testFeedback = [],
     setSelection(null);
   }
 
-  function addTransition() {
+  function addTransition(fromStateIdOverride?: string) {
     if (!machine || machine.states.length < 2) return;
-    const fromStateId = selectedState?.id ?? machine.initialStateId;
+    const fromStateId = fromStateIdOverride ?? selectedState?.id ?? machine.initialStateId;
     const toStateId = machine.states.find((state) => state.id !== fromStateId)?.id ?? machine.states[0]!.id;
     const transition = { id: makeId("transition"), fromStateId, toStateId, event: "pointer-release" as const, conditions: [], afterSeconds: 0, priority: 0, blendDuration: 0.14, interruptPolicy: "allow" as const };
     commit({ ...machine, transitions: [...machine.transitions, transition] });
     setSelection({ kind: "transition", id: transition.id });
+  }
+
+  function behaviorGraphContextActions(target: BehaviorGraphContextTarget): readonly ContextMenuAction[] {
+    if (target.kind === "background") return [
+      { label: "Add state", run: addState },
+      { label: "Add transition", disabled: machine.states.length < 2, reason: "Add at least two states first.", run: addTransition },
+    ];
+    if (target.kind === "state") {
+      const state = machine.states.find((item) => item.id === target.id);
+      if (!state) return [];
+      return [
+        { label: "Edit state properties", run: () => setSelection({ kind: "state", id: state.id }) },
+        { label: "Add transition from state", disabled: machine.states.length < 2, reason: "Add another state first.", run: () => addTransition(state.id) },
+        { label: "Set as initial state", disabled: machine.initialStateId === state.id, run: () => commit({ ...machine, initialStateId: state.id }) },
+        { label: "Delete state", disabled: machine.states.length <= 1, reason: machine.states.length <= 1 ? "A machine must keep at least one state." : undefined, danger: true, run: () => deleteState(state.id), separatorBefore: true },
+      ];
+    }
+    const transition = machine.transitions.find((item) => item.id === target.id);
+    if (!transition) return [];
+    return [
+      { label: "Edit transition properties", run: () => setSelection({ kind: "transition", id: transition.id }) },
+      { label: "Delete transition", danger: true, separatorBefore: true, run: () => { commit({ ...machine, transitions: machine.transitions.filter((item) => item.id !== transition.id) }); setSelection(null); } },
+    ];
   }
 
   function updateTransition(transitionId: string, patch: Partial<SpineBehaviorTransition>) {
@@ -166,7 +190,7 @@ export function BehaviorEditor({ machines, animations, debug, testFeedback = [],
     </aside>
 
     <main className="behavior-graph-panel">
-      <div className="behavior-graph-toolbar"><div><strong>{machine.name}</strong><small>{machine.enabled ? "Enabled" : "Disabled"}</small></div><div><button onClick={addState}>Add state</button><button onClick={addTransition} disabled={machine.states.length < 2}>Add transition</button><details className="behavior-context-menu"><summary aria-label="Machine actions" title="Machine actions">···</summary><div role="group" aria-label="Machine actions"><button className="danger" onClick={deleteCurrentMachine}>Delete machine</button></div></details></div></div>
+      <div className="behavior-graph-toolbar"><div><strong>{machine.name}</strong><small>{machine.enabled ? "Enabled" : "Disabled"}</small></div><div><button onClick={addState}>Add state</button><button onClick={() => addTransition()} disabled={machine.states.length < 2}>Add transition</button><details className="behavior-context-menu"><summary aria-label="Machine actions" title="Machine actions">···</summary><div role="group" aria-label="Machine actions"><button className="danger" onClick={deleteCurrentMachine}>Delete machine</button></div></details></div></div>
       {graphLayout && <BehaviorGraph
         machine={machine}
         layout={graphLayout}
@@ -174,6 +198,7 @@ export function BehaviorEditor({ machines, animations, debug, testFeedback = [],
         runningStateId={activeDebug?.active ? debugState : undefined}
         onLayoutChange={(layout) => onGraphLayoutChange(machine.id, layout)}
         onSelect={setSelection}
+        getContextActions={behaviorGraphContextActions}
       />}
       <section className="behavior-testing" aria-label="Behavior testing">
         <div className="behavior-test-strip" aria-live="polite">

@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./AboutPage": "./src/AboutPage.tsx",
+    "./ContextMenu": "./src/ContextMenu.tsx",
     "./icons": "./src/icons.tsx",
     "./portableSuiteUpdates": "./src/portableSuiteUpdates.ts",
     "./releaseUpdates": "./src/releaseUpdates.ts",
@@ -13,5 +14,8 @@
   },
   "dependencies": {
     "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "react-dom": "^19.0.0"
   }
 }

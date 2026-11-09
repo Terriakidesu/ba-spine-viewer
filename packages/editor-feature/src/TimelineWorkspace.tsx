@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type SetStateAction, type WheelEvent as ReactWheelEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type SetStateAction, type WheelEvent as ReactWheelEvent } from "react";
+import { ContextMenu, type ContextMenuAction, isContextMenuShortcut } from "@ba-spine/app-ui/ContextMenu";
 import { type SpineCameraPose, type SpineFiles, type SpineMeta, type SpineRenderer } from "@ba-spine/spine-runtime/spine/spineRuntime";
 import { cameraAspectValue, cameraFrameHeightForBound, cameraKeyframeTimeAvailable, changeSpineCameraAspectRatio, evaluateSpineCameraTrack, moveSpineCameraBound, moveSpineCameraKeyframe, resizeSpineCameraBound, resizeSpineCameraKeyframe, retimeSpineCameraKeyframe, sampleSpineCameraTrackWithFallback, spineCameraBoundFromCanvasDrag, type CameraCanvasPoint, type SpineCameraAspectRatio, type SpineCameraBoundResizeHandle, type SpineCameraSafeBound, type SpineCameraTrack } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration } from "@ba-spine/spine-runtime/spine/spineInteraction";
@@ -162,6 +163,7 @@ interface CameraContextMenuState {
   x: number;
   y: number;
   target: CameraContextTarget;
+  returnFocusTo: HTMLElement | SVGElement | null;
 }
 
 interface ImportedSubtitleEntry {
@@ -188,6 +190,7 @@ interface TimelineWorkspaceProps {
   onRecentFile: (item: Omit<RecentFile, "lastOpened"> & { lastOpened?: number }) => void;
   onMutate: (mutator: (current: EditorProject) => EditorProject) => void;
   onLive: (mutator: (current: EditorProject) => EditorProject) => void;
+  onSelectProject?: (mutator: (current: EditorProject) => EditorProject) => void;
   onBeginEdit: () => void;
   onBeginCameraEdit?: () => void;
   onEndCameraEdit?: () => void;
@@ -223,6 +226,8 @@ function readTimelineLayoutPreferences(): TimelineLayoutPreferences {
 
 type TimelineClipKind = "layer" | "color-layer" | "animation" | "color" | "cue" | "audio";
 type TimelineSelection = { kind: TimelineClipKind; id: string };
+type TimelineContextTarget = { kind: "preview" } | { kind: "empty" } | { kind: "clip"; selection: TimelineSelection };
+interface TimelineContextMenuState { x: number; y: number; target: TimelineContextTarget; returnFocusTo: HTMLElement | null }
 type TimelineDragKind = TimelineClipKind | "layer-start" | "layer-end" | "animation-start" | "animation-end" | "color-start" | "color-end" | "color-fade-in" | "color-fade-out" | "cue-start" | "cue-end" | "audio-start" | "audio-end";
 interface TimelineDragItem extends TimelineSelection { start: number; end: number; linked?: boolean; sourceDuration?: number; fadeIn?: number; fadeOut?: number }
 interface TimelineDragState {
@@ -387,7 +392,7 @@ function canvasHasVisiblePixels(source: HTMLCanvasElement): boolean {
   return false;
 }
 
-export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () => undefined, source, directory, directories, directoryLabels = {}, directoryInfo = {}, project, initialHandoff, initialSubtitlePath, onSubtitleOpened, initialAudioPaths, onAudioOpened, onRecentFile, onMutate, onLive, onBeginEdit, onBeginCameraEdit = () => undefined, onEndCameraEdit = () => undefined, onCancelCameraEdit = () => undefined, onSave, onRegisterSave, onStatus, onError, onRegisterMcp, onMcpSnapshot, onAudioWaveformProfile }: TimelineWorkspaceProps) {
+export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () => undefined, source, directory, directories, directoryLabels = {}, directoryInfo = {}, project, initialHandoff, initialSubtitlePath, onSubtitleOpened, initialAudioPaths, onAudioOpened, onRecentFile, onMutate, onLive, onSelectProject, onBeginEdit, onBeginCameraEdit = () => undefined, onEndCameraEdit = () => undefined, onCancelCameraEdit = () => undefined, onSave, onRegisterSave, onStatus, onError, onRegisterMcp, onMcpSnapshot, onAudioWaveformProfile }: TimelineWorkspaceProps) {
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -409,6 +414,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const [cameraInspectorTarget, setCameraInspectorTarget] = useState<"settings" | "boundary" | "shot">("settings");
   const [cameraKeyframeTimeIssue, setCameraKeyframeTimeIssue] = useState<string | null>(null);
   const [cameraContextMenu, setCameraContextMenu] = useState<CameraContextMenuState | null>(null);
+  const [timelineContextMenu, setTimelineContextMenu] = useState<TimelineContextMenuState | null>(null);
   const [cameraGuidesVisible, setCameraGuidesVisible] = useState(() => readCameraStudioPreferences().bounds);
   const [cameraShotGuidesVisible, setCameraShotGuidesVisible] = useState(() => readCameraStudioPreferences().shots);
   const [cameraCenterGuidesVisible, setCameraCenterGuidesVisible] = useState(() => readCameraStudioPreferences().centers);
@@ -1172,9 +1178,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     return selectedCameraBoundId ?? solvedCamera?.activeBoundId ?? null;
   }
 
-  function openCameraContextMenu(event: React.MouseEvent<Element>, target: CameraContextTarget) {
-    event.preventDefault();
-    event.stopPropagation();
+  function openCameraContextMenuAt(x: number, y: number, target: CameraContextTarget, returnFocusTo: HTMLElement | SVGElement | null) {
     if (target.kind === "shot") {
       setSelectedCameraKeyframeId(target.id);
       setCameraInspectorTarget("shot");
@@ -1185,16 +1189,26 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       setCameraInspectorTarget("boundary");
       setCameraEditMode("boundaries");
     }
-    const approximateHeight = target.kind === "empty" ? 180 : target.kind === "timeline" ? 200 : 360;
-    setCameraContextMenu({
-      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 248)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - approximateHeight - 8)),
-      target,
-    });
+    setCameraContextMenu({ x, y, target, returnFocusTo });
+  }
+
+  function openCameraContextMenu(event: React.MouseEvent<Element>, target: CameraContextTarget) {
+    if (isTextEditingTarget(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openCameraContextMenuAt(event.clientX, event.clientY, target, event.currentTarget as HTMLElement | SVGElement);
+  }
+
+  function openCameraKeyboardContextMenu(event: ReactKeyboardEvent<HTMLElement>, target: CameraContextTarget) {
+    if (!isContextMenuShortcut(event) || isTextEditingTarget(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    openCameraContextMenuAt(bounds.left, bounds.bottom, target, event.currentTarget);
   }
 
   function cameraContextActions(target: CameraContextTarget) {
-    type Action = { label: string; disabled?: boolean; reason?: string; run: () => void };
+    type Action = ContextMenuAction;
     const shot = target.kind === "shot" ? cameraTrack?.keyframes.find((item) => item.id === target.id) ?? null : null;
     const bound = target.kind === "boundary" ? cameraTrack?.safeBounds.find((item) => item.id === target.id) ?? null : null;
     const selectedShot = cameraTrack?.keyframes.find((item) => item.id === selectedCameraKeyframeId) ?? null;
@@ -1218,17 +1232,17 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       const assignedBound = boundId ? cameraTrack?.safeBounds.find((item) => item.id === boundId && item.enabled) : null;
       const collision = cameraTrack?.keyframes.some((item) => Math.abs(item.time - currentTime) < 0.001) ?? false;
       return [
-        { label: "Edit properties", run: () => { setCameraInspectorTarget("shot"); setSelectedCameraKeyframeId(shot.id); setCameraEditMode("shots"); } },
+       { label: "Edit properties", run: () => { setCameraInspectorTarget("shot"); setSelectedCameraKeyframeId(shot.id); setCameraEditMode("shots"); onWorkspaceChange("camera"); } },
         { label: "Seek to shot", run: () => { setPlaying(false); setCurrentTime(shot.time); } },
         { label: "Frame in scene", run: () => frameCameraShotInScene(shot.id) },
         { label: "Duplicate at playhead", disabled: collision, reason: collision ? "A shot already occupies the playhead." : undefined, run: () => duplicateCameraKeyframeAtTime(shot.id, currentTime) },
         { label: assignedBound ? `Fit to ${assignedBound.name}` : "Fit to selected boundary", disabled: !assignedBound, reason: !assignedBound ? "Select or assign an enabled boundary first." : undefined, run: () => assignedBound && fitSelectedCameraShotToBound(assignedBound.id) },
         { label: "Copy shot", run: () => { cameraShotClipboardRef.current = { ...shot }; onStatus(`Copied shot at ${seconds(shot.time)}.`); } },
-        { label: "Delete shot", run: () => deleteCameraKeyframe(shot.id) },
+        { label: "Delete shot", danger: true, separatorBefore: true, run: () => deleteCameraKeyframe(shot.id) },
       ] satisfies Action[];
     }
     if (target.kind === "boundary" && bound) return [
-      { label: "Edit properties", run: () => { setCameraInspectorTarget("boundary"); setCameraEditMode("boundaries"); } },
+       { label: "Edit properties", run: () => { setCameraInspectorTarget("boundary"); setCameraEditMode("boundaries"); onWorkspaceChange("camera"); } },
       { label: "Frame in scene", run: () => frameCameraBoundInScene(bound.id) },
       { label: "Fit selected shot to boundary", disabled: !selectedShot || !bound.enabled, reason: !selectedShot ? "Select a shot first." : !bound.enabled ? "Enable this boundary first." : undefined, run: () => fitSelectedCameraShotToBound(bound.id) },
       { label: "Create fitted shot here", disabled: !bound.enabled || occupiedAtSelected, reason: !bound.enabled ? "Enable this boundary first." : occupiedAtSelected ? "A shot already occupies this time." : undefined, run: () => createCameraShotFittedToBound(bound.id) },
@@ -1236,7 +1250,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       { label: bound.locked ? "Unlock boundary" : "Lock boundary", run: () => updateCameraBound(bound.id, { locked: !bound.locked }) },
       { label: bound.visible === false ? "Show guide" : "Hide guide", run: () => updateCameraBound(bound.id, { visible: bound.visible === false }) },
       { label: bound.enabled ? "Disable boundary" : "Enable boundary", run: () => updateCameraBound(bound.id, { enabled: !bound.enabled }) },
-      { label: "Delete boundary", run: () => deleteCameraBound(bound.id) },
+      { label: "Delete boundary", danger: true, separatorBefore: true, run: () => deleteCameraBound(bound.id) },
     ] satisfies Action[];
     return [] satisfies Action[];
   }
@@ -1250,6 +1264,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       actions={actions}
       onClose={() => setCameraContextMenu(null)}
       onEscape={() => { setCameraContextMenu(null); stageRef.current?.focus(); }}
+      returnFocusTo={cameraContextMenu.returnFocusTo}
     />;
   }
 
@@ -2854,6 +2869,11 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     callback((current) => ({ ...current, timeline: mutator(current.timeline) }));
   }
 
+  function updateTimelineSelection(mutator: (timeline: EditorProject["timeline"]) => EditorProject["timeline"], contextSelection = false) {
+    if (contextSelection) onSelectProject?.((current) => ({ ...current, timeline: mutator(current.timeline) }));
+    else updateTimeline(mutator, false);
+  }
+
   function updateTalkMixDuration(value: number) {
     if (!Number.isFinite(value)) return;
     onMutate((current) => ({ ...current, talkMixDuration: Math.max(0, Math.min(2, value)) }));
@@ -2974,17 +2994,23 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     onStatus(`Added ${animation || "animation"} at ${seconds(start)}.`);
   }
 
-  function duplicateSelectedAnimationClip() {
-    if (!selectedAnimationClip || selectedAnimationClip.layer.locked) return;
+  function duplicateAnimationClipById(clipId: string) {
+    const found = findAnimationClip(clipId);
+    if (!found || found.layer.locked) return;
     const id = `animation-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
     updateTimeline((value) => {
-      const layer = value.layers.find((item) => item.id === selectedAnimationClip.layer.id);
+      const layer = value.layers.find((item) => item.id === found.layer.id);
       if (!layer || layer.locked) return value;
-      const clips = duplicateAnimationClipRipple(layerAnimationClips(layer, value), selectedAnimationClip.clip.id, id);
-      return { ...value, layers: value.layers.map((item) => item.id === layer.id ? { ...item, animationClips: clips } : item), selectedColorLayerId: null, selectedColorClipId: null };
+      const clips = duplicateAnimationClipRipple(layerAnimationClips(layer, value), clipId, id);
+      return { ...value, layers: value.layers.map((item) => item.id === layer.id ? { ...item, animationClips: clips } : item), selectedLayerId: layer.id, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null };
     });
     setSelectedClips([{ kind: "animation", id }]);
+    setSelectedAudioId(null);
     setInspector("animation");
+  }
+
+  function duplicateSelectedAnimationClip() {
+    if (selectedAnimationClip) duplicateAnimationClipById(selectedAnimationClip.clip.id);
   }
 
   function updateCue(id: string, patch: Partial<EditorSubtitleCue>, history = true) {
@@ -3057,36 +3083,36 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     return selectedClips.some((item) => item.kind === kind && item.id === id);
   }
 
-  function focusTimelineClip(selection: TimelineSelection) {
+  function focusTimelineClip(selection: TimelineSelection, contextSelection = false) {
     setPreviewUntil(null);
     if (selection.kind === "layer") {
       setSelectedAudioId(null);
       setInspector("layer");
-      updateTimeline((value) => ({ ...value, selectedLayerId: selection.id, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null }), false);
+      updateTimelineSelection((value) => ({ ...value, selectedLayerId: selection.id, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null }), contextSelection);
     } else if (selection.kind === "color-layer") {
       setSelectedAudioId(null);
       setInspector("color-layer");
-      updateTimeline((value) => ({ ...value, selectedLayerId: null, selectedCueId: null, selectedColorLayerId: selection.id, selectedColorClipId: null }), false);
+      updateTimelineSelection((value) => ({ ...value, selectedLayerId: null, selectedCueId: null, selectedColorLayerId: selection.id, selectedColorClipId: null }), contextSelection);
     } else if (selection.kind === "animation") {
       const found = findAnimationClip(selection.id);
       if (!found) return;
       setSelectedAudioId(null);
       setInspector("animation");
-      updateTimeline((value) => ({ ...value, selectedLayerId: found.layer.id, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null }), false);
+      updateTimelineSelection((value) => ({ ...value, selectedLayerId: found.layer.id, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null }), contextSelection);
     } else if (selection.kind === "color") {
       const found = findColorClip(selection.id);
       if (!found) return;
       setSelectedAudioId(null);
       setInspector("color-clip");
-      updateTimeline((value) => ({ ...value, selectedLayerId: null, selectedCueId: null, selectedColorLayerId: found.layer.id, selectedColorClipId: found.clip.id }), false);
+      updateTimelineSelection((value) => ({ ...value, selectedLayerId: null, selectedCueId: null, selectedColorLayerId: found.layer.id, selectedColorClipId: found.clip.id }), contextSelection);
     } else if (selection.kind === "cue") {
       setSelectedAudioId(null);
       setInspector("cue");
-      updateTimeline((value) => ({ ...value, selectedLayerId: null, selectedCueId: selection.id, selectedColorLayerId: null, selectedColorClipId: null }), false);
+      updateTimelineSelection((value) => ({ ...value, selectedLayerId: null, selectedCueId: selection.id, selectedColorLayerId: null, selectedColorClipId: null }), contextSelection);
     } else {
       setSelectedAudioId(selection.id);
       setInspector("audio");
-      updateTimeline((value) => ({ ...value, selectedLayerId: null, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null }), false);
+      updateTimelineSelection((value) => ({ ...value, selectedLayerId: null, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null }), contextSelection);
     }
   }
 
@@ -3101,16 +3127,17 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     });
   }
 
-  function clearTimelineSelection() {
+  function clearTimelineSelection(contextSelection = false) {
     setSelectionLoopRange(null);
     setSelectedClips([]);
     setSelectedAudioId(null);
     setInspector("sequence");
-    updateTimeline((value) => ({ ...value, selectedLayerId: null, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null }), false);
+    updateTimelineSelection((value) => ({ ...value, selectedLayerId: null, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null }), contextSelection);
   }
 
   function selectTimelineClip(selection: TimelineSelection, event: ReactPointerEvent<HTMLElement>): TimelineSelection[] | null {
     event.stopPropagation();
+    if (event.button !== 0) return null;
     if (selectionLoopRange) {
       setSelectionLoopRange(null);
       setPlaying(false);
@@ -3410,14 +3437,20 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     return clip.id;
   }
 
-  function duplicateSelectedColorClip() {
-    if (!selectedColorClipFound || selectedColorLayer?.locked) return;
+  function duplicateColorClipById(clipId: string) {
+    const found = findColorClip(clipId);
+    if (!found || found.layer.locked) return;
     const id = `color-clip-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2, 10)}`;
-    const clips = duplicateColorClip(selectedColorClipFound.layer.clips, selectedColorClipFound.clip.id, id);
-    updateColorLayer(selectedColorClipFound.layer.id, { clips });
-    updateTimeline((value) => ({ ...value, selectedColorLayerId: selectedColorClipFound.layer.id, selectedColorClipId: id }), false);
+    const clips = duplicateColorClip(found.layer.clips, clipId, id);
+    updateColorLayer(found.layer.id, { clips });
+    updateTimeline((value) => ({ ...value, selectedLayerId: null, selectedCueId: null, selectedColorLayerId: found.layer.id, selectedColorClipId: id }), false);
     setSelectedClips([{ kind: "color", id }]);
+    setSelectedAudioId(null);
     setInspector("color-clip");
+  }
+
+  function duplicateSelectedColorClip() {
+    if (selectedColorClipFound) duplicateColorClipById(selectedColorClipFound.clip.id);
   }
 
   function applyColorClipPreset(preset: ColorClipPreset) {
@@ -3481,6 +3514,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   }
 
   function beginDrag(event: ReactPointerEvent<HTMLElement>, kind: TimelineDragKind, id: string, start: number, end: number, selection: TimelineSelection[] = selectedClips) {
+    if (event.button !== 0) return;
     event.stopPropagation();
     setDragSnapFeedback(null);
     const clipKind = dragClipKind(kind);
@@ -3803,6 +3837,13 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   }
 
   function handleCameraStageKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (isContextMenuShortcut(event)) {
+      const target: CameraContextTarget = selectedCameraBoundId
+        ? { kind: "boundary", id: selectedCameraBoundId }
+        : selectedCameraKeyframeId ? { kind: "shot", id: selectedCameraKeyframeId } : { kind: "empty" };
+      openCameraKeyboardContextMenu(event, target);
+      return;
+    }
     if (isTextEditingTarget(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.code === "Space" || event.key === " ") return;
     if (event.repeat) return;
@@ -3903,14 +3944,20 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     setStageView(resetStageView());
   }
 
-  function duplicateCue() {
-    if (!selectedCue) return;
-    const length = selectedCue.end - selectedCue.start;
-    const start = selectedCue.end;
-    const cue = { ...selectedCue, id: crypto.randomUUID(), start, end: start + length, text: { ...selectedCue.text } };
-    updateTimeline((value) => extendTimelineDuration({ ...value, subtitles: [...value.subtitles, cue], selectedCueId: cue.id }));
+  function duplicateCueById(cueId: string) {
+    const sourceCue = timeline?.subtitles.find((item) => item.id === cueId);
+    if (!sourceCue) return;
+    const length = sourceCue.end - sourceCue.start;
+    const start = sourceCue.end;
+    const cue = { ...sourceCue, id: crypto.randomUUID(), start, end: start + length, text: { ...sourceCue.text } };
+    updateTimeline((value) => extendTimelineDuration({ ...value, subtitles: [...value.subtitles, cue], selectedLayerId: null, selectedCueId: cue.id, selectedColorLayerId: null, selectedColorClipId: null }));
     setSelectedClips([{ kind: "cue", id: cue.id }]);
+    setSelectedAudioId(null);
     setInspector("cue");
+  }
+
+  function duplicateCue() {
+    if (selectedCue) duplicateCueById(selectedCue.id);
   }
 
   function fitTimeline() { setZoom(Math.max(0.1, ((scrollRef.current?.clientWidth ?? 900) - trackLabelWidth - 8) / (duration * TIMELINE_SCALE))); }
@@ -4088,6 +4135,166 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const cameraPlayheadOccupied = cameraTrack?.keyframes.some((keyframe) => Math.abs(keyframe.time - currentTime) < 0.001) ?? false;
   const cameraReferenceMissing = Boolean(cameraTrack?.referenceLayerId && !(timeline?.layers ?? []).some((layer) => layer.id === cameraTrack.referenceLayerId));
 
+  function timelineSelectionFromElement(element: Element): TimelineSelection | null {
+    const target = element.closest<HTMLElement>("[data-context-kind][data-context-id]");
+    const kind = target?.dataset.contextKind;
+    const id = target?.dataset.contextId;
+    if (!id || !kind || !["layer", "color-layer", "animation", "color", "cue", "audio"].includes(kind)) return null;
+    return { kind: kind as TimelineClipKind, id };
+  }
+
+  function openTimelineContextMenuAt(x: number, y: number, target: TimelineContextTarget, returnFocusTo: HTMLElement | null) {
+    if (target.kind === "clip") {
+      const selection = target.selection;
+      if (!isClipSelected(selection.kind, selection.id)) setSelectedClips([selection]);
+      setSelectedAudioId(selection.kind === "audio" ? selection.id : null);
+      setSelectionLoopRange(null);
+      focusTimelineClip(selection, true);
+      if ((isClipSelected(selection.kind, selection.id) ? selectedClips.length : 1) > 1) setInspector("multi");
+    }
+    setTimelineContextMenu({ x, y, target, returnFocusTo });
+  }
+
+  function openTimelineContextMenu(event: ReactMouseEvent<HTMLDivElement>) {
+    if (isTextEditingTarget(event.target)) return;
+    const element = event.target instanceof Element ? event.target : event.currentTarget;
+    const cameraKey = element.closest<HTMLElement>(".timeline-camera-key");
+    if (cameraKey) {
+      const id = cameraKey.dataset.cameraKeyframe;
+      if (id) openCameraContextMenuAt(event.clientX, event.clientY, { kind: "shot", id }, cameraKey);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    const cameraTrackElement = element.closest<HTMLElement>(".timeline-camera-track");
+    if (cameraTrackElement) {
+      const bounds = cameraTrackElement.getBoundingClientRect();
+      const time = bounds.width > 0 ? Math.max(0, Math.min(duration, (event.clientX - bounds.left) / (TIMELINE_SCALE * zoom))) : currentTime;
+      event.preventDefault();
+      event.stopPropagation();
+      openCameraContextMenuAt(event.clientX, event.clientY, { kind: "timeline", time }, cameraTrackElement);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const selection = timelineSelectionFromElement(element);
+    const target: TimelineContextTarget = selection ? { kind: "clip", selection } : { kind: "empty" };
+    const focusTarget = selection ? element.closest<HTMLElement>("[data-context-kind][data-context-id]") : scrollRef.current;
+    openTimelineContextMenuAt(event.clientX, event.clientY, target, focusTarget ?? event.currentTarget);
+  }
+
+  function openTimelineKeyboardContextMenu(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (!isContextMenuShortcut(event) || isTextEditingTarget(event.target)) return;
+    const element = event.target instanceof Element ? event.target : event.currentTarget;
+    const cameraKey = element.closest<HTMLElement>(".timeline-camera-key");
+    if (cameraKey?.dataset.cameraKeyframe) {
+      event.preventDefault();
+      event.stopPropagation();
+      const bounds = cameraKey.getBoundingClientRect();
+      openCameraContextMenuAt(bounds.left, bounds.bottom, { kind: "shot", id: cameraKey.dataset.cameraKeyframe }, cameraKey);
+      return;
+    }
+    const cameraTrackElement = element.closest<HTMLElement>(".timeline-camera-track");
+    if (cameraTrackElement) {
+      event.preventDefault();
+      event.stopPropagation();
+      const bounds = cameraTrackElement.getBoundingClientRect();
+      openCameraContextMenuAt(bounds.left, bounds.bottom, { kind: "timeline", time: currentTime }, cameraTrackElement);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const selection = timelineSelectionFromElement(element);
+    const target: TimelineContextTarget = selection ? { kind: "clip", selection } : { kind: "empty" };
+    const focusTarget = selection ? element.closest<HTMLElement>("[data-context-kind][data-context-id]") : event.currentTarget;
+    const bounds = (focusTarget ?? event.currentTarget).getBoundingClientRect();
+    openTimelineContextMenuAt(bounds.left, bounds.bottom, target, focusTarget ?? event.currentTarget);
+  }
+
+  function timelineContextActions(target: TimelineContextTarget): readonly ContextMenuAction[] {
+    if (target.kind === "preview") return [
+      { label: playing ? "Pause sequence" : "Play sequence", run: () => setPlaying((value) => !value) },
+      { label: "Reset preview pan", run: resetStagePan },
+      { label: "Fit preview", run: fitStage },
+    ];
+    if (target.kind === "empty") return [
+      { label: "Add subtitle cue at playhead", run: addCue },
+      { label: "Add animation clip", disabled: !(selectedLayer ?? characterLayer), reason: "Add a Spine layer first.", run: addAnimationClip },
+      { label: "Add color clip", run: () => addColorClip("solid") },
+      { label: "Add audio files…", run: () => void importAudio() },
+      { label: "Paste clips at playhead", disabled: !clipboardAvailable, reason: !clipboardAvailable ? "Copy timeline clips first." : undefined, run: pasteTimelineClips, separatorBefore: true },
+      { label: "Fit full timeline", run: fitTimeline },
+      { label: "Clear selection", disabled: selectedClips.length === 0, run: () => clearTimelineSelection(true) },
+    ];
+    if (!timeline) return [];
+    const selection = target.selection;
+    const selected = selectedClipDetails.some((item) => item.kind === selection.kind && item.id === selection.id);
+    const selectedEnabled = selectedClipDetails.some((item) => item.enabled);
+    const actions: ContextMenuAction[] = [
+      { label: "Edit properties", run: () => focusTimelineClip(selection, true) },
+    ];
+    if (selection.kind === "layer") {
+      const layer = timeline.layers.find((item) => item.id === selection.id);
+      if (layer) actions.push(
+        { label: layer.enabled ? "Hide layer" : "Show layer", run: () => updateLayer(layer.id, { enabled: !layer.enabled }) },
+        { label: layer.locked ? "Unlock layer" : "Lock layer", run: () => updateLayer(layer.id, { locked: !layer.locked }), separatorBefore: true },
+      );
+    } else if (selection.kind === "color-layer") {
+      const layer = timeline.colorLayers.find((item) => item.id === selection.id);
+      if (layer) actions.push(
+        { label: layer.enabled ? "Hide color layer" : "Show color layer", run: () => updateColorLayer(layer.id, { enabled: !layer.enabled }) },
+        { label: layer.locked ? "Unlock layer" : "Lock layer", run: () => updateColorLayer(layer.id, { locked: !layer.locked }), separatorBefore: true },
+      );
+    }
+    if (selection.kind === "animation" || selection.kind === "color" || selection.kind === "cue") actions.push({
+      label: selection.kind === "cue" ? "Duplicate subtitle cue" : selection.kind === "color" ? "Duplicate color clip" : "Duplicate animation clip",
+      disabled: selection.kind === "animation" ? Boolean(findAnimationClip(selection.id)?.layer.locked) : selection.kind === "color" ? Boolean(findColorClip(selection.id)?.layer.locked) : false,
+      run: () => {
+        if (selection.kind === "animation") duplicateAnimationClipById(selection.id);
+        else if (selection.kind === "color") duplicateColorClipById(selection.id);
+        else duplicateCueById(selection.id);
+      },
+    });
+    if (selection.kind === "animation") {
+      const targetClip = findAnimationClip(selection.id);
+      actions.push({
+        label: "Match animation length",
+        disabled: !targetClip || targetClip.layer.locked || !animationLengthMatchInfo(targetClip.layer, targetClip.clip.animation),
+        reason: "Choose an unlocked fixed animation and wait for its duration to load.",
+        run: () => targetClip && matchAnimationLength(targetClip.layer, targetClip.clip),
+      });
+    }
+    if (selection.kind === "audio") actions.push(
+      { label: "Preview audio", run: previewSelectedAudio },
+      { label: "Match source length", disabled: selectedAudioDuration === undefined, reason: selectedAudioDuration === undefined ? "Wait for the source audio to decode." : undefined, run: matchSelectedAudioLength },
+      selectedAudioLinkedSubtitle
+        ? { label: "Unlink subtitle", run: () => setAudioSubtitleLink(selection.id, null) }
+        : { label: "Link nearest subtitle", disabled: !selectedAudioLinkCandidate, reason: !selectedAudioLinkCandidate ? "No nearby subtitle cue is available." : undefined, run: () => selectedAudioLinkCandidate && setAudioSubtitleLink(selection.id, selectedAudioLinkCandidate.id) },
+    );
+    if (selected) actions.push(
+      { label: selectedEnabled ? "Disable selected" : "Enable selected", run: () => setSelectedClipsEnabled(!selectedEnabled), separatorBefore: true },
+      { label: "Copy selected clips", disabled: !copyableSelections.length, reason: !copyableSelections.length ? "Layers cannot be copied as clips." : undefined, run: copySelectedTimelineClips },
+      { label: "Fit selection", run: fitTimelineToSelection },
+      { label: "Delete selected", disabled: !deletableSelectionCount, reason: !deletableSelectionCount ? "The selected main or locked layer cannot be removed." : undefined, danger: true, separatorBefore: true, run: deleteSelectedClips },
+    );
+    return actions;
+  }
+
+  function openTimelinePreviewContextMenu(event: ReactMouseEvent<HTMLDivElement>) {
+    if (isTextEditingTarget(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openTimelineContextMenuAt(event.clientX, event.clientY, { kind: "preview" }, event.currentTarget);
+  }
+
+  function openTimelinePreviewKeyboardMenu(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (!isContextMenuShortcut(event) || isTextEditingTarget(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    openTimelineContextMenuAt(bounds.left, bounds.bottom, { kind: "preview" }, event.currentTarget);
+  }
+
   function renderTimelineAudio() {
     return <div className="timeline-audio-host" aria-hidden="true">
       {(timeline?.audio ?? []).map((clip) => <audio key={clip.id} ref={(element) => { audioElementsRef.current[clip.id] = element; }} src={audioUrls[clip.id]} preload="auto" onLoadedMetadata={(event) => applyDecodedAudioDuration(clip.id, event.currentTarget.duration)} onCanPlay={() => setAudioPreloadState(clip.id, "ready")} onError={() => { setMissingAudio((value) => value.includes(clip.path) ? value : [...value, clip.path]); setAudioPreloadState(clip.id, "missing"); }} />)}
@@ -4101,7 +4308,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         <section className="camera-library-section">
           <div className="editor-section-title"><strong>Named boundaries</strong><span>{cameraTrack?.safeBounds.length ?? 0}</span><button type="button" className="editor-button" onClick={addCameraBound} disabled={!cameraProjectionSize} title="Add a boundary around the current full-scene view"><IconPlus /></button></div>
           <div className="camera-item-list">
-            {(cameraTrack?.safeBounds ?? []).map((bound) => <button key={bound.id} type="button" className={`camera-item${selectedCameraBoundId === bound.id ? " is-selected" : ""}${bound.enabled ? "" : " is-disabled"}`} aria-pressed={selectedCameraBoundId === bound.id} onClick={() => { setSelectedCameraBoundId(bound.id); setCameraInspectorTarget("boundary"); setCameraEditMode("boundaries"); setCameraTool("select"); }} onContextMenu={(event) => openCameraContextMenu(event, { kind: "boundary", id: bound.id })}>
+            {(cameraTrack?.safeBounds ?? []).map((bound) => <button key={bound.id} type="button" className={`camera-item${selectedCameraBoundId === bound.id ? " is-selected" : ""}${bound.enabled ? "" : " is-disabled"}`} aria-haspopup="menu" aria-pressed={selectedCameraBoundId === bound.id} onClick={() => { setSelectedCameraBoundId(bound.id); setCameraInspectorTarget("boundary"); setCameraEditMode("boundaries"); setCameraTool("select"); }} onContextMenu={(event) => openCameraContextMenu(event, { kind: "boundary", id: bound.id })} onKeyDown={(event) => openCameraKeyboardContextMenu(event, { kind: "boundary", id: bound.id })}>
               <span className="camera-item-marker boundary" />
               <span className="camera-item-copy"><strong>{bound.name}</strong><small>{bound.enabled ? "Enabled" : "Disabled"}{bound.id === solvedCamera?.activeBoundId ? " · active" : ""}</small></span>
             </button>)}
@@ -4117,7 +4324,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
             {orderedCameraKeyframes.map((keyframe, index) => {
               const constraint = keyframe.constraint;
               const bound = constraint?.mode === "manual" ? cameraTrack?.safeBounds.find((item) => item.id === constraint.boundId) : null;
-              return <button key={keyframe.id} type="button" className={`camera-item${selectedCameraKeyframeId === keyframe.id ? " is-selected" : ""}`} aria-pressed={selectedCameraKeyframeId === keyframe.id} onClick={() => selectCameraKeyframe(keyframe.id)} onContextMenu={(event) => openCameraContextMenu(event, { kind: "shot", id: keyframe.id })}>
+              return <button key={keyframe.id} type="button" className={`camera-item${selectedCameraKeyframeId === keyframe.id ? " is-selected" : ""}`} aria-haspopup="menu" aria-pressed={selectedCameraKeyframeId === keyframe.id} onClick={() => selectCameraKeyframe(keyframe.id)} onContextMenu={(event) => openCameraContextMenu(event, { kind: "shot", id: keyframe.id })} onKeyDown={(event) => openCameraKeyboardContextMenu(event, { kind: "shot", id: keyframe.id })}>
                 <span className="camera-item-marker shot">{index + 1}</span>
                 <span className="camera-item-copy"><strong>{seconds(keyframe.time)}</strong><small>{bound?.name ?? (keyframe.constraint?.mode === "none" ? "Unconstrained" : "Track boundary")}</small></span>
               </button>;
@@ -4160,7 +4367,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
               </div>
             </header>
             <div className="camera-scene-wrap">
-              <div ref={stageRef} className={`timeline-stage camera-scene-stage tool-${cameraTool}${stagePanning ? " is-panning" : ""}${cameraSpacePanning ? " is-space-panning" : ""}${cameraBoundDrawing ? " is-drawing-camera-bound" : ""}`} role="application" tabIndex={0} aria-label={cameraBoundDrawing ? "Full scene. Drag to draw a camera boundary. Press V for Select, H for Pan, B for Draw, F to fit, or hold Space and drag to pan." : "Full scene camera editor. Middle-drag to pan; press V for Select, H for Pan, B for Draw, F to fit, or hold Space and drag to pan."} onKeyDownCapture={handleCameraStageKeyDownCapture} onKeyDown={handleCameraStageKeyDown} onClick={clearCameraSceneSelection} onContextMenu={(event) => openCameraContextMenu(event, { kind: "empty" })} onPointerDown={beginStagePan} onPointerMove={moveStagePan} onPointerUp={endStagePan} onPointerCancel={endStagePan} onLostPointerCapture={endStagePan} onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }} onWheel={zoomStageAtCursor}>
+              <div ref={stageRef} className={`timeline-stage camera-scene-stage tool-${cameraTool}${stagePanning ? " is-panning" : ""}${cameraSpacePanning ? " is-space-panning" : ""}${cameraBoundDrawing ? " is-drawing-camera-bound" : ""}`} role="application" tabIndex={0} aria-haspopup="menu" aria-keyshortcuts="Shift+F10 ContextMenu" aria-label={cameraBoundDrawing ? "Full scene. Drag to draw a camera boundary. Press V for Select, H for Pan, B for Draw, F to fit, or hold Space and drag to pan." : "Full scene camera editor. Middle-drag to pan; press V for Select, H for Pan, B for Draw, F to fit, or hold Space and drag to pan."} onKeyDownCapture={handleCameraStageKeyDownCapture} onKeyDown={handleCameraStageKeyDown} onClick={clearCameraSceneSelection} onContextMenu={(event) => openCameraContextMenu(event, { kind: "empty" })} onPointerDown={beginStagePan} onPointerMove={moveStagePan} onPointerUp={endStagePan} onPointerCancel={endStagePan} onLostPointerCapture={endStagePan} onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }} onWheel={zoomStageAtCursor}>
                 <div className="timeline-stage-content" style={{ transform: `translate3d(${stageView.x}px, ${stageView.y}px, 0) scale(${stageView.scale})` }}>
                   <div className="timeline-visual-composition">
                     {displayVisualTracks.map((track) => track.kind === "spine"
@@ -4308,7 +4515,9 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
           onRetimeEnd={endCameraKeyframeRetime}
           onRetimeCancel={cancelCameraKeyframeRetime}
           onTrackContextMenu={(event, time) => openCameraContextMenu(event, { kind: "timeline", time: time ?? 0 })}
+          onTrackContextMenuKeyDown={(event) => openCameraKeyboardContextMenu(event, { kind: "timeline", time: currentTime })}
           onKeyframeContextMenu={(event, id) => openCameraContextMenu(event, { kind: "shot", id })}
+          onKeyframeContextMenuKeyDown={(event, id) => openCameraKeyboardContextMenu(event, { kind: "shot", id })}
         />
 
         <div className="camera-transport" aria-label="Shared timeline playhead">
@@ -4420,17 +4629,22 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                 <button type="button" className="editor-button timeline-panel-toggle" aria-controls="timeline-inspector" aria-expanded={!inspectorPanelCollapsed} onClick={() => updateTimelineLayout({ inspectorPanelCollapsed: !inspectorPanelCollapsed })}>{inspectorPanelCollapsed ? "Show inspector" : "Hide inspector"}</button>
               </div>
            </div>
-          <div className="timeline-stage-wrap" ref={stageWrapRef} style={{ flex: `${previewShare} 1 0` }}>
+              <div className="timeline-stage-wrap" ref={stageWrapRef} style={{ flex: `${previewShare} 1 0` }}>
            <div
              ref={stageRef}
               className={`timeline-stage${stagePanning ? " is-panning" : ""}${cameraBoundDrawing ? " is-drawing-camera-bound" : ""}`}
-              role="application"
-              aria-label={cameraBoundDrawing ? "Timeline preview. Drag over the scene to draw a camera safe bound." : "Timeline preview canvas. Drag to pan and use the mouse wheel to zoom."}
-             onPointerDown={beginStagePan}
-             onPointerMove={moveStagePan}
-             onPointerUp={endStagePan}
-             onPointerCancel={endStagePan}
-             onWheel={zoomStageAtCursor}
+               role="application"
+               aria-label={cameraBoundDrawing ? "Timeline preview. Drag over the scene to draw a camera safe bound." : "Timeline preview canvas. Drag to pan and use the mouse wheel to zoom."}
+               aria-haspopup="menu"
+               aria-keyshortcuts="Shift+F10 ContextMenu"
+              tabIndex={0}
+              onPointerDown={beginStagePan}
+              onPointerMove={moveStagePan}
+              onPointerUp={endStagePan}
+              onPointerCancel={endStagePan}
+              onContextMenu={openTimelinePreviewContextMenu}
+              onKeyDown={openTimelinePreviewKeyboardMenu}
+              onWheel={zoomStageAtCursor}
              >
                 <div className="timeline-stage-content" style={{ transform: `translate3d(${stageView.x}px, ${stageView.y}px, 0) scale(${stageView.scale})` }}>
                   <div className="timeline-visual-composition">
@@ -4477,7 +4691,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
            getFlexibleHeight={() => (stageWrapRef.current?.getBoundingClientRect().height ?? 0) + (scrollRef.current?.getBoundingClientRect().height ?? 0)}
          />
 
-          <div className="timeline-editor-scroll" ref={scrollRef} style={{ flex: `${100 - previewShare} 1 0` }} onWheel={scrollTimeline} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
+           <div className="timeline-editor-scroll" ref={scrollRef} tabIndex={0} aria-label="Timeline tracks" aria-haspopup="menu" aria-keyshortcuts="Shift+F10 ContextMenu" style={{ flex: `${100 - previewShare} 1 0` }} onContextMenu={openTimelineContextMenu} onKeyDown={openTimelineKeyboardContextMenu} onWheel={scrollTimeline} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
         <div className="timeline-ruler-row" style={{ minWidth: trackWidth + trackLabelWidth, gridTemplateColumns: `${trackLabelWidth}px minmax(0, 1fr)` }}>
           <div className="timeline-track-label timeline-ruler-label">LAYERS<button type="button" className="timeline-track-resize" aria-label={`Resize layer column, ${trackLabelWidth} pixels`} title="Drag to resize; use left and right arrow keys" onPointerDown={beginResizeTrackLabel} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); resizeTrackLabelBy(event.key === "ArrowRight" ? 8 : -8); } }} /></div>
            <div className="timeline-track timeline-ruler" style={{ width: trackWidth }} onPointerDown={seekFromEvent} onPointerMove={scrubMove} onPointerUp={endScrub} onPointerCancel={endScrub}>
@@ -4496,20 +4710,20 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                     const visibility = track.kind === "spine" ? track.layer.enabled : track.layer.enabled;
                     const locked = track.layer.locked === true;
                     const trackName = track.layer.name;
-                    return <div key={key} style={{ gridTemplateColumns: `${trackLabelWidth}px minmax(0, 1fr)` }} className={`timeline-row visual-track-row${track.kind === "color" ? " is-color-track" : " is-spine-track"}${visibility ? "" : " is-hidden-track"}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const source = event.dataTransfer.getData("text/plain") || trackDragRef.current; if (source) reorderVisualTrack(source, key); trackDragRef.current = null; }}>
+                     return <div key={key} style={{ gridTemplateColumns: `${trackLabelWidth}px minmax(0, 1fr)` }} className={`timeline-row visual-track-row${track.kind === "color" ? " is-color-track" : " is-spine-track"}${visibility ? "" : " is-hidden-track"}`} data-context-kind={selection.kind} data-context-id={selection.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const source = event.dataTransfer.getData("text/plain") || trackDragRef.current; if (source) reorderVisualTrack(source, key); trackDragRef.current = null; }}>
                       <div className={`timeline-track-label visual-track-label${isSelected ? " is-selected" : ""}`} title={trackName}>
                         <button type="button" className="timeline-track-reorder" draggable={!locked} aria-disabled={locked} aria-label={`Reorder ${trackName}`} title={locked ? "Unlock this layer before reordering" : "Drag to reorder; use arrow keys while focused"} onDragStart={(event: ReactDragEvent<HTMLButtonElement>) => { if (locked) { event.preventDefault(); return; } trackDragRef.current = key; event.dataTransfer.setData("text/plain", key); event.dataTransfer.effectAllowed = "move"; }} onDragEnd={() => { trackDragRef.current = null; }} onKeyDown={(event) => { if (locked || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return; event.preventDefault(); const target = displayVisualTracks[trackIndex + (event.key === "ArrowUp" ? -1 : 1)]; if (target) reorderVisualTrack(key, visualTrackKey(target)); }}><span aria-hidden="true">⠿</span></button>
                         <span className={`timeline-track-type ${track.kind}`}>{track.kind === "spine" ? roleLabel(track.layer.role) : "COLOR"}</span>
-                        <button type="button" className="timeline-track-name" onClick={() => { setSelectedClips([selection]); focusTimelineClip(selection); }}>{trackName}</button>
+                         <button type="button" className="timeline-track-name" aria-haspopup="menu" onClick={() => { setSelectedClips([selection]); focusTimelineClip(selection); }}>{trackName}</button>
                         <button type="button" className="timeline-track-icon" aria-label={`${visibility ? "Hide" : "Show"} ${trackName}`} title={visibility ? "Hide layer" : "Show layer"} onClick={() => track.kind === "spine" ? updateLayer(track.layer.id, { enabled: !visibility }) : updateColorLayer(track.layer.id, { enabled: !visibility })}>{visibility ? <IconEye /> : <IconEyeOff />}</button>
                         <button type="button" className={`timeline-track-icon${locked ? " is-locked" : ""}`} aria-label={`${locked ? "Unlock" : "Lock"} ${trackName}`} title={locked ? "Unlock layer" : "Lock layer"} onClick={() => track.kind === "spine" ? updateLayer(track.layer.id, { locked: !locked }) : updateColorLayer(track.layer.id, { locked: !locked })}>{locked ? <IconLock /> : <IconUnlock />}</button>
                         <button type="button" className="timeline-track-resize" aria-label={`Resize layer column, ${trackLabelWidth} pixels`} title="Drag to resize; use left and right arrow keys" onPointerDown={beginResizeTrackLabel} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); resizeTrackLabelBy(event.key === "ArrowRight" ? 8 : -8); } }} />
                       </div>
-                      <div className={`timeline-track ${track.kind === "spine" ? "timeline-layer-track" : "timeline-color-track"}${isSelected ? " is-selected" : ""}`} onPointerDown={seekFromEvent}>
+                      <div className={`timeline-track ${track.kind === "spine" ? "timeline-layer-track" : "timeline-color-track"}${isSelected ? " is-selected" : ""}`} data-context-kind={selection.kind} data-context-id={selection.id} tabIndex={0} aria-haspopup="menu" onPointerDown={seekFromEvent}>
                         {track.kind === "spine" ? layerAnimationClips(track.layer).map((clip) => {
                           const end = animationClipEnd(clip, animationDurations[`${track.layer.id}:${clip.animation}`] ?? 0);
                           const selected = isClipSelected("animation", clip.id);
-                          return <div key={clip.id} className={`timeline-layer-clip timeline-animation-clip${selected ? " is-selected" : ""}${clip.enabled === false ? " is-disabled" : ""}${clip.continueAfterOpening ? " is-continuing" : ""}`} title={`${clip.animation || "Animation"} · drag to move; drag an edge to trim${clip.continueAfterOpening ? " · continues after opening" : ""}`} style={{ left: clip.start * TIMELINE_SCALE * zoom, width: Math.max(8, (end - clip.start) * TIMELINE_SCALE * zoom), zIndex: track.layer.order }} onPointerDown={(event) => { const picked = selectTimelineClip({ kind: "animation", id: clip.id }, event); if (picked) beginDrag(event, "animation", clip.id, clip.start, end, picked); }}>
+                           return <div key={clip.id} className={`timeline-layer-clip timeline-animation-clip${selected ? " is-selected" : ""}${clip.enabled === false ? " is-disabled" : ""}${clip.continueAfterOpening ? " is-continuing" : ""}`} data-context-kind="animation" data-context-id={clip.id} tabIndex={0} aria-haspopup="menu" aria-label={`${clip.animation || "Animation"} animation clip`} title={`${clip.animation || "Animation"} · drag to move; drag an edge to trim${clip.continueAfterOpening ? " · continues after opening" : ""}`} style={{ left: clip.start * TIMELINE_SCALE * zoom, width: Math.max(8, (end - clip.start) * TIMELINE_SCALE * zoom), zIndex: track.layer.order }} onPointerDown={(event) => { const picked = selectTimelineClip({ kind: "animation", id: clip.id }, event); if (picked) beginDrag(event, "animation", clip.id, clip.start, end, picked); }}>
                             <button type="button" className="timeline-clip-start-handle" aria-label={`Trim ${clip.animation} start`} title="Drag to trim the start" onPointerDown={(event) => { event.stopPropagation(); const picked = selectTimelineClip({ kind: "animation", id: clip.id }, event); if (picked) beginDrag(event, "animation-start", clip.id, clip.start, end, picked); }} />
                             <button type="button" className="timeline-clip-end-handle" aria-label={`Trim ${clip.animation} end`} title="Drag to trim the end" onPointerDown={(event) => { event.stopPropagation(); const picked = selectTimelineClip({ kind: "animation", id: clip.id }, event); if (picked) beginDrag(event, "animation-end", clip.id, clip.start, end, picked); }} />
                             <span className="timeline-layer-name">{track.layer.followMainAnimation ? `Follow · ${clip.animation || "main"}` : clip.animation || "Animation"}</span>
@@ -4519,7 +4733,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                           const fadeInPercent = Math.min(100, clip.fadeIn / duration * 100);
                           const fadeOutPercent = Math.min(100, clip.fadeOut / duration * 100);
                           const picked = { kind: "color" as const, id: clip.id };
-                          return <div key={clip.id} className={`timeline-color-clip${isClipSelected("color", clip.id) ? " is-selected" : ""}${clip.enabled ? "" : " is-disabled"}`} title={`${clip.name} · drag to move; drag an edge to trim`} style={{ left: clip.start * TIMELINE_SCALE * zoom, width: Math.max(12, duration * TIMELINE_SCALE * zoom) }} onPointerDown={(event) => { const chosen = selectTimelineClip(picked, event); if (chosen) beginDrag(event, "color", clip.id, clip.start, clip.end, chosen); }}>
+                           return <div key={clip.id} className={`timeline-color-clip${isClipSelected("color", clip.id) ? " is-selected" : ""}${clip.enabled ? "" : " is-disabled"}`} data-context-kind="color" data-context-id={clip.id} tabIndex={0} aria-haspopup="menu" aria-label={`${clip.name} color clip`} title={`${clip.name} · drag to move; drag an edge to trim`} style={{ left: clip.start * TIMELINE_SCALE * zoom, width: Math.max(12, duration * TIMELINE_SCALE * zoom) }} onPointerDown={(event) => { const chosen = selectTimelineClip(picked, event); if (chosen) beginDrag(event, "color", clip.id, clip.start, clip.end, chosen); }}>
                             <button type="button" className="timeline-clip-start-handle" aria-label={`Trim ${clip.name} start`} onPointerDown={(event) => { event.stopPropagation(); const chosen = selectTimelineClip(picked, event); if (chosen) beginDrag(event, "color-start", clip.id, clip.start, clip.end, chosen); }} />
                             {clip.fadeIn > 0 && clip.fadeIn < duration && <button type="button" className="timeline-color-fade-handle" style={{ left: `${fadeInPercent}%` }} aria-label={`Adjust ${clip.name} fade in`} title="Drag to adjust fade-in duration" onPointerDown={(event) => { event.stopPropagation(); const chosen = selectTimelineClip(picked, event); if (chosen) beginDrag(event, "color-fade-in", clip.id, clip.start + clip.fadeIn, clip.end, [picked]); }} />}
                             <i className="timeline-color-clip-envelope" style={{ background: `linear-gradient(90deg, transparent 0%, ${clip.color} ${fadeInPercent}%, ${clip.color} ${100 - fadeOutPercent}%, transparent 100%)` }} />
@@ -4535,7 +4749,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
             <div className="timeline-row subtitle-row" style={{ gridTemplateColumns: `${trackLabelWidth}px minmax(0, 1fr)` }}>
               <div className="timeline-track-label"><b>SUBS</b><span>{timeline.language.toUpperCase()}</span></div>
               <div className="timeline-track timeline-subtitle-track" onPointerDown={seekFromEvent}>
-                  {timeline.subtitles.map((cue) => <div key={cue.id} id={`timeline-subtitle-cue-${cue.id}`} className={`timeline-cue${isClipSelected("cue", cue.id) || cue.id === timeline.selectedCueId ? " is-selected" : ""}${cue.enabled ? "" : " is-disabled"}`} style={{ left: cue.start * TIMELINE_SCALE * zoom, width: Math.max(12, (cue.end - cue.start) * TIMELINE_SCALE * zoom) }} onPointerDown={(event) => { const selection = selectTimelineClip({ kind: "cue", id: cue.id }, event); if (selection) beginDrag(event, "cue", cue.id, cue.start, cue.end, selection); }}>
+                  {timeline.subtitles.map((cue) => <div key={cue.id} id={`timeline-subtitle-cue-${cue.id}`} className={`timeline-cue${isClipSelected("cue", cue.id) || cue.id === timeline.selectedCueId ? " is-selected" : ""}${cue.enabled ? "" : " is-disabled"}`} data-context-kind="cue" data-context-id={cue.id} tabIndex={0} aria-haspopup="menu" aria-label="Subtitle cue" style={{ left: cue.start * TIMELINE_SCALE * zoom, width: Math.max(12, (cue.end - cue.start) * TIMELINE_SCALE * zoom) }} onPointerDown={(event) => { const selection = selectTimelineClip({ kind: "cue", id: cue.id }, event); if (selection) beginDrag(event, "cue", cue.id, cue.start, cue.end, selection); }}>
                    <button className="timeline-cue-handle left" aria-label="Move subtitle start" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "cue", id: cue.id }, event); if (selection) beginDrag(event, "cue-start", cue.id, cue.start, cue.end, selection); }} />
                    <span>{cueText(cue, timeline.language)}</span>
                    <button className="timeline-cue-handle right" aria-label="Move subtitle end" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "cue", id: cue.id }, event); if (selection) beginDrag(event, "cue-end", cue.id, cue.start, cue.end, selection); }} />
@@ -4546,14 +4760,14 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
              <div className="timeline-row audio-row" style={{ gridTemplateColumns: `${trackLabelWidth}px minmax(0, 1fr)` }}>
               <div className="timeline-track-label"><b>AUDIO</b><span>{timeline.audio.length} clip{timeline.audio.length === 1 ? "" : "s"}</span></div>
               <div className="timeline-track timeline-audio-track" onPointerDown={seekFromEvent}>
-                    {timeline.audio.map((clip) => <div key={clip.id} className={`timeline-audio-clip${isClipSelected("audio", clip.id) || clip.id === selectedAudio?.id ? " is-selected" : ""}${clip.enabled ? "" : " is-disabled"}`} title="Drag to move the audio; drag an edge to change its timing. Shift/Ctrl-click to select multiple." style={{ left: clip.start * TIMELINE_SCALE * zoom, width: Math.max(12, (clip.end - clip.start) * TIMELINE_SCALE * zoom) }} onPointerDown={(event) => { const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio", clip.id, clip.start, clip.end, selection); }}><button type="button" className="timeline-clip-start-handle" aria-label={`Move ${clip.name} start`} title="Drag to change start time" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio-start", clip.id, clip.start, clip.end, selection); }} /><button type="button" className="timeline-clip-end-handle" aria-label={`Move ${clip.name} end`} title="Drag to change end time" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio-end", clip.id, clip.start, clip.end, selection); }} /><AudioWaveform url={audioUrls[clip.id]} onDuration={(value) => applyDecodedAudioDuration(clip.id, value)} onProfile={onAudioWaveformProfile ? (measurement) => onAudioWaveformProfile(clip.id, measurement) : undefined} /><span><IconSound /> {clip.name}</span></div>)}
+                    {timeline.audio.map((clip) => <div key={clip.id} className={`timeline-audio-clip${isClipSelected("audio", clip.id) || clip.id === selectedAudio?.id ? " is-selected" : ""}${clip.enabled ? "" : " is-disabled"}`} data-context-kind="audio" data-context-id={clip.id} tabIndex={0} aria-haspopup="menu" aria-label={`${clip.name} audio clip`} title="Drag to move the audio; drag an edge to change its timing. Shift/Ctrl-click to select multiple." style={{ left: clip.start * TIMELINE_SCALE * zoom, width: Math.max(12, (clip.end - clip.start) * TIMELINE_SCALE * zoom) }} onPointerDown={(event) => { const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio", clip.id, clip.start, clip.end, selection); }}><button type="button" className="timeline-clip-start-handle" aria-label={`Move ${clip.name} start`} title="Drag to change start time" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio-start", clip.id, clip.start, clip.end, selection); }} /><button type="button" className="timeline-clip-end-handle" aria-label={`Move ${clip.name} end`} title="Drag to change end time" onPointerDown={(event) => { event.stopPropagation(); const selection = selectTimelineClip({ kind: "audio", id: clip.id }, event); if (selection) beginDrag(event, "audio-end", clip.id, clip.start, clip.end, selection); }} /><AudioWaveform url={audioUrls[clip.id]} onDuration={(value) => applyDecodedAudioDuration(clip.id, value)} onProfile={onAudioWaveformProfile ? (measurement) => onAudioWaveformProfile(clip.id, measurement) : undefined} /><span><IconSound /> {clip.name}</span></div>)}
                 <i className="timeline-playhead" style={{ left: currentTime * TIMELINE_SCALE * zoom }} />
                 </div>
               </div>
               <div className="timeline-row camera-row" style={{ gridTemplateColumns: `${trackLabelWidth}px minmax(0, 1fr)` }}>
                 <div className="timeline-track-label camera-track-label"><b>CAMERA</b><span>{cameraTrack?.keyframes.length ?? 0} key{cameraTrack?.keyframes.length === 1 ? "" : "s"}</span><button type="button" className="timeline-camera-open" onClick={() => onWorkspaceChange("camera")} title="Open the Camera workspace">Edit</button><button type="button" className="timeline-camera-add-key" onClick={addCameraKeyframe} title="Add or replace a camera keyframe at the playhead">＋</button></div>
-                <div className="timeline-track timeline-camera-track" onPointerDown={seekFromEvent}>
-                  {cameraTrack?.keyframes.map((keyframe) => <button key={keyframe.id} type="button" className={`timeline-camera-key${keyframe.id === selectedCameraKeyframeId ? " is-selected" : ""}`} style={{ left: keyframe.time * TIMELINE_SCALE * zoom }} title={`Camera key at ${seconds(keyframe.time)} · ${keyframe.easing ?? "linear"}`} aria-label={`Select camera keyframe at ${seconds(keyframe.time)}`} aria-pressed={keyframe.id === selectedCameraKeyframeId} onPointerDown={(event) => event.stopPropagation()} onClick={() => selectCameraKeyframe(keyframe.id)} />)}
+                 <div className="timeline-track timeline-camera-track" aria-haspopup="menu" onPointerDown={seekFromEvent}>
+                   {cameraTrack?.keyframes.map((keyframe) => <button key={keyframe.id} type="button" className={`timeline-camera-key${keyframe.id === selectedCameraKeyframeId ? " is-selected" : ""}`} data-camera-keyframe={keyframe.id} aria-haspopup="menu" style={{ left: keyframe.time * TIMELINE_SCALE * zoom }} title={`Camera key at ${seconds(keyframe.time)} · ${keyframe.easing ?? "linear"}`} aria-label={`Select camera keyframe at ${seconds(keyframe.time)}`} aria-pressed={keyframe.id === selectedCameraKeyframeId} onPointerDown={(event) => event.stopPropagation()} onClick={() => selectCameraKeyframe(keyframe.id)} />)}
                   <i className="timeline-playhead" style={{ left: currentTime * TIMELINE_SCALE * zoom }} />
                 </div>
               </div>
@@ -4661,7 +4875,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
              <button className="editor-button" onClick={() => setSelectedClipsEnabled(false)}>Disable all</button>
            </div>
            <div className="timeline-batch-actions">
-             <button className="editor-button" onClick={clearTimelineSelection}>Clear selection</button>
+              <button className="editor-button" onClick={() => clearTimelineSelection()}>Clear selection</button>
              <button className="editor-preview-button danger" disabled={!deletableSelectionCount} onClick={deleteSelectedClips}>Delete selected</button>
            </div>
            <div className="timeline-selection-list" aria-label="Selected clips">
@@ -4795,5 +5009,14 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       </aside>
     </div>
      <AssetPickerModal open={layerPickerOpen} title="Add Spine layer" eyebrow="TIMELINE LAYER" description="Search the loaded catalog and add another background, scene, character, or overlay set." directories={availableLayerDirectories} assetRoot={source?.rootPath ?? ""} directoryInfo={directoryInfo} emptyLabel="Every available asset set is already on this timeline." renderLabel={(item) => characterDirectoryLabel(item, directoryLabels)} getSearchText={(item) => characterDirectoryLabel(item, directoryLabels)} onClose={() => setLayerPickerOpen(false)} onSelect={(next) => { setLayerPickerOpen(false); addLayer(next); }} />
+     {renderCameraContextMenu()}
+     {timelineContextMenu && <ContextMenu
+      x={timelineContextMenu.x}
+      y={timelineContextMenu.y}
+      label={timelineContextMenu.target.kind === "preview" ? "Timeline preview actions" : "Timeline actions"}
+      actions={timelineContextActions(timelineContextMenu.target)}
+      onClose={() => setTimelineContextMenu(null)}
+      returnFocusTo={timelineContextMenu.returnFocusTo}
+    />}
   </>;
 }

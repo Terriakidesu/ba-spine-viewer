@@ -967,11 +967,6 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--editor-cy
 .camera-shot-slider-grid input[type="range"] { width: 100%; min-width: 0; accent-color: var(--editor-yellow); touch-action: none; }
 .camera-shot-scrub-hint { color: var(--editor-muted); font-size: 8px; line-height: 1.4; }
 .camera-property-section .editor-number-scrub { width: 24px; min-width: 24px; justify-content: center; }
-.camera-context-menu { position: fixed; z-index: 1100; display: grid; gap: 2px; width: min(240px, calc(100vw - 16px)); max-height: min(420px, calc(100vh - 16px)); padding: 5px; overflow: auto; border: 1px solid #3d667b; border-radius: 5px; background: #0d1d29; box-shadow: 0 12px 32px #000b; }
-.camera-context-menu > button { display: grid; gap: 2px; min-width: 0; padding: 6px 8px; border: 0; border-radius: 3px; color: var(--editor-text); background: transparent; font-size: 9px; text-align: left; cursor: pointer; }
-.camera-context-menu > button:hover:not(:disabled), .camera-context-menu > button:focus-visible { outline: 1px solid #52c9e4; background: #173447; }
-.camera-context-menu > button:disabled { color: #758793; cursor: not-allowed; }
-.camera-context-menu > button small { color: #81939e; font-size: 8px; }
 .timeline-camera-open { flex: none; padding: 3px 5px !important; border: 1px solid #ff657655 !important; border-radius: 3px !important; background: #40232d !important; color: #ff9da7 !important; font-size: 8px !important; font-weight: 750; }
 @media (max-width: 1100px) {
   .camera-workspace { grid-template-columns: 175px minmax(0, 1fr) 245px; }

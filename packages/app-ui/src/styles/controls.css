@@ -68,3 +68,39 @@
 .suite-notice.is-warning { border-color: color-mix(in srgb, var(--suite-warning) 55%, transparent); background: var(--suite-warning-soft); color: var(--suite-warning); }
 
 .suite-focusable:focus-visible { outline: 2px solid var(--suite-accent); outline-offset: 2px; }
+
+.suite-context-menu {
+  position: fixed;
+  z-index: 2000;
+  display: grid;
+  gap: 2px;
+  width: min(260px, calc(100vw - 16px));
+  max-height: min(440px, calc(100vh - 16px));
+  padding: 5px;
+  overflow: auto;
+  border: 1px solid var(--suite-line);
+  border-radius: 5px;
+  background: var(--suite-surface, #102333);
+  color: var(--suite-text, #e8eef1);
+  box-shadow: 0 12px 32px #000b;
+}
+.suite-context-menu > button[role="menuitem"] {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: 600 11px/1.25 "Segoe UI", system-ui, sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.suite-context-menu > button[role="menuitem"]:hover:not(:disabled),
+.suite-context-menu > button[role="menuitem"]:focus-visible { outline: 1px solid var(--suite-accent, #52c9e4); background: color-mix(in srgb, var(--suite-accent, #52c9e4) 18%, transparent); }
+.suite-context-menu > button[role="menuitem"]:disabled { color: var(--suite-muted, #81939e); cursor: not-allowed; }
+.suite-context-menu > button[role="menuitem"].is-danger { color: var(--suite-danger, #ef8a9b); }
+.suite-context-menu > button[role="menuitem"] small { color: var(--suite-muted, #9aaab4); font-size: 10px; font-weight: 400; }
+.suite-context-menu-separator { height: 1px; margin: 3px 4px; background: var(--suite-line); }

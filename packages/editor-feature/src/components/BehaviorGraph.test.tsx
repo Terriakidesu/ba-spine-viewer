@@ -18,7 +18,7 @@ test("Behavior graph exposes familiar select, pan, zoom, fit, and arrange contro
 
   expect(markup).toContain('role="group"');
   expect(markup).toContain('aria-label="Head interaction state graph.');
-  expect(markup).toContain('aria-keyshortcuts="V H F Escape Space"');
+  expect(markup).toContain('aria-keyshortcuts="V H F Escape Space Shift+F10 ContextMenu"');
   expect(markup).toContain('title="Fit graph (F)"');
   expect(markup).toContain('title="Arrange states automatically"');
   expect(markup).toContain('title="Select states (V)"');

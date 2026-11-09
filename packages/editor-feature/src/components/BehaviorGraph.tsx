@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { ContextMenu, type ContextMenuAction, isContextMenuShortcut } from "@ba-spine/app-ui/ContextMenu";
 import type { SpineBehaviorMachine } from "@ba-spine/spine-runtime/spine/spineBehavior";
 import {
   BEHAVIOR_NODE_HEIGHT,
@@ -28,6 +29,19 @@ interface BehaviorGraphProps {
   runningStateId?: string;
   onLayoutChange: (layout: BehaviorMachineGraphLayout) => void;
   onSelect: (selection: { kind: "state" | "transition"; id: string } | null) => void;
+  getContextActions?: (target: BehaviorGraphContextTarget) => readonly ContextMenuAction[];
+}
+
+export type BehaviorGraphContextTarget =
+  | { kind: "background" }
+  | { kind: "state"; id: string }
+  | { kind: "transition"; id: string };
+
+interface BehaviorGraphContextMenuState {
+  x: number;
+  y: number;
+  target: BehaviorGraphContextTarget;
+  returnFocusTo: HTMLElement | SVGElement | null;
 }
 
 interface NodeDrag {
@@ -62,7 +76,7 @@ function behaviorGraphHitTarget(target: EventTarget | null): BehaviorGraphHitTar
   return "background";
 }
 
-export function BehaviorGraph({ machine, layout, selected, runningStateId, onLayoutChange, onSelect }: BehaviorGraphProps) {
+export function BehaviorGraph({ machine, layout, selected, runningStateId, onLayoutChange, onSelect, getContextActions = () => [] }: BehaviorGraphProps) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const dragRef = useRef<NodeDrag | ViewDrag | null>(null);
@@ -74,6 +88,7 @@ export function BehaviorGraph({ machine, layout, selected, runningStateId, onLay
   const [tool, setTool] = useState<BehaviorGraphTool>("select");
   const [isPanning, setIsPanning] = useState(false);
   const [isNodeDragging, setIsNodeDragging] = useState(false);
+  const [contextMenu, setContextMenu] = useState<BehaviorGraphContextMenuState | null>(null);
 
   const basePositions = useMemo(
     () => behaviorGraphPositionsForViewport(machine, layout, size.width),
@@ -252,6 +267,15 @@ export function BehaviorGraph({ machine, layout, selected, runningStateId, onLay
   }
 
   function handleCanvasKeyDown(event: ReactKeyboardEvent<SVGSVGElement>) {
+    if (isContextMenuShortcut(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      const element = event.target instanceof Element ? event.target : event.currentTarget;
+      const target = graphContextTarget(element);
+      const rect = element.getBoundingClientRect();
+      openGraphContextMenu(rect.left, rect.bottom, target, element as HTMLElement | SVGElement);
+      return;
+    }
     if (isTextEditingTarget(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.code === "Space" || event.key === " ") {
       event.preventDefault();
@@ -283,6 +307,35 @@ export function BehaviorGraph({ machine, layout, selected, runningStateId, onLay
     }
   }
 
+  function graphContextTarget(element: Element): BehaviorGraphContextTarget {
+    const node = element.closest<SVGGElement>(".behavior-node");
+    if (node?.dataset.stateId) return { kind: "state", id: node.dataset.stateId };
+    const edge = element.closest<SVGGElement>(".behavior-edge");
+    if (edge?.dataset.transitionId) return { kind: "transition", id: edge.dataset.transitionId };
+    return { kind: "background" };
+  }
+
+  function openGraphContextMenu(x: number, y: number, target: BehaviorGraphContextTarget, returnFocusTo: HTMLElement | SVGElement | null) {
+    if (target.kind === "state") onSelect({ kind: "state", id: target.id });
+    else if (target.kind === "transition") onSelect({ kind: "transition", id: target.id });
+    setContextMenu({ x, y, target, returnFocusTo });
+  }
+
+  function handleContextMenu(event: ReactMouseEvent<SVGSVGElement>) {
+    if (isTextEditingTarget(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const element = event.target instanceof Element ? event.target : event.currentTarget;
+    openGraphContextMenu(event.clientX, event.clientY, graphContextTarget(element), element as HTMLElement | SVGElement);
+  }
+
+  const contextualActions = contextMenu ? getContextActions(contextMenu.target) : [];
+  const contextActions: ContextMenuAction[] = contextMenu ? [
+    ...contextualActions,
+    { label: "Fit graph", run: fitGraph, separatorBefore: contextualActions.length > 0 },
+    { label: "Arrange states automatically", run: autoArrange },
+  ] : [];
+
   const viewBox = `${view.x} ${view.y} ${size.width / view.zoom} ${size.height / view.zoom}`;
   return <div className={`behavior-graph-stage${isPanning ? " is-panning" : ""}${isNodeDragging ? " is-node-dragging" : ""}`} ref={surfaceRef}>
     <div className="behavior-canvas-controls" role="toolbar" aria-label="Graph controls">
@@ -303,13 +356,15 @@ export function BehaviorGraph({ machine, layout, selected, runningStateId, onLay
       preserveAspectRatio="none"
       role="group"
       aria-label={`${machine.name} state graph. Drag states to move, drag the background to pan, or use middle/Space-drag. V selects, H pans, F fits, Escape cancels or deselects.`}
-      aria-keyshortcuts="V H F Escape Space"
+      aria-haspopup="menu"
+      aria-keyshortcuts="V H F Escape Space Shift+F10 ContextMenu"
       tabIndex={0}
       onPointerDown={handleCanvasPointerDown}
       onPointerMove={movePointer}
       onPointerUp={(event) => endPointer(event)}
       onPointerCancel={(event) => endPointer(event, true)}
       onLostPointerCapture={(event) => endPointer(event, true)}
+      onContextMenu={handleContextMenu}
       onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }}
       onWheel={handleWheel}
       onKeyDownCapture={handleCanvasKeyDown}
@@ -330,12 +385,14 @@ export function BehaviorGraph({ machine, layout, selected, runningStateId, onLay
         return <g
           key={transition.id}
           className={`behavior-edge${selectedEdge ? " is-selected" : ""}`}
+          data-transition-id={transition.id}
           onClick={() => {
             if (suppressClickRef.current) { suppressClickRef.current = false; return; }
             onSelect({ kind: "transition", id: transition.id });
           }}
           onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect({ kind: "transition", id: transition.id }); } }}
           role="button"
+          aria-haspopup="menu"
           tabIndex={0}
           aria-label={`${machine.states.find((state) => state.id === transition.fromStateId)?.name} to ${machine.states.find((state) => state.id === transition.toStateId)?.name} on ${label}`}
         >
@@ -352,9 +409,11 @@ export function BehaviorGraph({ machine, layout, selected, runningStateId, onLay
           key={state.id}
           className={`behavior-node${selectedState ? " is-selected" : ""}${runningStateId === state.id ? " is-running" : ""}`}
           transform={`translate(${position.x} ${position.y})`}
+          data-state-id={state.id}
           onPointerDown={(event) => beginNodeDrag(event, state.id)}
           onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect({ kind: "state", id: state.id }); } }}
           role="button"
+          aria-haspopup="menu"
           tabIndex={0}
           aria-label={`Select ${state.name} state; drag to move`}
         >
@@ -367,5 +426,13 @@ export function BehaviorGraph({ machine, layout, selected, runningStateId, onLay
         </g>;
       })}
     </svg>
+    {contextMenu && <ContextMenu
+      x={contextMenu.x}
+      y={contextMenu.y}
+      label="Behavior graph actions"
+      actions={contextActions}
+      onClose={() => setContextMenu(null)}
+      returnFocusTo={contextMenu.returnFocusTo}
+    />}
   </div>;
 }
