@@ -5,8 +5,9 @@ import { cheekControlNames } from "@ba-spine/spine-runtime/spine/spinePinch";
 import { normalizeSpineCameraTrack, type SpineCameraTrack } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import { DEFAULT_EFFECTS_STRENGTH } from "@ba-spine/spine-runtime/spine/spineEffects";
 import { migrateLegacyInteractionsToBehaviors, normalizeSpineBehaviorMachines, type SpineBehaviorMachine } from "@ba-spine/spine-runtime/spine/spineBehavior";
+import { normalizeBehaviorGraphLayouts, type BehaviorGraphLayouts } from "./behaviorGraph";
 
-export const EDITOR_SCHEMA_VERSION = 7;
+export const EDITOR_SCHEMA_VERSION = 8;
 export const LEGACY_EDITOR_SCHEMA_VERSION = 1;
 
 export type EditorTrigger = "press" | "hold" | "drag";
@@ -154,6 +155,8 @@ export interface EditorProject {
   interactions: EditorInteraction[];
   /** Canonical behavior-machine model; generated legacy machines remain linked until edited. */
   behaviorMachines?: SpineBehaviorMachine[];
+  /** Editor-only graph placement; kept separate from executable behavior data. */
+  behaviorGraphLayouts: BehaviorGraphLayouts;
   selectedInteractionId: string | null;
   selectedRegionId: string | null;
   selectedBonePath: string | null;
@@ -444,6 +447,7 @@ export function createProject(directory: string, animations: string[], bones: Sp
   if (profile.pinch) interactions.push(interaction("Cheek pinch", "pinch", animations, bones, interactions.length));
   if (profile.pat) interactions.push(interaction("Patting", "pat", animations, bones, interactions.length));
   if (interactions.length === 0) interactions.push(interaction("New interaction", "custom", animations, bones, 0));
+  const behaviorMachines = migrateLegacyInteractionsToBehaviors(interactions, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS);
   return {
     schemaVersion: EDITOR_SCHEMA_VERSION,
     deletedSequenceIds: [],
@@ -453,7 +457,8 @@ export function createProject(directory: string, animations: string[], bones: Sp
     assetDirectory: directory,
     lookFollow: { ...DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS },
     interactions,
-    behaviorMachines: migrateLegacyInteractionsToBehaviors(interactions, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS),
+    behaviorMachines,
+    behaviorGraphLayouts: normalizeBehaviorGraphLayouts(null, behaviorMachines),
     selectedInteractionId: interactions[0]?.id ?? null,
     selectedRegionId: interactions[0]?.regions[0]?.id ?? null,
     selectedBonePath: bones[0]?.path ?? null,
@@ -686,6 +691,7 @@ export function normalizeProject(value: unknown, directory: string): EditorProje
   const behaviorMachines = Array.isArray(project.behaviorMachines)
     ? normalizeSpineBehaviorMachines(project.behaviorMachines)
     : migrateLegacyInteractionsToBehaviors(interactions, lookFollow);
+  const behaviorGraphLayouts = normalizeBehaviorGraphLayouts(project.behaviorGraphLayouts, behaviorMachines);
   const requestedInteraction = typeof project.selectedInteractionId === "string" ? project.selectedInteractionId : "";
   const selectedInteractionId = interactions.some((item) => item.id === requestedInteraction) ? requestedInteraction : interactions[0]?.id ?? null;
   const selectedInteraction = interactions.find((item) => item.id === selectedInteractionId);
@@ -703,6 +709,7 @@ export function normalizeProject(value: unknown, directory: string): EditorProje
     lookFollow,
     interactions,
     behaviorMachines,
+    behaviorGraphLayouts,
     ...(Array.isArray(project.sequenceOrder)
       ? { sequenceOrder: ["opening", ...new Set(project.sequenceOrder.filter((id): id is string => typeof id === "string" && id !== "opening" && id !== "legacy"))] }
       : {}),

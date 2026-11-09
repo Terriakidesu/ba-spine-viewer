@@ -100,6 +100,35 @@ test("look-follow settings migrate from legacy projects and survive normalizatio
   expect(normalizeProject(JSON.parse(JSON.stringify(authored)), "Airi_home")?.lookFollow).toEqual(authored.lookFollow);
 });
 
+test("legacy behavior projects receive a default graph layout and manual positions survive reload", () => {
+  const legacyProject = createProject("Airi_home", ["Pat_01_M", "Pat_02_M", "PatEnd_01_M"], []);
+  const patting = legacyProject.behaviorMachines!.find((machine) => machine.name === "Patting")!;
+  const migrated = normalizeProject({
+    ...legacyProject,
+    schemaVersion: 7,
+    behaviorGraphLayouts: undefined,
+  }, "Airi_home")!;
+  const migratedLayout = migrated.behaviorGraphLayouts[patting.id]!;
+  expect(migratedLayout.mode).toBe("auto");
+  expect(Object.keys(migratedLayout.statePositions).sort()).toEqual(patting.states.map((state) => state.id).sort());
+  const flowX = ["idle", "starting", "active", "releasing"].map((id) => migratedLayout.statePositions[id]!.x);
+  expect(flowX[0]).toBeLessThan(flowX[1]!);
+  expect(flowX[1]).toBeLessThan(flowX[2]!);
+  expect(flowX[2]).toBeLessThan(flowX[3]!);
+
+  const manual = {
+    ...migrated,
+    behaviorGraphLayouts: {
+      ...migrated.behaviorGraphLayouts,
+      [patting.id]: { mode: "manual" as const, statePositions: { ...migratedLayout.statePositions, active: { x: 612, y: 244 } } },
+    },
+  };
+  const reopened = normalizeProject(JSON.parse(JSON.stringify(manual)), "Airi_home")!;
+  expect(reopened.behaviorGraphLayouts[patting.id]?.mode).toBe("manual");
+  expect(reopened.behaviorGraphLayouts[patting.id]?.statePositions.active).toEqual({ x: 612, y: 244 });
+  expect(reopened.behaviorMachines).toEqual(migrated.behaviorMachines);
+});
+
 test("legacy Talk timelines migrate to auto duration without resetting current manual overrides", () => {
   const legacy = normalizeProject({
     schemaVersion: 2,

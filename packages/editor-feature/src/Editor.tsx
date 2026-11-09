@@ -31,6 +31,7 @@ import {
   type EditorRegion,
   type EditorViewSettings,
 } from "./editorModel";
+import { normalizeBehaviorGraphLayouts } from "./behaviorGraph";
 import "./editor.css";
 import { InteractionPreview, type InteractionPreviewDebug } from "./preview";
 import { hitRegion, inversePoint, regionMatrix, screenToWorld } from "./geometry";
@@ -2227,15 +2228,21 @@ export function Editor() {
             <button className={`editor-button suite-tab${workspace === "camera" ? " active" : ""}`} role="tab" aria-selected={workspace === "camera"} onClick={() => setWorkspace("camera")} disabled={!assetLoaded}>Camera</button>
           </div>
           <div className="editor-asset-picker"><span>Set</span><button className="editor-asset-picker-button" type="button" aria-label="Choose character or asset set" aria-haspopup="dialog" aria-expanded={assetPickerOpen} onClick={() => setAssetPickerOpen(true)} disabled={!directories.length} title={directory || "Open a folder first"}><span>{directory ? characterDirectoryLabel(directory, directoryLabels) : "Open a folder…"}</span><IconChevronDown /></button></div>
-          <label className="editor-light-fx-control" title="Saved with this project and used in Editor and Viewer previews.">
-            <span>Light FX</span>
-            <input type="range" min="0" max="1" step="0.05" value={project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH} aria-label="Light FX strength" disabled={!project} onChange={(event) => live((current) => ({ ...current, effectsStrength: Number(event.target.value) }))} />
-            <output>{Math.round((project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH) * 100)}%</output>
-          </label>
         </div>
         <div className="editor-actions">
           <button className="suite-icon-button editor-button editor-icon-button editor-command-trigger" type="button" aria-label="Search commands" aria-keyshortcuts="Control+K Meta+K" title="Search commands (Ctrl/⌘ K)" onClick={() => setCommandPaletteOpen(true)}><IconSearch /></button>
           <WorkspacePresetMenu compact selected={layoutPreset} timelineDisabled={!assetLoaded} onSelect={applyWorkspacePreset} />
+          <details className="editor-header-menu editor-preview-settings-menu" name="editor-toolbar-menu">
+            <summary className="editor-button editor-icon-button" aria-label="Preview settings" title="Preview settings"><IconSliders /></summary>
+            <div className="editor-header-menu-popover editor-preview-settings-popover" role="group" aria-label="Preview settings">
+              <strong>Preview settings</strong>
+              <label className="editor-light-fx-control" title="Saved with this project and used in Editor and Viewer previews.">
+                <span>Light FX</span>
+                <input type="range" min="0" max="1" step="0.05" value={project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH} aria-label="Light FX strength" disabled={!project} onChange={(event) => live((current) => ({ ...current, effectsStrength: Number(event.target.value) }))} />
+                <output>{Math.round((project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH) * 100)}%</output>
+              </label>
+            </div>
+          </details>
           <details className="editor-open-menu editor-header-menu" name="editor-toolbar-menu">
             <summary className="editor-button editor-icon-button" aria-label="Open files and folders" title="Open files and folders"><IconFolder /><IconChevronDown /></summary>
             <div className="editor-open-menu-popover">
@@ -2615,10 +2622,20 @@ export function Editor() {
       </main>
       {workspace === "interaction" && behaviorMode && assetLoaded && project && <BehaviorEditor
         machines={project.behaviorMachines ?? []}
+        graphLayouts={project.behaviorGraphLayouts}
         animations={meta?.animations ?? []}
         debug={behaviorDebug}
         testFeedback={Object.values(behaviorActionFeedback)}
-        onChange={(behaviorMachines) => mutate((current) => ({ ...current, behaviorMachines }))}
+        onChange={(behaviorMachines) => mutate((current) => ({
+          ...current,
+          behaviorMachines,
+          behaviorGraphLayouts: normalizeBehaviorGraphLayouts(current.behaviorGraphLayouts, behaviorMachines),
+        }))}
+        onGraphLayoutChange={(machineId, layout) => mutate((current) => ({
+          ...current,
+          behaviorGraphLayouts: { ...current.behaviorGraphLayouts, [machineId]: layout },
+        }))}
+        onShowCharacterPreview={() => setBehaviorMode(false)}
         onTestEvent={(machineId, event, regionId) => rendererRef.current?.testBehaviorEvent(machineId, event, regionId)}
         onCancelTest={() => rendererRef.current?.cancelBehaviorTest()}
       />}

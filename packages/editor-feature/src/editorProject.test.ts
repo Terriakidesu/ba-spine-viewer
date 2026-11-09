@@ -3,6 +3,7 @@ import { createProject, EDITOR_SCHEMA_VERSION } from "./editorModel";
 import { captureEditorProjectBaseline, editorProjectDraftValue, pendingProjectForDirectory, prepareEditorProjectSave, readSavedEditorProject, saveManifestEditorProject, type SavedEditorProjectSource, type WritableEditorProjectSource } from "./editorProject";
 import { manifestPath, type SpineManifestRecord } from "@ba-spine/spine-runtime/spine/spineManifest";
 import { normalizeSpineInteractionProject } from "@ba-spine/spine-runtime/spine/spineInteraction";
+import { createSpineBehaviorPreset } from "./behaviorPresets";
 
 function sourceFromFiles(files: Record<string, string>) {
   return {
@@ -20,6 +21,11 @@ test("asset-set switching restores the saved .editor project", async () => {
   }];
   saved.timeline.selectedColorLayerId = "wash";
   saved.timeline.selectedColorClipId = "flash";
+  const firstMachine = saved.behaviorMachines![0]!;
+  saved.behaviorGraphLayouts[firstMachine.id] = {
+    mode: "manual",
+    statePositions: { [firstMachine.initialStateId]: { x: 488, y: 212 } },
+  };
   const errors: string[] = [];
 
   const pending = await readSavedEditorProject(sourceFromFiles({
@@ -31,8 +37,39 @@ test("asset-set switching restores the saved .editor project", async () => {
   expect(pending?.timeline.duration).toBe(42);
   expect(pending?.timeline).toMatchObject({ selectedColorLayerId: "wash", selectedColorClipId: "flash" });
   expect(pending?.timeline.colorLayers[0]?.blendMode).toBe("additive");
+  expect(pending?.behaviorGraphLayouts[firstMachine.id]).toMatchObject({
+    mode: "manual",
+    statePositions: { [firstMachine.initialStateId]: { x: 488, y: 212 } },
+  });
   expect(pendingProjectForDirectory(pending, "Airi_home")?.name).toBe("Saved Airi project");
   expect(pendingProjectForDirectory(pending, "Hina_home")).toBeNull();
+});
+
+test("graph layout metadata survives a complete non-manifest save and reload", async () => {
+  const project = createProject("GraphFixture", ["Pat_01_M", "Pat_02_M"], []);
+  const machine = project.behaviorMachines!.find((item) => item.name === "Patting")!;
+  const originalMachines = structuredClone(project.behaviorMachines);
+  const previous = project.behaviorGraphLayouts[machine.id]!;
+  project.behaviorGraphLayouts[machine.id] = {
+    mode: "manual",
+    statePositions: { ...previous.statePositions, active: { x: 712, y: 308 } },
+  };
+  const files: Record<string, string> = {};
+  const source: WritableEditorProjectSource = {
+    readText: async (path) => files[path] ?? null,
+    saveText: async (path, content) => { files[path] = content; },
+  };
+
+  const prepared = await prepareEditorProjectSave(source, project);
+  expect(prepared.files).toHaveLength(1);
+  for (const file of prepared.files) files[file.path] = file.content;
+  const reopened = await readSavedEditorProject(source, "GraphFixture", () => {});
+
+  expect(reopened?.behaviorGraphLayouts[machine.id]).toMatchObject({
+    mode: "manual",
+    statePositions: { active: { x: 712, y: 308 } },
+  });
+  expect(reopened?.behaviorMachines).toEqual(originalMachines);
 });
 
 test("draft preview converts the live project to a Viewer snapshot without invoking persistence", () => {
@@ -40,6 +77,11 @@ test("draft preview converts the live project to a Viewer snapshot without invok
   project.name = "Live unsaved draft";
   project.effectsStrength = 0.85;
   project.lookFollow = { ...project.lookFollow, delay: 0.65, rangeX: 82, allowY: false };
+  const firstMachine = project.behaviorMachines![0]!;
+  project.behaviorGraphLayouts[firstMachine.id] = {
+    mode: "manual",
+    statePositions: { [firstMachine.initialStateId]: { x: 336, y: 176 } },
+  };
   project.timeline.sequenceId = "opening";
   project.timeline.duration = 12;
   project.timeline.camera = { enabled: true, aspectRatio: "1:1", constraint: { mode: "none" }, safeBounds: [], keyframes: [{ id: "draft-key", time: 3, centerX: 10, centerY: 20, frameHeight: 300 }] } as unknown as NonNullable<typeof project.timeline.camera>;
@@ -51,6 +93,9 @@ test("draft preview converts the live project to a Viewer snapshot without invok
     name: "Live unsaved draft",
     effectsStrength: 0.85,
     lookFollow: { delay: 0.65, rangeX: 82, allowY: false },
+    behaviorGraphLayouts: {
+      [firstMachine.id]: { mode: "manual", statePositions: { [firstMachine.initialStateId]: { x: 336, y: 176 } } },
+    },
     interactions: [{ id: project.interactions[0]!.id }],
     timeline: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "1:1" } },
     sequences: { opening: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "1:1" } } },
@@ -164,11 +209,20 @@ test("manifest saves sequence order and removes intentionally deleted sequence r
   project.sequences = { "talk-2": { ...project.timeline, sequenceId: "talk-2" } };
   project.sequenceOrder = ["opening", "talk-3", "talk-1"];
   project.deletedSequenceIds = ["talk-2"];
+  const initialMachine = project.behaviorMachines![0]!;
+  project.behaviorGraphLayouts[initialMachine.id] = {
+    mode: "manual",
+    statePositions: { [initialMachine.initialStateId]: { x: 420, y: 180 } },
+  };
 
   const saved = await saveManifestEditorProject(source, project);
   expect(saved?.manifest.sequences).toEqual({ opening: manifestPath("lobby", "sequences/opening.json") });
   expect(writes["lobbies/Airi_home/interactions.json"]).toContain('"sequenceOrder": [\n    "opening",\n    "talk-3",\n    "talk-1"\n  ]');
   expect(writes["lobbies/Airi_home/interactions.json"]).toContain('"deletedSequenceIds": [\n    "talk-2"\n  ]');
+  expect(JSON.parse(writes["lobbies/Airi_home/interactions.json"]!).behaviorGraphLayouts[initialMachine.id]).toMatchObject({
+    mode: "manual",
+    statePositions: { [initialMachine.initialStateId]: { x: 420, y: 180 } },
+  });
   expect(writes["lobbies/Airi_home/sequences/talk-2.json"]).toBeUndefined();
 });
 
@@ -195,6 +249,11 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
   const project = createProject("Airi_home", [], []);
   project.effectsStrength = 0.9;
   project.lookFollow = { ...project.lookFollow, enabled: false, delay: 0.7, targetBonePath: "root/Touch_Eye" };
+  const patting = createSpineBehaviorPreset("head-interaction");
+  project.behaviorMachines = [...project.behaviorMachines!, patting];
+  project.behaviorGraphLayouts = {
+    [patting.id]: { mode: "manual", statePositions: { idle: { x: 512, y: 208 }, active: { x: 760, y: 208 } } },
+  };
   project.timeline.sequenceId = "talk-1";
   project.timeline.durationMode = "manual";
   project.timeline.duration = 8;
@@ -216,6 +275,7 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
   expect(JSON.parse(writes[".editor/Airi_home.workspace.json"]!).projectSchemaVersion).toBe(EDITOR_SCHEMA_VERSION);
   expect(JSON.parse(writes["lobbies/Airi_home/interactions.json"]!).effectsStrength).toBe(0.9);
   expect(JSON.parse(writes["lobbies/Airi_home/interactions.json"]!).lookFollow).toEqual(project.lookFollow);
+  expect(JSON.parse(writes["lobbies/Airi_home/interactions.json"]!).behaviorGraphLayouts[patting.id]).toEqual(project.behaviorGraphLayouts[patting.id]);
   expect(JSON.parse(writes["lobbies/Airi_home/interactions.json"]!).behaviorMachines).toEqual(expect.arrayContaining([
     expect.objectContaining({ sourceLegacyInteractionId: project.interactions[0]!.id }),
     expect.objectContaining({ name: "Look-follow", activation: expect.objectContaining({ holdDelay: 0.7 }) }),
@@ -230,6 +290,7 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
   expect(reopened?.effectsStrength).toBe(0.9);
   expect(reopened?.lookFollow).toEqual(project.lookFollow);
   expect(reopened?.behaviorMachines?.map((machine) => machine.id)).toEqual(project.behaviorMachines?.map((machine) => machine.id));
+  expect(reopened?.behaviorGraphLayouts[patting.id]).toMatchObject(project.behaviorGraphLayouts[patting.id]!);
   expect(reopened?.timeline.colorLayers[0]).toMatchObject({ id: "wash", opacity: 0.65, order: 2, blendMode: "screen" });
   expect(reopened?.timeline.colorLayers[0]?.clips[0]).toMatchObject({ id: "fade", color: "#244466", start: 1, end: 7, fadeIn: 2, fadeOut: 1 });
   expect(reopened?.timeline).toMatchObject({ selectedColorLayerId: "wash", selectedColorClipId: "fade" });

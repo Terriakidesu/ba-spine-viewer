@@ -131,6 +131,7 @@ describe("declarative behavior machines", () => {
 
   test("runtime waits for delayed edges, emits actions, transitions, and runs declared cleanup", () => {
     const trace: string[] = [];
+    const ownership: boolean[] = [];
     const delayed = normalizeSpineBehaviorMachine({
       id: "delayed", name: "Delayed", enabled: true, priority: 1, exclusiveGroup: null, resourceClaims: [],
       activation: { kind: "pointer-canvas", trigger: "hold", event: "pointer-press" }, initialStateId: "idle", cancelPolicy: "run-exit",
@@ -146,6 +147,7 @@ describe("declarative behavior machines", () => {
     const runtime = new SpineBehaviorRuntime([delayed], {
       onActions: (_machine, state, actions, phase) => trace.push(`${phase}:${state.id}:${actions.map((action) => action.type).join(",")}`),
       onTransition: (_machine, transition) => trace.push(`transition:${transition.id}`),
+      onOwnershipChange: (_machine, _state, owned) => ownership.push(owned),
     });
 
     runtime.dispatch("pointer-press", { pointerHeld: true, regionId: null, heldSeconds: 0, dragDistance: 0, variables: {} });
@@ -166,6 +168,8 @@ describe("declarative behavior machines", () => {
     runtime.cancel("delayed");
     expect(runtime.getDebugSnapshot()[0]?.stateId).toBe("idle");
     expect(trace).toContain("cancel:active:show-subtitle");
+    expect(ownership.slice(-2)).toEqual([true, false]);
+    expect(runtime.getDebugSnapshot()[0]?.active).toBe(false);
     runtime.dispose();
   });
 
@@ -183,6 +187,24 @@ describe("declarative behavior machines", () => {
     const snapshot = runtime.getDebugSnapshot();
     expect(snapshot.find((entry) => entry.machineId === "high")).toMatchObject({ stateId: "active", active: true });
     expect(snapshot.find((entry) => entry.machineId === "low")).toMatchObject({ stateId: "idle", active: false, lastReason: "resource-conflict", blockedBy: { machineId: "high", resource: "bone:head" } });
+    runtime.dispose();
+  });
+
+  test("stopping a test run cancels every engaged machine and releases all ownership", () => {
+    const ownership: Array<{ machineId: string; owned: boolean }> = [];
+    const runtime = new SpineBehaviorRuntime([
+      machine("test-a", 1, "track:3"),
+      machine("test-b", 2, "track:4"),
+    ], {
+      onOwnershipChange: (activeMachine, _state, owned) => ownership.push({ machineId: activeMachine.id, owned }),
+    });
+    runtime.dispatch("pointer-press", { pointerHeld: true, regionId: null, heldSeconds: 0, dragDistance: 0, variables: {} }, undefined, { bypassActivation: true });
+    expect(runtime.getDebugSnapshot().filter((item) => item.active)).toHaveLength(2);
+
+    runtime.cancelAll("cancel");
+
+    expect(runtime.getDebugSnapshot().every((item) => !item.active && item.stateId === "idle")).toBe(true);
+    expect(ownership.filter((item) => !item.owned).map((item) => item.machineId).sort()).toEqual(["test-a", "test-b"]);
     runtime.dispose();
   });
 

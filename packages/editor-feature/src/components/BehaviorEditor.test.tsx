@@ -23,6 +23,8 @@ test("Behavior Studio renders its graph, inspector, and live action feedback", (
     debug: [],
     testFeedback: ["Audio: tap.ogg", "Subtitle: Hello there"],
     onChange: () => undefined,
+    onGraphLayoutChange: () => undefined,
+    onShowCharacterPreview: () => undefined,
     onTestEvent: () => undefined,
     onCancelTest: () => undefined,
   }));
@@ -30,11 +32,35 @@ test("Behavior Studio renders its graph, inspector, and live action feedback", (
   expect(markup).toContain('aria-label="Behavior state machine editor"');
   expect(markup).toContain('aria-label="Head tap state graph"');
   expect(markup).toContain("Machine resource claims");
+  expect(markup).toContain("Advanced coordination");
   expect(markup).toContain("Input scope");
+  expect(markup).toContain("New behavior");
+  expect(markup).toContain("2 states");
+  expect(markup).not.toContain("Drag threshold");
   expect(markup).toContain("Action feedback");
   expect(markup).toContain("Audio: tap.ogg");
   expect(markup).toContain("Subtitle: Hello there");
+  expect(markup).toContain("Advanced debugging · raw event injection");
+  expect(markup).toContain("Open character preview");
+  expect(markup).toContain("Delete machine");
   for (const preset of SPINE_BEHAVIOR_PRESETS) expect(markup).toContain(preset.name);
+});
+
+test("activation inspector only shows the matching Hold or Drag threshold setting", () => {
+  const renderMachine = (machineId: "head-interaction" | "drag-rotate") => {
+    const machine = createSpineBehaviorPreset(machineId);
+    return renderToStaticMarkup(createElement(BehaviorEditor, {
+      machines: [machine], animations: [], debug: [], onChange: () => undefined,
+      onGraphLayoutChange: () => undefined, onShowCharacterPreview: () => undefined,
+      onTestEvent: () => undefined, onCancelTest: () => undefined,
+    }));
+  };
+  const hold = renderMachine("head-interaction");
+  expect(hold).toContain("Hold delay");
+  expect(hold).not.toContain("Drag threshold");
+  const drag = renderMachine("drag-rotate");
+  expect(drag).toContain("Drag threshold");
+  expect(drag).not.toContain("Hold delay");
 });
 
 test("named Behavior Studio presets create editable state machines", () => {

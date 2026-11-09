@@ -749,6 +749,7 @@ export class SpineRenderer {
   private behaviorDebugSignature = "";
   private behaviorMachinesSignature = "";
   private behaviorTestContext: { machineId: string; pointerHeld: boolean; regionId: string | null; heldSeconds: number; dragDistance: number } | null = null;
+  private behaviorTestMachineIds = new Set<string>();
   private behaviorControls = new Map<string, BehaviorBoneControl>();
   private behaviorActionCleanups = new Map<string, { machineId: string; cleanup: () => void }>();
   private interactionPressedBehaviorRegionId: string | null = null;
@@ -1042,6 +1043,7 @@ export class SpineRenderer {
     this.endGesture();
     this.endLook();
     this.behaviorTestContext = null;
+    this.behaviorTestMachineIds.clear();
     bundle.behaviorRuntime.dispose();
     this.clearBehaviorSideEffects();
     bundle.behaviorRuntime = this.createBehaviorRuntime(bundle, machines);
@@ -1073,6 +1075,7 @@ export class SpineRenderer {
       : event === "pointer-release" || event === "pointer-cancel" || event === "pointer-leave"
         ? false
         : this.behaviorTestContext?.pointerHeld ?? false;
+    this.behaviorTestMachineIds.add(machineId);
     this.behaviorTestContext = {
       machineId,
       pointerHeld,
@@ -1092,10 +1095,12 @@ export class SpineRenderer {
 
   cancelBehaviorTest() {
     const bundle = this.bundle;
-    const machineId = this.behaviorTestContext?.machineId;
+    if (this.behaviorTestContext) this.behaviorTestMachineIds.add(this.behaviorTestContext.machineId);
+    const machineIds = [...this.behaviorTestMachineIds];
+    this.behaviorTestMachineIds.clear();
     this.behaviorTestContext = null;
-    if (!bundle || !machineId) return;
-    bundle.behaviorRuntime.cancel(machineId, "cancel");
+    if (!bundle || machineIds.length === 0) return;
+    for (const machineId of machineIds) bundle.behaviorRuntime.cancel(machineId, "cancel");
     this.emitBehaviorDebug(bundle);
   }
 
@@ -1356,6 +1361,7 @@ export class SpineRenderer {
     }
     this.behaviorControls.clear();
     this.behaviorTestContext = null;
+    this.behaviorTestMachineIds.clear();
   }
 
   private updateBehaviorAnimationCompletions(bundle: LoadedBundle) {

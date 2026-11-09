@@ -101,6 +101,9 @@ export function manifestProjectValue(data: SpineManifestProjectData, directory: 
     entrySequence: data.record.manifest.entrySequence,
     interactions: Array.isArray(rawInteractions.interactions) ? rawInteractions.interactions : [],
     ...(Array.isArray(rawInteractions.behaviorMachines) ? { behaviorMachines: rawInteractions.behaviorMachines } : {}),
+    ...(rawInteractions.behaviorGraphLayouts && typeof rawInteractions.behaviorGraphLayouts === "object" && !Array.isArray(rawInteractions.behaviorGraphLayouts)
+      ? { behaviorGraphLayouts: rawInteractions.behaviorGraphLayouts }
+      : {}),
     ...(Array.isArray(rawInteractions.sequenceOrder) ? { sequenceOrder: rawInteractions.sequenceOrder } : {}),
     ...(Array.isArray(rawInteractions.deletedSequenceIds) ? { deletedSequenceIds: rawInteractions.deletedSequenceIds } : {}),
     ...(active !== undefined ? { timeline: active } : {}),
