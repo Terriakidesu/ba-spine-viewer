@@ -92,15 +92,22 @@ button:disabled { cursor: default; opacity: .4; }
 .behavior-context-menu > div { position: absolute; top: calc(100% + 4px); right: 0; z-index: 4; display: grid; min-width: 145px; padding: 4px; border: 1px solid var(--editor-line); border-radius: 5px; background: #102333; box-shadow: 0 6px 18px #0008; }
 .behavior-context-menu button { border: 0; text-align: left; }
 .behavior-context-menu button.danger { color: var(--editor-pink); }
-.behavior-graph-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; background-image: radial-gradient(#66829833 1px, transparent 1px); background-size: 18px 18px; }
+.behavior-graph-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #0b1a26; cursor: grab; }
+.behavior-graph-stage.is-panning { cursor: grabbing; }
+.behavior-graph-stage.is-node-dragging .behavior-node, .behavior-graph-stage.is-node-dragging .behavior-node-header { cursor: grabbing; }
 .behavior-graph { display: block; width: 100%; height: 100%; min-height: 0; touch-action: none; outline: none; }
 .behavior-graph:focus-visible { box-shadow: inset 0 0 0 2px var(--editor-cyan); }
-.behavior-graph-background { fill: transparent; cursor: grab; }
-.behavior-graph:active .behavior-graph-background { cursor: grabbing; }
+.behavior-graph-background { cursor: grab; }
+.behavior-graph-grid-dot { fill: #66829833; }
+.behavior-graph.tool-pan, .behavior-graph.tool-pan .behavior-node, .behavior-graph.tool-pan .behavior-edge { cursor: grab; }
+.behavior-graph.tool-pan .behavior-graph-background { cursor: grab; }
+.behavior-graph:not(.tool-pan) .behavior-node, .behavior-graph:not(.tool-pan) .behavior-node-header { cursor: move; }
+.behavior-graph-stage.is-panning .behavior-graph, .behavior-graph-stage.is-panning .behavior-graph * { cursor: grabbing !important; }
 .behavior-graph defs marker path { fill: #7896aa; }
 .behavior-canvas-controls { position: absolute; z-index: 2; top: 10px; right: 10px; display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--editor-line); border-radius: 5px; background: #0b1a26eF; box-shadow: 0 4px 14px #0005; }
 .behavior-canvas-controls button { min-width: 28px; min-height: 27px; padding: 3px 7px; border: 1px solid var(--editor-line); border-radius: 4px; background: var(--editor-surface-2); color: var(--editor-text); font-size: 10px; font-weight: 700; cursor: pointer; }
 .behavior-canvas-controls button:hover { border-color: var(--editor-cyan); color: var(--editor-cyan); }
+.behavior-canvas-controls button.is-active { border-color: var(--editor-cyan); color: var(--editor-cyan); background: #16384a; }
 .behavior-canvas-controls span { width: 1px; height: 18px; background: var(--editor-line); }
 .behavior-canvas-controls output { min-width: 38px; color: var(--editor-muted); font-size: 9px; text-align: center; }
 .behavior-graph-gesture-hint { position: absolute; z-index: 1; left: 10px; bottom: 9px; padding: 4px 6px; border: 1px solid #304657aa; border-radius: 4px; background: #0b1a26c9; color: var(--editor-muted); font-size: 9px; pointer-events: none; }

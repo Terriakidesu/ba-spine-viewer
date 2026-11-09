@@ -30,7 +30,7 @@ test("Behavior Studio renders its graph, inspector, and live action feedback", (
   }));
 
   expect(markup).toContain('aria-label="Behavior state machine editor"');
-  expect(markup).toContain('aria-label="Head tap state graph"');
+  expect(markup).toContain('aria-label="Head tap state graph.');
   expect(markup).toContain("Machine resource claims");
   expect(markup).toContain("Advanced coordination");
   expect(markup).toContain("Input scope");

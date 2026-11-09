@@ -17,6 +17,10 @@ export interface BehaviorMachineGraphLayout {
 
 export type BehaviorGraphLayouts = Record<string, BehaviorMachineGraphLayout>;
 
+export type BehaviorGraphTool = "select" | "pan";
+export type BehaviorGraphHitTarget = "background" | "node" | "edge";
+export type BehaviorGraphPointerIntent = "pan" | "move-node" | "select-edge" | "ignore";
+
 export interface BehaviorGraphView {
   x: number;
   y: number;
@@ -28,6 +32,37 @@ export interface BehaviorTransitionRoute {
   path: string;
   labelX: number;
   labelY: number;
+}
+
+/** Resolve canvas gestures consistently: pan modifiers/tools take priority over selection or node movement. */
+export function getBehaviorGraphPointerIntent(
+  button: number,
+  hitTarget: BehaviorGraphHitTarget,
+  tool: BehaviorGraphTool,
+  spaceHeld: boolean,
+): BehaviorGraphPointerIntent {
+  if (button === 1 || (button === 0 && (spaceHeld || tool === "pan"))) return "pan";
+  if (button !== 0) return "ignore";
+  if (hitTarget === "node") return "move-node";
+  if (hitTarget === "edge") return "select-edge";
+  // Left-drag starts a background pan; a click with no movement deselects on pointer-up.
+  return "pan";
+}
+
+export function shouldDeselectBehaviorGraphBackgroundClick(
+  button: number,
+  hitTarget: BehaviorGraphHitTarget,
+  moved: boolean,
+  spaceHeld: boolean,
+): boolean {
+  return button === 0 && hitTarget === "background" && !moved && !spaceHeld;
+}
+
+/** Match the cursor-anchored wheel response used by the Camera canvas. */
+export function behaviorGraphWheelZoomFactor(deltaY: number, deltaMode: number, viewportHeight: number): number {
+  const safeDelta = Number.isFinite(deltaY) ? deltaY : 0;
+  const pixels = deltaMode === 1 ? safeDelta * 16 : deltaMode === 2 ? safeDelta * Math.max(1, viewportHeight) : safeDelta;
+  return Math.exp(-pixels * 0.0015);
 }
 
 function finitePoint(value: unknown): BehaviorGraphPoint | null {
@@ -253,9 +288,9 @@ export function routeBehaviorTransitions(
     const lane = group.indexOf(index) - (group.length - 1) / 2;
     if (transition.fromStateId === transition.toStateId) {
       const x = from.x, y = from.y;
-      const offset = lane * 22;
+      const offset = lane * 24;
       const path = `M ${x + BEHAVIOR_NODE_WIDTH * 0.68} ${y} C ${x + BEHAVIOR_NODE_WIDTH * 0.72} ${y - 58 + offset}, ${x + BEHAVIOR_NODE_WIDTH * 0.28} ${y - 58 + offset}, ${x + BEHAVIOR_NODE_WIDTH * 0.32} ${y}`;
-      return { transitionId: transition.id, path, labelX: x + BEHAVIOR_NODE_WIDTH / 2, labelY: y - 48 + offset };
+      return { transitionId: transition.id, path, labelX: x + BEHAVIOR_NODE_WIDTH / 2, labelY: y - 48 + lane * 30 };
     }
 
     const fromCenterY = from.y + BEHAVIOR_NODE_HEIGHT / 2;
@@ -267,7 +302,7 @@ export function routeBehaviorTransitions(
         && point.x < from.x + BEHAVIOR_NODE_WIDTH && point.x + BEHAVIOR_NODE_WIDTH > from.x
         && point.y < to.y && point.y + BEHAVIOR_NODE_HEIGHT > from.y + BEHAVIOR_NODE_HEIGHT);
       if (!blockedByNode) {
-        const x = from.x + BEHAVIOR_NODE_WIDTH / 2 + lane * 20;
+        const x = from.x + BEHAVIOR_NODE_WIDTH / 2 + lane * 24;
         const startY = from.y + BEHAVIOR_NODE_HEIGHT;
         const endY = to.y;
         const control = Math.max(18, (endY - startY) / 3);
@@ -275,7 +310,7 @@ export function routeBehaviorTransitions(
           transitionId: transition.id,
           path: `M ${x} ${startY} C ${x} ${startY + control}, ${x} ${endY - control}, ${x} ${endY}`,
           labelX: x,
-          labelY: (startY + endY) / 2 + lane * 22,
+          labelY: (startY + endY) / 2 + lane * 30,
         };
       }
     }

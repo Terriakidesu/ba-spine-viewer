@@ -4,17 +4,42 @@ import { createProject } from "./editorModel";
 import {
   autoArrangeBehaviorMachine,
   autoArrangeBehaviorGraph,
+  behaviorGraphWheelZoomFactor,
   commitBehaviorNodeDrag,
   createBehaviorNodeDragSession,
   behaviorGraphPositionsForViewport,
   fitBehaviorGraphView,
+  getBehaviorGraphPointerIntent,
   manualBehaviorGraphLayout,
   normalizeBehaviorGraphLayouts,
   routeBehaviorTransitions,
+  shouldDeselectBehaviorGraphBackgroundClick,
   zoomBehaviorGraphView,
 } from "./behaviorGraph";
 
 describe("behavior graph layout and geometry", () => {
+  test("graph gestures match the editor canvas: background pans, states move, and pan modifiers win", () => {
+    expect(getBehaviorGraphPointerIntent(0, "background", "select", false)).toBe("pan");
+    expect(getBehaviorGraphPointerIntent(0, "node", "select", false)).toBe("move-node");
+    expect(getBehaviorGraphPointerIntent(0, "edge", "select", false)).toBe("select-edge");
+    expect(getBehaviorGraphPointerIntent(0, "node", "select", true)).toBe("pan");
+    expect(getBehaviorGraphPointerIntent(1, "edge", "select", false)).toBe("pan");
+    expect(getBehaviorGraphPointerIntent(0, "node", "pan", false)).toBe("pan");
+    expect(getBehaviorGraphPointerIntent(2, "background", "select", false)).toBe("ignore");
+    expect(shouldDeselectBehaviorGraphBackgroundClick(0, "background", false, false)).toBe(true);
+    expect(shouldDeselectBehaviorGraphBackgroundClick(0, "background", true, false)).toBe(false);
+    expect(shouldDeselectBehaviorGraphBackgroundClick(0, "node", false, false)).toBe(false);
+    expect(shouldDeselectBehaviorGraphBackgroundClick(0, "background", false, true)).toBe(false);
+    expect(shouldDeselectBehaviorGraphBackgroundClick(1, "background", false, false)).toBe(false);
+  });
+
+  test("wheel zoom response matches Camera for pixel, line, and page deltas", () => {
+    expect(behaviorGraphWheelZoomFactor(100, 0, 600)).toBeLessThan(1);
+    expect(behaviorGraphWheelZoomFactor(-100, 0, 600)).toBeGreaterThan(1);
+    expect(behaviorGraphWheelZoomFactor(1, 1, 600)).toBeCloseTo(behaviorGraphWheelZoomFactor(16, 0, 600));
+    expect(behaviorGraphWheelZoomFactor(1, 2, 600)).toBeCloseTo(behaviorGraphWheelZoomFactor(600, 0, 600));
+  });
+
   test("migrated Patting gets an uncluttered Idle → Starting → Active → Releasing layout", () => {
     const project = createProject("Airi_home", ["Pat_01_M", "Pat_02_M", "PatEnd_01_M"], []);
     const patting = project.behaviorMachines!.find((machine) => machine.name === "Patting")!;
@@ -98,6 +123,7 @@ describe("behavior graph layout and geometry", () => {
         { ...machine.transitions[0]!, id: "parallel" },
         { ...machine.transitions[0]!, id: "return-to-start", fromStateId: "starting", toStateId: "idle" },
         { ...machine.transitions[0]!, id: "self-loop", fromStateId: "active", toStateId: "active" },
+        { ...machine.transitions.find((item) => item.fromStateId === "active" && item.toStateId === "releasing")!, id: "parallel-release", event: "pointer-cancel" as const },
       ],
     };
     const routes = routeBehaviorTransitions(multi, positions);
@@ -107,6 +133,12 @@ describe("behavior graph layout and geometry", () => {
     expect(parallel[0]?.labelY).not.toBe(parallel[1]?.labelY);
     expect(routes.find((route) => route.transitionId === "return-to-start")?.labelY).toBeGreaterThan(bounds);
     expect(routes.find((route) => route.transitionId === "self-loop")?.path).toContain("C");
+    const releaseLabels = routes.filter((route) => [
+      machine.transitions.find((item) => item.fromStateId === "active" && item.toStateId === "releasing")?.id,
+      "parallel-release",
+    ].includes(route.transitionId));
+    expect(releaseLabels).toHaveLength(2);
+    expect(Math.abs(releaseLabels[0]!.labelY - releaseLabels[1]!.labelY)).toBeGreaterThanOrEqual(30);
   });
 
   test("cursor-centered zoom keeps the world point fixed and fit encloses node bounds", () => {
@@ -152,5 +184,17 @@ describe("behavior graph layout and geometry", () => {
     expect(commits).toHaveLength(1);
     expect((commits[0] as ReturnType<typeof manualBehaviorGraphLayout>).mode).toBe("manual");
     expect((commits[0] as ReturnType<typeof manualBehaviorGraphLayout>).statePositions.starting).toEqual({ x: 334, y: 69 });
+  });
+
+  test("canceling an in-progress node drag does not commit a layout", () => {
+    const machine = createSpineBehaviorPreset("head-interaction");
+    const layout = manualBehaviorGraphLayout(autoArrangeBehaviorMachine(machine, 4));
+    const session = createBehaviorNodeDragSession(layout, "starting", { x: 100, y: 100 }, 1);
+    session.move({ x: 150, y: 130 });
+    session.cancel();
+
+    const commits: unknown[] = [];
+    expect(commitBehaviorNodeDrag(session, (next) => commits.push(next))).toBe(false);
+    expect(commits).toHaveLength(0);
   });
 });
