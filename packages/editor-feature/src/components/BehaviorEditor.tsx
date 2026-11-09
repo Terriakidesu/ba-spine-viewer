@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ContextMenuAction } from "@ba-spine/app-ui/ContextMenu";
 import { normalizeSpineBehaviorMachine, normalizeSpineBehaviorMachines, type SpineBehaviorAction, type SpineBehaviorCondition, type SpineBehaviorEvent, type SpineBehaviorMachine, type SpineBehaviorState, type SpineBehaviorTransition } from "@ba-spine/spine-runtime/spine/spineBehavior";
+import type { SpineInteractionRegion } from "@ba-spine/spine-runtime/spine/spineInteraction";
 import type { SpineBehaviorDebugMachine } from "@ba-spine/spine-runtime/spine/spineBehaviorRuntime";
 import { applySpineBehaviorPreset, SPINE_BEHAVIOR_PRESETS, type SpineBehaviorPresetId } from "../behaviorPresets";
 import { normalizeBehaviorGraphLayouts, type BehaviorMachineGraphLayout, type BehaviorGraphLayouts } from "../behaviorGraph";
@@ -8,6 +9,13 @@ import { BehaviorGraph, type BehaviorGraphContextTarget } from "./BehaviorGraph"
 
 const events: SpineBehaviorEvent[] = ["pointer-press", "pointer-release", "pointer-drag", "pointer-cancel", "pointer-leave", "timer-elapsed", "animation-complete", "state-entered", "manual"];
 const actions = ["play-animation", "pointer-follow", "drag-bone", "rotate-bone", "play-audio", "show-subtitle", "set-variable", "wait", "restore-resource"] as const;
+
+type BehaviorSelection =
+  | { kind: "machine"; id: string }
+  | { kind: "region"; id: string }
+  | { kind: "state"; id: string }
+  | { kind: "action"; stateId: string; phase: "enter" | "exit" | "cancel"; index: number }
+  | { kind: "transition"; id: string };
 
 function makeId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
@@ -66,11 +74,19 @@ export interface BehaviorEditorProps {
 /** Compact graph-and-inspector authoring surface for declarative state machines. */
 export function BehaviorEditor({ machines, animations, debug, testFeedback = [], graphLayouts = {}, onChange, onGraphLayoutChange, onShowCharacterPreview, onTestEvent, onCancelTest }: BehaviorEditorProps) {
   const [machineId, setMachineId] = useState(machines[0]?.id ?? "");
-  const [selection, setSelection] = useState<{ kind: "state" | "transition"; id: string } | null>(null);
+  const [selection, setSelection] = useState<BehaviorSelection | null>(null);
   const [debugEvent, setDebugEvent] = useState<SpineBehaviorEvent>("manual");
   const machine = machines.find((item) => item.id === machineId) ?? machines[0] ?? null;
   const selectedState = selection?.kind === "state" ? machine?.states.find((item) => item.id === selection.id) ?? null : null;
   const selectedTransition = selection?.kind === "transition" ? machine?.transitions.find((item) => item.id === selection.id) ?? null : null;
+  const selectedRegion = selection?.kind === "region" && machine?.activation.kind === "pointer-region"
+    ? machine.activation.regions.find((item) => item.id === selection.id) ?? null
+    : null;
+  const selectedActionState = selection?.kind === "action" ? machine?.states.find((item) => item.id === selection.stateId) ?? null : null;
+  const selectedAction = selectedActionState && selection?.kind === "action"
+    ? (selection.phase === "enter" ? selectedActionState.actions : selection.phase === "exit" ? selectedActionState.exitActions : selectedActionState.cancelActions)[selection.index] ?? null
+    : null;
+  const graphSelection = selection?.kind === "state" || selection?.kind === "transition" ? selection : null;
   const debugByMachine = useMemo(() => new Map(debug.map((item) => [item.machineId, item])), [debug]);
   const activeDebug = machine ? debugByMachine.get(machine.id) : undefined;
   const graphLayout = machine
@@ -92,7 +108,7 @@ export function BehaviorEditor({ machines, animations, debug, testFeedback = [],
     const applied = applySpineBehaviorPreset(machines, preset);
     onChange(applied.machines);
     setMachineId(applied.machine.id);
-    setSelection(applied.machine.states[0] ? { kind: "state", id: applied.machine.states[0].id } : null);
+    setSelection({ kind: "machine", id: applied.machine.id });
   }
 
   function updateState(stateId: string, update: (state: SpineBehaviorState) => SpineBehaviorState) {
@@ -165,6 +181,23 @@ export function BehaviorEditor({ machines, animations, debug, testFeedback = [],
     updateTransition(selectedTransition.id, { conditions });
   }
 
+  function updateActivationRegion(regionId: string, patch: Partial<SpineInteractionRegion>) {
+    if (!machine || machine.activation.kind !== "pointer-region") return;
+    commit({
+      ...machine,
+      activation: {
+        ...machine.activation,
+        regions: machine.activation.regions.map((region) => region.id === regionId ? { ...region, ...patch } : region),
+      },
+    });
+  }
+
+  function updateSelectedAction(patch: Record<string, unknown>) {
+    if (!selectedActionState || selection?.kind !== "action") return;
+    const key = selection.phase === "enter" ? "actions" : selection.phase === "exit" ? "exitActions" : "cancelActions";
+    updateState(selectedActionState.id, (state) => ({ ...state, [key]: state[key].map((action, index) => index === selection.index ? { ...action, ...patch } as SpineBehaviorAction : action) }));
+  }
+
   if (!machine) return <section className="behavior-editor-empty"><strong>No behavior machines</strong><span>Start with a blank machine or choose a named behavior preset.</span><div>{SPINE_BEHAVIOR_PRESETS.map((preset) => <button key={preset.id} title={preset.description} onClick={() => addMachine(preset.id)}>{preset.name}</button>)}</div></section>;
 
   const debugState = activeDebug?.stateId;
@@ -186,7 +219,7 @@ export function BehaviorEditor({ machines, animations, debug, testFeedback = [],
     <aside className="behavior-nav">
       <div className="behavior-add-menu"><label>New behavior<select aria-label="New behavior preset" value="" onChange={(event) => { if (event.target.value) addMachine(event.target.value as SpineBehaviorPresetId); }}><option value="">Choose a preset…</option>{SPINE_BEHAVIOR_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select></label></div>
       <div className="behavior-nav-heading"><strong>Machines</strong><span>{machines.length}</span></div>
-      <div className="behavior-machine-list">{machines.map((item) => <button key={item.id} className={item.id === machine.id ? "is-selected" : ""} aria-pressed={item.id === machine.id} onClick={() => { setMachineId(item.id); setSelection(null); }}><span className={`behavior-state-dot${debugByMachine.get(item.id)?.active ? " is-active" : ""}`} /><strong>{item.name}</strong><small>{item.states.length} states</small></button>)}</div>
+      <div className="behavior-machine-list">{machines.map((item) => <button key={item.id} className={item.id === machine.id ? "is-selected" : ""} aria-pressed={item.id === machine.id} onClick={() => { setMachineId(item.id); setSelection({ kind: "machine", id: item.id }); }}><span className={`behavior-state-dot${debugByMachine.get(item.id)?.active ? " is-active" : ""}`} /><strong>{item.name}</strong><small>{item.states.length} states</small></button>)}</div>
     </aside>
 
     <main className="behavior-graph-panel">
@@ -194,7 +227,7 @@ export function BehaviorEditor({ machines, animations, debug, testFeedback = [],
       {graphLayout && <BehaviorGraph
         machine={machine}
         layout={graphLayout}
-        selected={selection}
+         selected={graphSelection}
         runningStateId={activeDebug?.active ? debugState : undefined}
         onLayoutChange={(layout) => onGraphLayoutChange(machine.id, layout)}
         onSelect={setSelection}
@@ -236,15 +269,46 @@ export function BehaviorEditor({ machines, animations, debug, testFeedback = [],
         <label>Name<input value={selectedState.name} onChange={(event) => updateState(selectedState.id, (state) => ({ ...state, name: event.target.value }))} /></label>
         <label>Initial state<select value={machine.initialStateId} onChange={(event) => commit({ ...machine, initialStateId: event.target.value })}>{machine.states.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label>
         <details className="behavior-advanced"><summary>Advanced coordination</summary><label>Resource claims<input aria-label="State resource claims" value={selectedState.resourceClaims.join(", ")} placeholder="track:3, bone:root/Head" onChange={(event) => updateState(selectedState.id, (state) => ({ ...state, resourceClaims: [...new Set(event.target.value.split(",").map((item) => item.trim()).filter(Boolean))] }))} /></label></details>
-        <div className="behavior-action-heading"><strong>Actions on enter</strong><label>Add<select value="" aria-label="Add state action" onChange={(event) => { if (!event.target.value) return; const action = initialAction(event.target.value as typeof actions[number]); updateState(selectedState.id, (state) => ({ ...state, actions: [...state.actions, action] })); }}><option value="">Action…</option>{actions.map((action) => <option key={action} value={action}>{action.replaceAll("-", " ")}</option>)}</select></label></div>
-        {selectedState.actions.map((action, index) => <ActionCard key={`${selectedState.id}-${index}`} action={action} index={index} animations={animations} onChange={(patch) => updateState(selectedState.id, (state) => ({ ...state, actions: state.actions.map((item, actionIndex) => actionIndex === index ? { ...item, ...patch } as SpineBehaviorAction : item) }))} onDelete={() => updateState(selectedState.id, (state) => ({ ...state, actions: state.actions.filter((_, actionIndex) => actionIndex !== index) }))} />)}
+        <div className="behavior-action-heading"><strong>Actions on enter</strong><label>Add<select value="" aria-label="Add state action" onChange={(event) => { if (!event.target.value) return; const action = initialAction(event.target.value as typeof actions[number]); const index = selectedState.actions.length; updateState(selectedState.id, (state) => ({ ...state, actions: [...state.actions, action] })); setSelection({ kind: "action", stateId: selectedState.id, phase: "enter", index }); event.target.value = ""; }}><option value="">Action…</option>{actions.map((action) => <option key={action} value={action}>{action.replaceAll("-", " ")}</option>)}</select></label></div>
+        <div className="behavior-selection-list" aria-label="State actions">{selectedState.actions.map((action, index) => <button key={`${selectedState.id}-${index}`} onClick={() => setSelection({ kind: "action", stateId: selectedState.id, phase: "enter", index })}><strong>{index + 1}. {action.type.replaceAll("-", " ")}</strong><small>{action.type === "play-animation" ? action.mainAnimation || action.faceAnimation || "No animation selected" : action.type === "pointer-follow" || action.type === "drag-bone" || action.type === "rotate-bone" ? action.targetBonePath || "Automatic target" : "Configure action"}</small></button>)}</div>
         <details className="behavior-cleanup"><summary>Exit and cancel cleanup</summary>
-          <label>Exit resource<select value="" aria-label="Add exit cleanup" onChange={(event) => { if (!event.target.value) return; const action = { type: "restore-resource", resource: event.target.value } as const; updateState(selectedState.id, (state) => ({ ...state, exitActions: [...state.exitActions, action] })); }}><option value="">Restore on exit…</option><option value="all">All owned resources</option><option value="animation-tracks">Animation tracks</option><option value="controlled-bones">Controlled bones</option><option value="audio">Audio</option><option value="subtitle">Subtitle</option></select></label>
-          <div>{selectedState.exitActions.map((action, index) => <span key={index}>{action.type === "restore-resource" ? action.resource : action.type}<button onClick={() => updateState(selectedState.id, (state) => ({ ...state, exitActions: state.exitActions.filter((_, actionIndex) => actionIndex !== index) }))}>×</button></span>)}</div>
+          <label>Exit resource<select value="" aria-label="Add exit cleanup" onChange={(event) => { if (!event.target.value) return; const action = { type: "restore-resource", resource: event.target.value } as const; const index = selectedState.exitActions.length; updateState(selectedState.id, (state) => ({ ...state, exitActions: [...state.exitActions, action] })); setSelection({ kind: "action", stateId: selectedState.id, phase: "exit", index }); event.target.value = ""; }}><option value="">Restore on exit…</option><option value="all">All owned resources</option><option value="animation-tracks">Animation tracks</option><option value="controlled-bones">Controlled bones</option><option value="audio">Audio</option><option value="subtitle">Subtitle</option></select></label>
+          <div className="behavior-selection-list" aria-label="Exit actions">{selectedState.exitActions.map((action, index) => <button key={index} onClick={() => setSelection({ kind: "action", stateId: selectedState.id, phase: "exit", index })}><strong>{action.type === "restore-resource" ? action.resource : action.type}</strong><small>On exit</small></button>)}</div>
           <label>Cancel behavior<select value={machine.cancelPolicy} onChange={(event) => commit({ ...machine, cancelPolicy: event.target.value as SpineBehaviorMachine["cancelPolicy"] })}><option value="run-exit">Run cleanup, then reset</option><option value="reset">Reset and release ownership</option></select></label>
-          <label>Cancel cleanup<select value="" aria-label="Add cancel cleanup" onChange={(event) => { if (!event.target.value) return; const action = { type: "restore-resource", resource: event.target.value } as const; updateState(selectedState.id, (state) => ({ ...state, cancelActions: [...state.cancelActions, action] })); event.target.value = ""; }}><option value="">Restore on cancel…</option><option value="all">All owned resources</option><option value="animation-tracks">Animation tracks</option><option value="controlled-bones">Controlled bones</option><option value="audio">Audio</option><option value="subtitle">Subtitle</option></select></label>
-          {selectedState.cancelActions.map((action, index) => <span key={index} className="behavior-cleanup-row">{action.type === "restore-resource" ? action.resource : action.type}<button onClick={() => updateState(selectedState.id, (state) => ({ ...state, cancelActions: state.cancelActions.filter((_, actionIndex) => actionIndex !== index) }))}>Remove</button></span>)}
+          <label>Cancel cleanup<select value="" aria-label="Add cancel cleanup" onChange={(event) => { if (!event.target.value) return; const action = { type: "restore-resource", resource: event.target.value } as const; const index = selectedState.cancelActions.length; updateState(selectedState.id, (state) => ({ ...state, cancelActions: [...state.cancelActions, action] })); setSelection({ kind: "action", stateId: selectedState.id, phase: "cancel", index }); event.target.value = ""; }}><option value="">Restore on cancel…</option><option value="all">All owned resources</option><option value="animation-tracks">Animation tracks</option><option value="controlled-bones">Controlled bones</option><option value="audio">Audio</option><option value="subtitle">Subtitle</option></select></label>
+          <div className="behavior-selection-list" aria-label="Cancel actions">{selectedState.cancelActions.map((action, index) => <button key={index} onClick={() => setSelection({ kind: "action", stateId: selectedState.id, phase: "cancel", index })}><strong>{action.type === "restore-resource" ? action.resource : action.type}</strong><small>On cancel</small></button>)}</div>
         </details>
+      </> : selectedActionState && selectedAction ? <>
+        <div className="behavior-inspector-heading"><strong>Action · {selection?.kind === "action" ? selection.phase : "enter"}</strong><small>{selectedAction.type.replaceAll("-", " ")}</small></div>
+        <ActionCard
+          action={selectedAction}
+          index={selection?.kind === "action" ? selection.index : 0}
+          animations={animations}
+          onChange={updateSelectedAction}
+          onDelete={() => {
+            if (selection?.kind !== "action") return;
+            const key = selection.phase === "enter" ? "actions" : selection.phase === "exit" ? "exitActions" : "cancelActions";
+            updateState(selectedActionState.id, (state) => ({ ...state, [key]: state[key].filter((_, index) => index !== selection.index) }));
+            setSelection({ kind: "state", id: selectedActionState.id });
+          }}
+        />
+        <button onClick={() => setSelection({ kind: "state", id: selectedActionState.id })}>Back to {selectedActionState.name}</button>
+      </> : selectedRegion ? <>
+        <div className="behavior-inspector-heading"><strong>Activation region</strong><small>{selectedRegion.id}</small></div>
+        <label>Name<input value={selectedRegion.name} onChange={(event) => updateActivationRegion(selectedRegion.id, { name: event.target.value })} /></label>
+        <label><span className="behavior-check"><input type="checkbox" checked={selectedRegion.enabled} onChange={(event) => updateActivationRegion(selectedRegion.id, { enabled: event.target.checked })} /> Enabled</span></label>
+        <label>Anchor bone path<input value={selectedRegion.anchorBone ?? ""} placeholder="root/Head" onChange={(event) => updateActivationRegion(selectedRegion.id, { anchorBone: event.target.value || null })} /></label>
+        <label>Shape<select value={selectedRegion.shape} onChange={(event) => updateActivationRegion(selectedRegion.id, { shape: event.target.value as SpineInteractionRegion["shape"] })}><option value="ellipse">Ellipse</option><option value="rectangle">Rectangle</option></select></label>
+        <div className="behavior-two-fields">
+          {(["offsetX", "offsetY", "radiusX", "radiusY"] as const).map((field) => <label key={field}>{field}<input type="number" min={field.startsWith("radius") ? 1 : undefined} value={selectedRegion[field]} onChange={(event) => updateActivationRegion(selectedRegion.id, { [field]: Number(event.target.value) })} /></label>)}
+        </div>
+        <label>Rotation °<input type="number" value={selectedRegion.rotation} onChange={(event) => updateActivationRegion(selectedRegion.id, { rotation: Number(event.target.value) })} /></label>
+        <button className="danger" onClick={() => {
+          if (machine.activation.kind !== "pointer-region") return;
+          commit({ ...machine, activation: { ...machine.activation, regions: machine.activation.regions.filter((region) => region.id !== selectedRegion.id) } });
+          setSelection({ kind: "machine", id: machine.id });
+        }}>Delete region</button>
+        <button onClick={() => setSelection({ kind: "machine", id: machine.id })}>Back to machine</button>
       </> : selectedTransition ? <>
         <div className="behavior-inspector-heading"><strong>Transition</strong><DestructiveMenu label="Transition actions" actionLabel="Delete transition" onDelete={() => { commit({ ...machine, transitions: machine.transitions.filter((item) => item.id !== selectedTransition.id) }); setSelection(null); }} /></div>
         <label>From<select value={selectedTransition.fromStateId} onChange={(event) => updateTransition(selectedTransition.id, { fromStateId: event.target.value })}>{machine.states.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label>
@@ -276,8 +340,17 @@ export function BehaviorEditor({ machines, animations, debug, testFeedback = [],
               : <><div className="behavior-two-fields"><label>Gesture<select value={machine.activation.trigger} onChange={(event) => commit({ ...machine, activation: { ...machine.activation, trigger: event.target.value as typeof machine.activation.trigger } })}><option value="press">Press</option><option value="hold">Hold</option><option value="drag">Drag</option></select></label><label>Entry event<select value={machine.activation.event} onChange={(event) => commit({ ...machine, activation: { ...machine.activation, event: event.target.value as SpineBehaviorEvent } })}>{events.map((event) => <option key={event} value={event}>{event.replaceAll("-", " ")}</option>)}</select></label></div>
                {machine.activation.trigger === "hold" && <label>Hold delay<input type="number" min="0" step="0.05" value={machine.activation.holdDelay} onChange={(event) => commit({ ...machine, activation: { ...machine.activation, holdDelay: Number(event.target.value) } })} /></label>}
                {machine.activation.trigger === "drag" && <label>Drag threshold<input type="number" min="0" step="1" value={machine.activation.dragThreshold} onChange={(event) => commit({ ...machine, activation: { ...machine.activation, dragThreshold: Number(event.target.value) } })} /></label>}</>}
-        {machine.activation.kind === "pointer-region" && <><div className="behavior-region-heading"><strong>Regions</strong><button onClick={() => commit({ ...machine, activation: { ...machine.activation, regions: [...machine.activation.regions, { id: makeId("region"), name: `Region ${machine.activation.regions.length + 1}`, enabled: true, shape: "ellipse", anchorBone: null, offsetX: 0, offsetY: 0, radiusX: 100, radiusY: 75, rotation: 0 }] } })}>Add</button></div>
-          {machine.activation.regions.map((region, index) => <details className="behavior-region-card behavior-region-details" key={region.id}><summary>{region.name || `Region ${index + 1}`}</summary><label>Name<input value={region.name} onChange={(event) => commit({ ...machine, activation: { ...machine.activation, regions: machine.activation.regions.map((item) => item.id === region.id ? { ...item, name: event.target.value } : item) } })} /></label><label><span className="behavior-check"><input type="checkbox" checked={region.enabled} onChange={(event) => commit({ ...machine, activation: { ...machine.activation, regions: machine.activation.regions.map((item) => item.id === region.id ? { ...item, enabled: event.target.checked } : item) } })} /> Enabled</span></label><label>Anchor bone path<input value={region.anchorBone ?? ""} placeholder="root/Head" onChange={(event) => commit({ ...machine, activation: { ...machine.activation, regions: machine.activation.regions.map((item) => item.id === region.id ? { ...item, anchorBone: event.target.value || null } : item) } })} /></label><label>Shape<select value={region.shape} onChange={(event) => commit({ ...machine, activation: { ...machine.activation, regions: machine.activation.regions.map((item) => item.id === region.id ? { ...item, shape: event.target.value as typeof region.shape } : item) } })}><option value="ellipse">Ellipse</option><option value="rectangle">Rectangle</option></select></label><div className="behavior-two-fields">{(["offsetX", "offsetY", "radiusX", "radiusY", "rotation"] as const).slice(0, 4).map((field) => <label key={field}>{field}<input type="number" value={region[field]} onChange={(event) => commit({ ...machine, activation: { ...machine.activation, regions: machine.activation.regions.map((item) => item.id === region.id ? { ...item, [field]: Number(event.target.value) } : item) } })} /></label>)}</div><label>Rotation °<input type="number" value={region.rotation} onChange={(event) => commit({ ...machine, activation: { ...machine.activation, regions: machine.activation.regions.map((item) => item.id === region.id ? { ...item, rotation: Number(event.target.value) } : item) } })} /></label><button className="danger" onClick={() => commit({ ...machine, activation: { ...machine.activation, regions: machine.activation.regions.filter((item) => item.id !== region.id) } })}>Remove region</button></details>)}</>}
+        {machine.activation.kind === "pointer-region" && <>
+          <div className="behavior-region-heading"><strong>Activation regions</strong><button onClick={() => {
+            const region = { id: makeId("region"), name: `Region ${machine.activation.regions.length + 1}`, enabled: true, shape: "ellipse" as const, anchorBone: null, offsetX: 0, offsetY: 0, radiusX: 100, radiusY: 75, rotation: 0 };
+            commit({ ...machine, activation: { ...machine.activation, regions: [...machine.activation.regions, region] } });
+            setSelection({ kind: "region", id: region.id });
+          }}>Add</button></div>
+          <div className="behavior-selection-list" aria-label="Activation regions">
+            {machine.activation.regions.map((region, index) => <button key={region.id} className={selection?.kind === "region" && selection.id === region.id ? "is-selected" : ""} aria-pressed={selection?.kind === "region" && selection.id === region.id} onClick={() => setSelection({ kind: "region", id: region.id })}><strong>{region.name || `Region ${index + 1}`}</strong><small>{region.shape} · {region.enabled ? "enabled" : "disabled"}</small></button>)}
+            {!machine.activation.regions.length && <p className="editor-muted">No activation regions yet.</p>}
+          </div>
+        </>}
       </>}
     </aside>
   </section>;

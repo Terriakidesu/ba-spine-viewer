@@ -3,6 +3,7 @@ import { createProject, EDITOR_SCHEMA_VERSION } from "./editorModel";
 import { captureEditorProjectBaseline, editorProjectDraftValue, pendingProjectForDirectory, prepareEditorProjectSave, readSavedEditorProject, saveManifestEditorProject, type SavedEditorProjectSource, type WritableEditorProjectSource } from "./editorProject";
 import { manifestPath, type SpineManifestRecord } from "@ba-spine/spine-runtime/spine/spineManifest";
 import { normalizeSpineInteractionProject } from "@ba-spine/spine-runtime/spine/spineInteraction";
+import { behaviorMachineWithLookFollowSettings } from "@ba-spine/spine-runtime/spine/spineBehavior";
 import { createSpineBehaviorPreset } from "./behaviorPresets";
 
 function sourceFromFiles(files: Record<string, string>) {
@@ -295,6 +296,59 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
   expect(reopened?.timeline.colorLayers[0]?.clips[0]).toMatchObject({ id: "fade", color: "#244466", start: 1, end: 7, fadeIn: 2, fadeOut: 1 });
   expect(reopened?.timeline).toMatchObject({ selectedColorLayerId: "wash", selectedColorClipId: "fade" });
   expect(reopened?.timeline.camera?.keyframes[0]).toMatchObject({ id: "wide-shot", time: 2, centerX: 40, centerY: 60, frameHeight: 400, easing: "smooth" });
+});
+
+test("manifest save and reopen prefer authored Look-follow behavior over stale compatibility defaults", async () => {
+  const record: SpineManifestRecord = {
+    path: "lobbies/LookFixture/manifest.json",
+    manifest: {
+      schemaVersion: 1,
+      id: "LookFixture",
+      entrySequence: null,
+      entryMode: "runtime-intro",
+      assets: { LookFixture: { atlas: manifestPath("lobby", "spine/a.atlas"), skeletons: [], pages: [], files: [] } },
+      sequences: {},
+      interactions: manifestPath("lobby", "interactions.json"),
+      workspace: manifestPath("root", ".editor/LookFixture.workspace.json"),
+    },
+  };
+  const files: Record<string, string> = {};
+  const source: WritableEditorProjectSource = {
+    readText: async (path) => files[path] ?? null,
+    saveText: async (path, content) => { files[path] = content; },
+    getManifest: async () => record,
+  };
+  const project = createProject("LookFixture", [], []);
+  const authoredLook = {
+    ...project.lookFollow,
+    enabled: false,
+    delay: 0.82,
+    targetBonePath: "root/LookTarget",
+    rangeX: 73,
+    rangeY: 41,
+    allowY: false,
+    smoothing: 19,
+    startAnimation: "LookStart_M",
+    faceEndAnimation: "LookEnd_A",
+  };
+  const lookMachine = project.behaviorMachines!.find((machine) => machine.id === "look-follow")!;
+  project.behaviorMachines = project.behaviorMachines!.map((machine) => machine.id === lookMachine.id
+    ? behaviorMachineWithLookFollowSettings({ ...machine, sourceLegacyInteractionId: null }, authoredLook)
+    : machine);
+  // Deliberately leave the compatibility field at defaults to reproduce the reported reset.
+
+  const saved = await saveManifestEditorProject(source, project);
+  const authoredFile = JSON.parse(files["lobbies/LookFixture/interactions.json"]!);
+  expect(authoredFile.lookFollow).toMatchObject(authoredLook);
+  expect(authoredFile.behaviorMachines.filter((machine: { id: string }) => machine.id === "look-follow")).toHaveLength(1);
+
+  const reopened = await readSavedEditorProject({
+    readText: async (path) => files[path] ?? null,
+    getManifest: async () => saved ? { ...record, manifest: saved.manifest } : null,
+  }, "LookFixture", () => {});
+  expect(reopened?.lookFollow).toMatchObject(authoredLook);
+  expect(reopened?.behaviorMachines?.filter((machine) => machine.id === "look-follow")).toHaveLength(1);
+  expect(reopened?.behaviorMachines?.find((machine) => machine.id === "look-follow")?.sourceLegacyInteractionId).toBeNull();
 });
 
 test("prepares manifest project output without writing and captures fixture baselines", async () => {

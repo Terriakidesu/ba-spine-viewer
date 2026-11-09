@@ -9,9 +9,9 @@ import {
   type SpineProgress,
 } from "@ba-spine/spine-runtime/spine/spineRuntime";
 import { DEFAULT_EFFECTS_STRENGTH } from "@ba-spine/spine-runtime/spine/spineEffects";
-import type { SpineLookFollowSettings } from "@ba-spine/spine-runtime/spine/spineInteraction";
+import { normalizeSpineLookFollowSettings, type SpineLookFollowSettings } from "@ba-spine/spine-runtime/spine/spineInteraction";
 import type { SpineBehaviorDebugMachine } from "@ba-spine/spine-runtime/spine/spineBehaviorRuntime";
-import { synchronizeLegacyBehaviorMachines, type SpineBehaviorEvent } from "@ba-spine/spine-runtime/spine/spineBehavior";
+import { behaviorMachineWithLegacyInteraction, behaviorMachineWithLookFollowSettings, findLookFollowBehaviorMachine, projectBehaviorMachinesToLegacyInteractions, spineLookFollowSettingsFromBehaviorMachines, synchronizeLegacyBehaviorMachines, type SpineBehaviorEvent } from "@ba-spine/spine-runtime/spine/spineBehavior";
 import { spineAudioPathCandidates } from "@ba-spine/spine-runtime/spine/spineAudio";
 import { hasLegacySquareCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import {
@@ -521,7 +521,9 @@ export function Editor() {
   const [lookTesting, setLookTesting] = useState(false);
   const [behaviorMode, setBehaviorMode] = useState(false);
   const [tool, setTool] = useState<"select" | "pan" | "draw">("select");
-  const [inspectorTab, setInspectorTab] = useState<"region" | "animation" | "movement" | "look">("region");
+  const [lookSettingsOpen, setLookSettingsOpen] = useState(false);
+  const [movementSettingsOpen, setMovementSettingsOpen] = useState(false);
+  const [interactionSettingsOpen, setInteractionSettingsOpen] = useState(true);
   lookTestingRef.current = lookTesting;
   const [showTestRegions, setShowTestRegions] = useState(true);
   const [previewDebug, setPreviewDebug] = useState<InteractionPreviewDebug>(() => previewRef.current.debug);
@@ -1550,10 +1552,60 @@ export function Editor() {
     }
   }
 
+  function synchronizeProjectAuthoring(previous: EditorProject, next: EditorProject): EditorProject {
+    const behaviorChanged = JSON.stringify(previous.behaviorMachines) !== JSON.stringify(next.behaviorMachines);
+    const interactionsChanged = JSON.stringify(previous.interactions) !== JSON.stringify(next.interactions);
+    const lookChanged = JSON.stringify(previous.lookFollow) !== JSON.stringify(next.lookFollow);
+    if (behaviorChanged) {
+      const lookFollow = normalizeSpineLookFollowSettings(spineLookFollowSettingsFromBehaviorMachines(next.lookFollow, next.behaviorMachines ?? []));
+      const nextMachineIds = new Set((next.behaviorMachines ?? []).map((machine) => machine.id));
+      const removedInteractionIds = new Set(previous.interactions
+        .filter((interaction) => previous.behaviorMachines?.some((machine) => machine.id === interaction.id) && !nextMachineIds.has(interaction.id))
+        .map((interaction) => interaction.id));
+      const baseInteractions = next.interactions.filter((interaction) => !removedInteractionIds.has(interaction.id));
+      const interactions = projectBehaviorMachinesToLegacyInteractions(baseInteractions, next.behaviorMachines ?? []);
+      const behaviorMachines = synchronizeLegacyBehaviorMachines(interactions, lookFollow, next.behaviorMachines);
+      const selectedInteractionId = interactions.some((interaction) => interaction.id === next.selectedInteractionId)
+        ? next.selectedInteractionId
+        : interactions[0]?.id ?? null;
+      const selectedInteraction = interactions.find((interaction) => interaction.id === selectedInteractionId);
+      return {
+        ...next,
+        lookFollow: normalizeSpineLookFollowSettings(spineLookFollowSettingsFromBehaviorMachines(lookFollow, behaviorMachines)),
+        interactions: projectBehaviorMachinesToLegacyInteractions(interactions, behaviorMachines),
+        behaviorMachines,
+        selectedInteractionId,
+        selectedRegionId: selectedInteraction?.regions.some((region) => region.id === next.selectedRegionId)
+          ? next.selectedRegionId
+          : selectedInteraction?.regions[0]?.id ?? null,
+      };
+    }
+    if (lookChanged) {
+      const machine = findLookFollowBehaviorMachine(next.behaviorMachines ?? []);
+      const machines = machine
+        ? next.behaviorMachines!.map((item) => item.id === machine.id ? behaviorMachineWithLookFollowSettings(item, next.lookFollow) : item)
+        : next.behaviorMachines;
+      return { ...next, behaviorMachines: synchronizeLegacyBehaviorMachines(next.interactions, next.lookFollow, machines) };
+    }
+    if (interactionsChanged) {
+      const removedInteractionIds = new Set(previous.interactions
+        .filter((interaction) => !next.interactions.some((item) => item.id === interaction.id))
+        .map((interaction) => interaction.id));
+      const machines = (next.behaviorMachines ?? []).filter((machine) => !removedInteractionIds.has(machine.id)).map((machine) => {
+        const interaction = next.interactions.find((item) => item.id === machine.id);
+        return interaction && machine.sourceLegacyInteractionId === null
+          ? behaviorMachineWithLegacyInteraction(machine, interaction)
+          : machine;
+      });
+      return { ...next, behaviorMachines: synchronizeLegacyBehaviorMachines(next.interactions, next.lookFollow, machines) };
+    }
+    return next;
+  }
+
   function mutate(mutator: (current: EditorProject) => EditorProject) {
     const current = projectRef.current;
     if (!current) return;
-    const next = mutator(cloneProject(current));
+    const next = synchronizeProjectAuthoring(current, mutator(cloneProject(current)));
     setUndo((items) => [...items.slice(-49), current]);
     setRedo([]);
     projectRef.current = next;
@@ -1564,7 +1616,7 @@ export function Editor() {
   function live(mutator: (current: EditorProject) => EditorProject) {
     const current = projectRef.current;
     if (!current) return;
-    const next = mutator(cloneProject(current));
+    const next = synchronizeProjectAuthoring(current, mutator(cloneProject(current)));
     projectRef.current = next;
     setProject(next);
     setSaveState("dirty");
@@ -1989,7 +2041,7 @@ export function Editor() {
     setTesting(false);
     setLookTesting(true);
     setTool("select");
-    setInspectorTab("look");
+    setLookSettingsOpen(true);
     setPlaying(true);
     setStatus("Look-follow test is ready. Press and hold the canvas, then move the pointer to preview gaze and limits.");
   }
@@ -2104,7 +2156,7 @@ export function Editor() {
     setWorkspace("interaction");
     setLayoutPreset("custom");
     setRightHidden(false);
-    setInspectorTab(warning.kind === "missing-animation" ? "animation" : warning.kind === "missing-bone" && !warning.regionId ? "movement" : "region");
+    if (warning.kind === "missing-bone" && !warning.regionId) setMovementSettingsOpen(true);
     setStatus(`Reviewing ${warning.kind.replaceAll("-", " ")}: ${warning.message}`);
   }
 
@@ -2134,7 +2186,6 @@ export function Editor() {
     if (target.kind === "interaction") contextSelectInteraction(target.interactionId);
     if (target.kind === "region") {
       contextSelectInteractionRegion(target.interactionId, target.regionId);
-      setInspectorTab("region");
     }
     setInteractionContextMenu({ x, y, target, returnFocusTo });
   }
@@ -2166,7 +2217,7 @@ export function Editor() {
     const interaction = current?.interactions.find((item) => item.id === target.interactionId);
     if (!interaction) return [];
     if (target.kind === "interaction") return [
-      { label: "Edit interaction properties", run: () => { contextSelectInteraction(interaction.id); setInspectorTab("region"); } },
+      { label: "Edit interaction properties", run: () => contextSelectInteraction(interaction.id) },
       { label: interaction.enabled ? "Disable interaction" : "Enable interaction", run: () => mutate((value) => ({ ...value, interactions: value.interactions.map((item) => item.id === interaction.id ? { ...item, enabled: !item.enabled } : item) })) },
       { label: "Duplicate interaction", run: () => duplicateInteractionById(interaction.id) },
       { label: "Test interaction", disabled: !frame, run: () => startSelectedTest(interaction) },
@@ -2175,7 +2226,7 @@ export function Editor() {
     const region = interaction.regions.find((item) => item.id === target.regionId);
     if (!region) return [];
     return [
-      { label: "Edit region properties", run: () => { contextSelectInteractionRegion(interaction.id, region.id); setInspectorTab("region"); } },
+      { label: "Edit region properties", run: () => contextSelectInteractionRegion(interaction.id, region.id) },
       { label: region.enabled ? "Disable region" : "Enable region", run: () => mutate((value) => ({ ...value, interactions: value.interactions.map((item) => item.id === interaction.id ? { ...item, regions: item.regions.map((entry) => entry.id === region.id ? { ...entry, enabled: !entry.enabled } : entry) } : item) })) },
       { label: "Duplicate region", run: () => duplicateRegionById(interaction.id, region.id) },
       { label: "Delete region", danger: true, separatorBefore: true, run: () => deleteRegionById(interaction.id, region.id) },
@@ -2255,7 +2306,7 @@ export function Editor() {
       if (end && Math.hypot(end.x - start.x, end.y - start.y) > 5) {
         const region = { ...blankRegion(undefined, selectedInteraction.regions.length), placement: "manual" as const, offsetX: (start.x + end.x) / 2, offsetY: (start.y + end.y) / 2, radiusX: Math.max(5, Math.abs(end.x - start.x) / 2), radiusY: Math.max(5, Math.abs(end.y - start.y) / 2) };
         mutate((current) => ({ ...current, selectedRegionId: region.id, interactions: current.interactions.map((item) => item.id === selectedInteraction.id ? { ...item, regions: [...item.regions, region] } : item) }));
-        setTool("select"); setInspectorTab("region"); setStatus("Region drawn. Drag to move; use the handles to resize or rotate.");
+        setTool("select"); setStatus("Region drawn. Drag to move; use the handles to resize or rotate.");
       }
     }
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -2522,8 +2573,8 @@ export function Editor() {
                 frame={frame}
                 project={testing && project ? { ...project, selectedRegionId: null, ...(showTestRegions ? {} : { interactions: project.interactions.map((interaction) => ({ ...interaction, regions: [] })) }) } : project}
                 viewSettings={renderedViewSettings}
-                lookFollowVisible={inspectorTab === "look" || lookTesting}
-                motionLimits={(testing || inspectorTab === "movement") && selectedInteraction ? {
+                lookFollowVisible={lookSettingsOpen || lookTesting}
+                motionLimits={(testing || movementSettingsOpen) && selectedInteraction ? {
                   targetBonePath: testing ? previewDebug.targetBonePath ?? selectedInteraction.followTargetBone : selectedInteraction.followTargetBone,
                   limitX: selectedInteraction.limitX,
                   limitY: selectedInteraction.limitY,
@@ -2595,8 +2646,7 @@ export function Editor() {
           </div>
         </section>
 
-        <aside className={`editor-panel editor-right-panel tab-${inspectorTab}`} hidden={!assetLoaded || rightHidden}>
-            <nav className="editor-tabs" aria-label="Inspector sections">{(["region", "animation", "movement", "look"] as const).map((tab) => <button key={tab} aria-pressed={inspectorTab === tab} onClick={(event) => { setInspectorTab(tab); event.currentTarget.closest("aside")?.scrollTo({ top: 0 }); }}>{tab === "region" ? "Region" : tab === "animation" ? "Animation" : tab === "movement" ? "Movement" : "Look"}</button>)}</nav>
+        <aside className="editor-panel editor-right-panel" hidden={!assetLoaded || rightHidden}>
           <section className="editor-section editor-interactions-section">
              <div className="editor-section-title"><strong>Interactions</strong><button onClick={addInteraction} disabled={!project || !frame}><IconPlus /> Add</button></div>
             <input className="editor-search" value={interactionSearch} onChange={(event) => setInteractionSearch(event.target.value)} placeholder="Filter interactions…" />
@@ -2604,18 +2654,18 @@ export function Editor() {
               {visibleInteractions.map((item) => <button key={item.id} className={item.id === project?.selectedInteractionId ? "is-selected" : ""} aria-haspopup="menu" onClick={() => selectInteraction(item.id)} onContextMenu={(event) => openInteractionContextMenu(event, { kind: "interaction", interactionId: item.id })} onKeyDown={(event) => openInteractionKeyboardMenu(event, { kind: "interaction", interactionId: item.id })}><i style={{ background: item.color }} />{item.name}<small>{item.regions.length} region{item.regions.length === 1 ? "" : "s"}</small></button>)}
             </div>
           </section>
-          <details ref={validationDetailsRef} className={`editor-section editor-validation${validationWarnings.length ? " has-warnings" : ""}`}>
+             <details ref={validationDetailsRef} className={`editor-section editor-validation${validationWarnings.length ? " has-warnings" : ""}`}>
              <summary>{validationWarnings.length ? `${validationWarnings.length} checks to review` : <><IconCheck /> Project checks passed</>}</summary>
             <div className="editor-section-title"><strong>Validation</strong><span>{validationWarnings.length ? `${validationWarnings.length} warning${validationWarnings.length === 1 ? "" : "s"}` : "Ready"}</span></div>
             {validationWarnings.length === 0
               ? <p className="editor-muted">No missing animations, bones, or overlapping regions.</p>
               : <div className="editor-validation-list">{validationWarnings.map((warning) => <button key={warning.id} type="button" className="editor-validation-issue" onClick={() => navigateToValidationIssue(warning)} title="Select this interaction and open the relevant inspector section"><b>{warning.kind.replaceAll("-", " ")}</b><span>{warning.message}</span><small>Go to issue →</small></button>)}</div>}
           </details>
-            {selectedInteraction && <section className="editor-section editor-inspector">
+             {selectedInteraction && <section className="editor-section editor-inspector">
               <div className="editor-section-title"><strong>Interaction</strong><span><button onClick={duplicateInteraction} title="Duplicate interaction and its regions">Duplicate</button> <button className="danger" onClick={() => { if (confirm("Delete this interaction and all its regions?")) deleteInteraction(); }}>Delete</button></span></div>
               <InteractionSummary name={selectedInteraction.name} trigger={selectedInteraction.trigger} color={selectedInteraction.color} enabled={selectedInteraction.enabled} onEnabledChange={(enabled) => updateInteraction("enabled", enabled)} />
-              <details className="editor-interaction-settings" open={inspectorTab !== "region"}>
-                <summary>Interaction settings</summary>
+              <details className="editor-interaction-settings" open={interactionSettingsOpen} onToggle={(event) => setInteractionSettingsOpen(event.currentTarget.open)}>
+                <summary>Animation and movement</summary>
                 <div className="editor-settings-body">
               <label>Name<input value={selectedInteraction.name} onChange={(event) => updateInteraction("name", event.target.value)} /></label>
               <div className="editor-two-fields"><label>Trigger<select value={selectedInteraction.trigger} onChange={(event) => updateInteraction("trigger", event.target.value)}><option value="press">Press</option><option value="hold">Hold</option><option value="drag">Drag</option></select></label><label>Color<input type="color" value={selectedInteraction.color} onChange={(event) => updateInteraction("color", event.target.value)} /></label></div>
@@ -2646,7 +2696,9 @@ export function Editor() {
                />
                <button className="editor-preview-button" onClick={toggleTest}>{testing ? "Exit test" : "Test full interaction"}</button>
                </div>
-              <div className="editor-movement-fields">
+               <details className="editor-movement-settings" open={movementSettingsOpen} onToggle={(event) => setMovementSettingsOpen(event.currentTarget.open)}>
+                <summary>Movement response</summary>
+                <div className="editor-movement-fields">
                <div className="editor-subheading">Drag response</div>
                <p className="editor-muted">Movement is relative to the initial press. Limits are in the target bone's parent space.</p>
               <BonePicker
@@ -2676,9 +2728,10 @@ export function Editor() {
                <div className="editor-subheading">Release return</div>
                <p className="editor-muted">When released, the target eases from its current offset back to the animated bone pose while the End phase plays.</p>
                  <div className="editor-two-fields"><NumberField label="Return duration" value={selectedInteraction.returnDuration} min={0.05} max={2} step={0.05} unit="s" onCommit={(value) => updateInteraction("returnDuration", value)} /><label>Return easing<select aria-label="Return easing" value={selectedInteraction.returnEasing} onChange={(event) => updateInteraction("returnEasing", event.target.value as EditorInteraction["returnEasing"])}><option value="linear">Linear</option><option value="ease-out">Ease out</option><option value="ease-in-out">Ease in / out</option></select></label></div>
-               </div>
-               </div>
-             </details>
+                </div>
+               </details>
+                </div>
+              </details>
               <div className="editor-region-fields">
               <div className="editor-subheading editor-region-heading"><span>Hit regions</span><button onClick={addRegion}><IconPlus /> Add region</button></div>
              <div className="editor-region-list">
@@ -2687,7 +2740,9 @@ export function Editor() {
              </div>
               </div>
             </section>}
-            {inspectorTab === "look" && project && <section className="editor-section editor-look-inspector">
+            {project && <details className="editor-section editor-look-settings" open={lookSettingsOpen} onToggle={(event) => setLookSettingsOpen(event.currentTarget.open)}>
+              <summary>Look-follow</summary>
+              <section className="editor-look-inspector">
               <div className="editor-section-title">
                 <strong>Look-follow</strong>
                 <label className="timeline-inline-check"><input type="checkbox" checked={project.lookFollow.enabled} onChange={(event) => updateLookFollow("enabled", event.target.checked)} /> Enabled</label>
@@ -2741,8 +2796,9 @@ export function Editor() {
               <button type="button" className="editor-preview-button" disabled={lookTesting ? false : !project.lookFollow.enabled || !frame?.lookFollow} onClick={toggleLookFollowTest}>
                 <IconEye /> {lookTesting ? "Stop look preview" : "Preview look-follow"}
               </button>
-            </section>}
-            {inspectorTab === "region" && selectedRegion && selectedInteraction && <section className="editor-section editor-inspector">
+              </section>
+            </details>}
+            {selectedRegion && selectedInteraction && <section className="editor-section editor-inspector">
              <div className="editor-section-title"><strong>Region</strong><span><button onClick={duplicateRegion}>Duplicate</button> <button className="danger" onClick={deleteRegion}>Delete</button></span></div>
             <label>Name<input value={selectedRegion.name} onChange={(event) => updateRegion("name", event.target.value)} /></label>
              <div className="editor-two-fields">

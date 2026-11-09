@@ -490,17 +490,192 @@ export function migrateLegacyInteractionsToBehaviors(
   return normalizeSpineBehaviorMachines(machines);
 }
 
-/** Keep compatibility-generated machines in step with the still-editable legacy Inspector. */
+/** Locate the designated compatibility Look-follow machine, including after it is authored. */
+export function findLookFollowBehaviorMachine(machines: readonly SpineBehaviorMachine[]): SpineBehaviorMachine | null {
+  return machines.find((machine) => machine.sourceLegacyInteractionId === "$legacy-look-follow")
+    ?? machines.find((machine) => /^look-follow(?:-\d+)?$/i.test(machine.id))
+    ?? machines.find((machine) => machine.name.trim().toLocaleLowerCase() === "look-follow")
+    ?? null;
+}
+
+/** Read the friendly Look-follow values from the canonical behavior machine. */
+export function spineLookFollowSettingsFromBehaviorMachines(
+  fallback: SpineLookFollowSettings,
+  machines: readonly SpineBehaviorMachine[],
+): SpineLookFollowSettings {
+  const machine = findLookFollowBehaviorMachine(machines);
+  if (!machine || machine.sourceLegacyInteractionId !== null) return fallback;
+  const pointerAction = machine.states.flatMap((state) => state.actions).find((action) => action.type === "pointer-follow");
+  const startAction = machine.states.flatMap((state) => state.actions).find((action) => action.type === "play-animation" && action.fallbackProfile === "look-start");
+  const endAction = machine.states.flatMap((state) => state.actions).find((action) => action.type === "play-animation" && action.fallbackProfile === "look-end");
+  return {
+    ...fallback,
+    enabled: machine.enabled,
+    delay: machine.activation.holdDelay,
+    ...(pointerAction?.type === "pointer-follow" ? {
+      targetBonePath: pointerAction.targetBonePath,
+      allowX: pointerAction.allowX,
+      allowY: pointerAction.allowY,
+      rangeX: pointerAction.rangeX,
+      rangeY: pointerAction.rangeY,
+      smoothing: pointerAction.smoothing,
+    } : {}),
+    ...(startAction?.type === "play-animation" ? {
+      startAnimation: startAction.mainAnimation ?? "",
+      faceStartAnimation: startAction.faceAnimation ?? "",
+    } : {}),
+    ...(endAction?.type === "play-animation" ? {
+      endAnimation: endAction.mainAnimation ?? "",
+      faceEndAnimation: endAction.faceAnimation ?? "",
+    } : {}),
+  };
+}
+
+/** Apply friendly Look-follow edits to the same machine while retaining other authored machine data. */
+export function behaviorMachineWithLookFollowSettings(
+  machine: SpineBehaviorMachine,
+  settings: SpineLookFollowSettings,
+): SpineBehaviorMachine {
+  const states = machine.states.map((state) => {
+    let foundPointer = false;
+    let foundStart = false;
+    let foundEnd = false;
+    const actions = state.actions.map((action): SpineBehaviorAction => {
+      if (action.type === "pointer-follow") {
+        foundPointer = true;
+        return { ...action, targetBonePath: settings.targetBonePath, allowX: settings.allowX, allowY: settings.allowY, rangeX: settings.rangeX, rangeY: settings.rangeY, smoothing: settings.smoothing };
+      }
+      if (action.type === "play-animation" && action.fallbackProfile === "look-start") {
+        foundStart = true;
+        return { ...action, mainAnimation: settings.startAnimation || null, faceAnimation: settings.faceStartAnimation || null };
+      }
+      if (action.type === "play-animation" && action.fallbackProfile === "look-end") {
+        foundEnd = true;
+        return { ...action, mainAnimation: settings.endAnimation || null, faceAnimation: settings.faceEndAnimation || null };
+      }
+      return action;
+    });
+    if (state.id === "following" && !foundPointer) actions.push({ type: "pointer-follow", targetBonePath: settings.targetBonePath, allowX: settings.allowX, allowY: settings.allowY, rangeX: settings.rangeX, rangeY: settings.rangeY, smoothing: settings.smoothing });
+    if (state.id === "following" && !foundStart) actions.unshift(animationAction(settings.startAnimation, settings.faceStartAnimation, false, "look-start"));
+    if (state.id === "returning" && !foundEnd) actions.unshift(animationAction(settings.endAnimation, settings.faceEndAnimation, false, "look-end"));
+    return { ...state, actions };
+  });
+  const normalized = normalizeSpineBehaviorMachine({
+    ...machine,
+    enabled: settings.enabled,
+    activation: { ...machine.activation, kind: "pointer-canvas", trigger: "hold", holdDelay: settings.delay },
+    states,
+  });
+  return normalized ?? machine;
+}
+
+/** Project the compatibility subset of authored machines back into the friendly interaction controls. */
+export function projectBehaviorMachinesToLegacyInteractions<T extends SpineAuthoredInteraction>(
+  interactions: readonly T[],
+  machines: readonly SpineBehaviorMachine[],
+): T[] {
+  return interactions.map((interaction) => {
+    const machine = machines.find((item) => item.id === interaction.id && item.sourceLegacyInteractionId === null);
+    if (!machine) return interaction;
+    const starting = machine.states.find((state) => state.id === "starting");
+    const active = machine.states.find((state) => state.id === "active");
+    const releasing = machine.states.find((state) => state.id === "releasing");
+    const start = starting?.actions.find((action) => action.type === "play-animation");
+    const follow = active?.actions.find((action) => action.type === "play-animation");
+    const release = releasing?.actions.find((action) => action.type === "play-animation");
+    const drag = active?.actions.find((action) => action.type === "drag-bone");
+    const rotate = active?.actions.find((action) => action.type === "rotate-bone");
+    const transitionMix = (suffix: string, fallback: number | undefined) => machine.transitions.find((item) => item.id === `${interaction.id}-${suffix}`)?.blendDuration ?? fallback;
+    return {
+      ...interaction,
+      name: machine.name,
+      enabled: machine.enabled,
+      ...(machine.activation.kind === "pointer-region" ? {
+        trigger: machine.activation.trigger,
+        regions: machine.activation.regions,
+      } : {}),
+      ...(start?.type === "play-animation" ? { startAnimation: start.mainAnimation ?? "", faceStartAnimation: start.faceAnimation ?? "" } : {}),
+      ...(follow?.type === "play-animation" ? { followAnimation: follow.mainAnimation ?? "", faceFollowAnimation: follow.faceAnimation ?? "" } : {}),
+      ...(release?.type === "play-animation" ? { endAnimation: release.mainAnimation ?? "", faceEndAnimation: release.faceAnimation ?? "" } : {}),
+      ...(drag?.type === "drag-bone" ? {
+        followTargetBone: drag.targetBonePath,
+        sensitivity: drag.sensitivity,
+        limitX: drag.limitX,
+        limitY: drag.limitY,
+        smoothing: drag.smoothing,
+        returnDuration: drag.returnDuration,
+        allowX: drag.allowX,
+        allowY: drag.allowY,
+      } : {}),
+      ...(active ? (rotate?.type === "rotate-bone"
+        ? { rotationEnabled: true, rotationAxis: rotate.axis, rotationMin: rotate.minimum, rotationMax: rotate.maximum }
+        : { rotationEnabled: false }) : {}),
+      startMixDuration: transitionMix("press", interaction.startMixDuration),
+      followMixDuration: transitionMix("start-active", interaction.followMixDuration),
+      releaseMixDuration: transitionMix("release", interaction.releaseMixDuration),
+    } as T;
+  });
+}
+
+/** Apply friendly interaction edits to their canonical machine without dropping additional authored actions. */
+export function behaviorMachineWithLegacyInteraction(
+  machine: SpineBehaviorMachine,
+  interaction: SpineAuthoredInteraction,
+): SpineBehaviorMachine {
+  const template = legacyInteractionMachine(interaction, 0);
+  const states = machine.states.map((state) => {
+    const authoredTemplate = template.states.find((item) => item.id === state.id);
+    if (!authoredTemplate) return state;
+    const actions = [...state.actions];
+    for (const type of ["play-animation", "drag-bone", "rotate-bone"] as const) {
+      const templateActions = authoredTemplate.actions.filter((action) => action.type === type);
+      const authoredIndex = actions.findIndex((action) => action.type === type);
+      if (templateActions.length > 0) {
+        if (authoredIndex >= 0) actions[authoredIndex] = templateActions[0]!;
+        else actions.push(...templateActions);
+      } else if (type === "rotate-bone" && authoredIndex >= 0) {
+        actions.splice(authoredIndex, 1);
+      }
+    }
+    return { ...state, actions };
+  });
+  const templateTransitions = new Map(template.transitions.map((transition) => [transition.id, transition]));
+  const transitions = machine.transitions.map((transition) => {
+    const friendly = templateTransitions.get(transition.id);
+    return friendly ? { ...transition, blendDuration: friendly.blendDuration } : transition;
+  });
+  const normalized = normalizeSpineBehaviorMachine({
+    ...machine,
+    name: template.name,
+    enabled: template.enabled,
+    activation: template.activation,
+    resourceClaims: [...new Set([...machine.resourceClaims, ...template.resourceClaims])],
+    states,
+    transitions,
+  });
+  return normalized ?? machine;
+}
+
+/** Keep compatibility-generated machines in step with the still-editable friendly controls. */
 export function synchronizeLegacyBehaviorMachines(
   interactions: readonly SpineAuthoredInteraction[],
   lookFollow: SpineLookFollowSettings,
   existing: readonly SpineBehaviorMachine[] = [],
 ): SpineBehaviorMachine[] {
   const authored = existing.filter((machine) => machine.sourceLegacyInteractionId === null);
-  return normalizeSpineBehaviorMachines([
-    ...migrateLegacyInteractionsToBehaviors(interactions, lookFollow),
-    ...authored,
-  ]);
+  const authoredLook = findLookFollowBehaviorMachine(authored);
+  const generated = migrateLegacyInteractionsToBehaviors(interactions, authoredLook ? undefined : lookFollow);
+  const synchronized = generated.map((machine) => {
+    const authoredVersion = authored.find((item) => item.id === machine.id);
+    return authoredVersion ?? machine;
+  });
+  const includedIds = new Set(synchronized.map((machine) => machine.id));
+  for (const machine of authored) {
+    if (includedIds.has(machine.id)) continue;
+    synchronized.push(machine);
+    includedIds.add(machine.id);
+  }
+  return normalizeSpineBehaviorMachines(synchronized);
 }
 
 export interface SpineBehaviorTransitionContext {

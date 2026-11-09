@@ -118,7 +118,33 @@ describe("declarative behavior machines", () => {
     expect(old.behaviorMachines?.find((item) => item.id === "pat-head")?.sourceLegacyInteractionId).toBe("pat-head");
     const authored = machine("custom", 4, "track:9");
     const newProject = normalizeSpineInteractionProject({ ...old, behaviorMachines: [authored] })!;
-    expect(newProject.behaviorMachines?.map((item) => item.id)).toEqual(["custom"]);
+    expect(newProject.behaviorMachines?.map((item) => item.id)).toEqual(["pat-head", "look-follow", "custom"]);
+  });
+
+  test("legacy Look-follow migration carries every authored setting into the generated machine", () => {
+    const authored = {
+      ...DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS,
+      enabled: false,
+      targetBonePath: "root/EyeTarget",
+      delay: 0.76,
+      rangeX: 92,
+      rangeY: 37,
+      smoothing: 21,
+      allowX: false,
+      allowY: true,
+      startAnimation: "LookStart_M",
+      faceStartAnimation: "LookStart_A",
+      endAnimation: "LookEnd_M",
+      faceEndAnimation: "LookEnd_A",
+    };
+    const look = migrateLegacyInteractionsToBehaviors([legacyPat], authored).find((item) => item.id === "look-follow")!;
+    const follow = look.states.find((state) => state.id === "following")!;
+    expect(look).toMatchObject({ enabled: false, sourceLegacyInteractionId: "$legacy-look-follow", activation: { holdDelay: 0.76 } });
+    expect(follow.actions.find((action) => action.type === "pointer-follow")).toMatchObject({
+      targetBonePath: "root/EyeTarget", rangeX: 92, rangeY: 37, smoothing: 21, allowX: false, allowY: true,
+    });
+    expect(follow.actions.find((action) => action.type === "play-animation" && action.fallbackProfile === "look-start")).toMatchObject({ mainAnimation: "LookStart_M", faceAnimation: "LookStart_A" });
+    expect(look.states.find((state) => state.id === "returning")?.actions[0]).toMatchObject({ mainAnimation: "LookEnd_M", faceAnimation: "LookEnd_A" });
   });
 
   test("legacy synchronization updates generated machines and retains independently authored machines", () => {

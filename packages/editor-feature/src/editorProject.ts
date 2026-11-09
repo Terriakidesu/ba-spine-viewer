@@ -4,7 +4,8 @@ import { manifestProjectValue, readManifestProjectData } from "@ba-spine/spine-r
 import { SPINE_MANIFEST_SCHEMA_VERSION, manifestPath, manifestReferenceCandidates, sequencePath, type SpineManifest, type SpineManifestRecord, type SpineManifestPath } from "@ba-spine/spine-runtime/spine/spineManifest";
 import { contentVersion } from "@ba-spine/platform-contracts/contentVersion";
 import { hasLegacySquareCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
-import { synchronizeLegacyBehaviorMachines } from "@ba-spine/spine-runtime/spine/spineBehavior";
+import { projectBehaviorMachinesToLegacyInteractions, spineLookFollowSettingsFromBehaviorMachines, synchronizeLegacyBehaviorMachines } from "@ba-spine/spine-runtime/spine/spineBehavior";
+import { normalizeSpineLookFollowSettings } from "@ba-spine/spine-runtime/spine/spineInteraction";
 
 export interface SavedEditorProjectSource {
   readText: (path: string) => Promise<string | null>;
@@ -75,9 +76,20 @@ function projectSequences(project: EditorProject): Record<string, EditorProject[
   return sequences;
 }
 
+function canonicalBehaviorData(project: EditorProject) {
+  const lookFollow = normalizeSpineLookFollowSettings(spineLookFollowSettingsFromBehaviorMachines(project.lookFollow, project.behaviorMachines ?? []));
+  const interactions = projectBehaviorMachinesToLegacyInteractions(project.interactions, project.behaviorMachines ?? []);
+  const behaviorMachines = synchronizeLegacyBehaviorMachines(interactions, lookFollow, project.behaviorMachines);
+  return {
+    lookFollow: normalizeSpineLookFollowSettings(spineLookFollowSettingsFromBehaviorMachines(lookFollow, behaviorMachines)),
+    interactions: projectBehaviorMachinesToLegacyInteractions(interactions, behaviorMachines),
+    behaviorMachines,
+  };
+}
+
 /** Convert the live Editor model to the read-only project shape consumed by Viewer. */
 export function editorProjectDraftValue(project: EditorProject): Record<string, unknown> {
-  const behaviorMachines = synchronizeLegacyBehaviorMachines(project.interactions, project.lookFollow, project.behaviorMachines);
+  const canonical = canonicalBehaviorData(project);
   return {
     schemaVersion: project.schemaVersion,
     name: project.name,
@@ -87,9 +99,9 @@ export function editorProjectDraftValue(project: EditorProject): Record<string, 
     deletedSequenceIds: project.deletedSequenceIds,
     talkMixDuration: project.talkMixDuration,
     effectsStrength: project.effectsStrength,
-    lookFollow: project.lookFollow,
-    interactions: project.interactions,
-    behaviorMachines,
+    lookFollow: canonical.lookFollow,
+    interactions: canonical.interactions,
+    behaviorMachines: canonical.behaviorMachines,
     behaviorGraphLayouts: project.behaviorGraphLayouts,
     timeline: project.timeline,
     sequences: projectSequences(project),
@@ -149,7 +161,7 @@ export async function prepareManifestEditorProjectSave(source: SavedEditorProjec
   let entrySequence = project.entrySequence !== undefined ? project.entrySequence : current.entrySequence;
   if (entrySequence === null && sequences.opening && project.timeline.sequenceId === "opening") entrySequence = "opening";
   const interactions = current.interactions ?? manifestPath("lobby", "interactions.json");
-  const behaviorMachines = synchronizeLegacyBehaviorMachines(project.interactions, project.lookFollow, project.behaviorMachines);
+  const canonical = canonicalBehaviorData(project);
   const workspace = current.workspace ?? manifestPath("lobby", ".editor/workspace.json");
   const nextManifest: SpineManifest = {
     ...current,
@@ -168,9 +180,9 @@ export async function prepareManifestEditorProjectSave(source: SavedEditorProjec
     assetDirectory: project.assetDirectory,
     talkMixDuration: project.talkMixDuration,
     effectsStrength: project.effectsStrength,
-    lookFollow: project.lookFollow,
-    interactions: project.interactions,
-    behaviorMachines,
+    lookFollow: canonical.lookFollow,
+    interactions: canonical.interactions,
+    behaviorMachines: canonical.behaviorMachines,
     behaviorGraphLayouts: project.behaviorGraphLayouts,
     sequenceOrder: project.sequenceOrder,
     deletedSequenceIds: project.deletedSequenceIds,
@@ -210,7 +222,7 @@ export async function prepareEditorProjectSave(source: SavedEditorProjectSource,
     manifestSave: null,
     files: [{
       path: editorProjectPath(project.assetDirectory),
-      content: `${JSON.stringify({ ...project, behaviorMachines: synchronizeLegacyBehaviorMachines(project.interactions, project.lookFollow, project.behaviorMachines) }, null, 2)}\n`,
+      content: `${JSON.stringify({ ...project, ...canonicalBehaviorData(project) }, null, 2)}\n`,
     }],
   };
 }

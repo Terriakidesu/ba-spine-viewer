@@ -263,83 +263,179 @@ export function commitBehaviorNodeDrag(session: BehaviorNodeDragSession, commit:
   return true;
 }
 
-function pointForState(positions: Record<string, BehaviorGraphPoint>, stateId: string): BehaviorGraphPoint | null {
-  return positions[stateId] ?? null;
+type BehaviorNodeSide = "left" | "right" | "top" | "bottom";
+
+interface BehaviorRouteCandidate {
+  path: string;
+  labelX: number;
+  labelY: number;
+  blocked: boolean;
+  score: number;
+}
+
+function nodeCenter(point: BehaviorGraphPoint): BehaviorGraphPoint {
+  return { x: point.x + BEHAVIOR_NODE_WIDTH / 2, y: point.y + BEHAVIOR_NODE_HEIGHT / 2 };
+}
+
+function sidePoint(point: BehaviorGraphPoint, side: BehaviorNodeSide, lane: number): BehaviorGraphPoint {
+  switch (side) {
+    case "left": return { x: point.x, y: point.y + BEHAVIOR_NODE_HEIGHT / 2 + lane };
+    case "right": return { x: point.x + BEHAVIOR_NODE_WIDTH, y: point.y + BEHAVIOR_NODE_HEIGHT / 2 + lane };
+    case "top": return { x: point.x + BEHAVIOR_NODE_WIDTH / 2 + lane, y: point.y };
+    case "bottom": return { x: point.x + BEHAVIOR_NODE_WIDTH / 2 + lane, y: point.y + BEHAVIOR_NODE_HEIGHT };
+  }
+}
+
+function outward(side: BehaviorNodeSide): BehaviorGraphPoint {
+  switch (side) {
+    case "left": return { x: -1, y: 0 };
+    case "right": return { x: 1, y: 0 };
+    case "top": return { x: 0, y: -1 };
+    case "bottom": return { x: 0, y: 1 };
+  }
+}
+
+function bezierPoint(start: BehaviorGraphPoint, first: BehaviorGraphPoint, second: BehaviorGraphPoint, end: BehaviorGraphPoint, t: number): BehaviorGraphPoint {
+  const inverse = 1 - t;
+  return {
+    x: inverse ** 3 * start.x + 3 * inverse ** 2 * t * first.x + 3 * inverse * t ** 2 * second.x + t ** 3 * end.x,
+    y: inverse ** 3 * start.y + 3 * inverse ** 2 * t * first.y + 3 * inverse * t ** 2 * second.y + t ** 3 * end.y,
+  };
+}
+
+function curveCrossesNode(start: BehaviorGraphPoint, first: BehaviorGraphPoint, second: BehaviorGraphPoint, end: BehaviorGraphPoint, positions: Record<string, BehaviorGraphPoint>, sourceId: string, targetId: string): boolean {
+  for (let sample = 1; sample < 32; sample += 1) {
+    const point = bezierPoint(start, first, second, end, sample / 32);
+    for (const [stateId, node] of Object.entries(positions)) {
+      if (stateId === sourceId || stateId === targetId) continue;
+      if (point.x >= node.x - 8 && point.x <= node.x + BEHAVIOR_NODE_WIDTH + 8
+        && point.y >= node.y - 8 && point.y <= node.y + BEHAVIOR_NODE_HEIGHT + 8) return true;
+    }
+  }
+  return false;
+}
+
+function routeCandidate(
+  from: BehaviorGraphPoint,
+  to: BehaviorGraphPoint,
+  sourceId: string,
+  targetId: string,
+  sourceSide: BehaviorNodeSide,
+  targetSide: BehaviorNodeSide,
+  lane: number,
+  positions: Record<string, BehaviorGraphPoint>,
+  priority: number,
+): BehaviorRouteCandidate {
+  const sideLane = Math.max(-34, Math.min(34, lane));
+  const start = sidePoint(from, sourceSide, sideLane);
+  const end = sidePoint(to, targetSide, sideLane);
+  const sourceNormal = outward(sourceSide);
+  const targetNormal = outward(targetSide);
+  const centerDistance = Math.hypot(nodeCenter(to).x - nodeCenter(from).x, nodeCenter(to).y - nodeCenter(from).y);
+  const controlLength = Math.max(34, Math.min(140, centerDistance * 0.36));
+  const first = { x: start.x + sourceNormal.x * controlLength, y: start.y + sourceNormal.y * controlLength };
+  const second = { x: end.x + targetNormal.x * controlLength, y: end.y + targetNormal.y * controlLength };
+  const middle = bezierPoint(start, first, second, end, 0.5);
+  return {
+    path: `M ${start.x} ${start.y} C ${first.x} ${first.y}, ${second.x} ${second.y}, ${end.x} ${end.y}`,
+    labelX: middle.x,
+    labelY: middle.y - 10,
+    blocked: curveCrossesNode(start, first, second, end, positions, sourceId, targetId),
+    score: priority * 10000 + centerDistance + Math.abs(lane) * 0.25,
+  };
+}
+
+function facingSidePairs(from: BehaviorGraphPoint, to: BehaviorGraphPoint): Array<[BehaviorNodeSide, BehaviorNodeSide]> {
+  const source = nodeCenter(from), target = nodeCenter(to);
+  const deltaX = target.x - source.x;
+  const deltaY = target.y - source.y;
+  // Compare the center vector against each box's dimensions, so a diagonal edge
+  // chooses the side it approaches most directly instead of defaulting downward.
+  if (Math.abs(deltaX) / BEHAVIOR_NODE_WIDTH >= Math.abs(deltaY) / BEHAVIOR_NODE_HEIGHT) {
+    const horizontal: [BehaviorNodeSide, BehaviorNodeSide] = deltaX >= 0 ? ["right", "left"] : ["left", "right"];
+    const vertical: [BehaviorNodeSide, BehaviorNodeSide] = deltaY >= 0 ? ["bottom", "top"] : ["top", "bottom"];
+    return [horizontal, vertical];
+  }
+  const vertical: [BehaviorNodeSide, BehaviorNodeSide] = deltaY >= 0 ? ["bottom", "top"] : ["top", "bottom"];
+  const horizontal: [BehaviorNodeSide, BehaviorNodeSide] = deltaX >= 0 ? ["right", "left"] : ["left", "right"];
+  return [vertical, horizontal];
+}
+
+function detourCandidate(
+  from: BehaviorGraphPoint,
+  to: BehaviorGraphPoint,
+  sourceId: string,
+  targetId: string,
+  sourceSide: BehaviorNodeSide,
+  targetSide: BehaviorNodeSide,
+  lane: number,
+  positions: Record<string, BehaviorGraphPoint>,
+): BehaviorRouteCandidate {
+  const firstTry = routeCandidate(from, to, sourceId, targetId, sourceSide, targetSide, lane, positions, 2);
+  if (!firstTry.blocked) return firstTry;
+  const start = sidePoint(from, sourceSide, Math.max(-34, Math.min(34, lane)));
+  const end = sidePoint(to, targetSide, Math.max(-34, Math.min(34, lane)));
+  const sourceNormal = outward(sourceSide), targetNormal = outward(targetSide);
+  const all = Object.values(positions);
+  const offset = BEHAVIOR_NODE_HEIGHT + BEHAVIOR_GRAPH_GAP_Y;
+  const horizontalDetour = sourceSide === "left" || sourceSide === "right";
+  const lanes = horizontalDetour
+    ? [Math.min(...all.map((point) => point.y)) - offset, Math.max(...all.map((point) => point.y + BEHAVIOR_NODE_HEIGHT)) + offset]
+    : [Math.min(...all.map((point) => point.x)) - offset, Math.max(...all.map((point) => point.x + BEHAVIOR_NODE_WIDTH)) + offset];
+  return lanes.map((laneValue) => {
+    const first = horizontalDetour
+      ? { x: start.x + sourceNormal.x * 90, y: laneValue }
+      : { x: laneValue, y: start.y + sourceNormal.y * 90 };
+    const second = horizontalDetour
+      ? { x: end.x + targetNormal.x * 90, y: laneValue }
+      : { x: laneValue, y: end.y + targetNormal.y * 90 };
+    const middle = bezierPoint(start, first, second, end, 0.5);
+    return {
+      path: `M ${start.x} ${start.y} C ${first.x} ${first.y}, ${second.x} ${second.y}, ${end.x} ${end.y}`,
+      labelX: middle.x,
+      labelY: middle.y - 10,
+      blocked: curveCrossesNode(start, first, second, end, positions, sourceId, targetId),
+      score: Math.abs(laneValue) + Math.hypot(nodeCenter(to).x - nodeCenter(from).x, nodeCenter(to).y - nodeCenter(from).y),
+    };
+  }).sort((left, right) => Number(left.blocked) - Number(right.blocked) || left.score - right.score)[0]!;
 }
 
 export function routeBehaviorTransitions(
   machine: SpineBehaviorMachine,
   positions: Record<string, BehaviorGraphPoint>,
 ): BehaviorTransitionRoute[] {
-  const allPositions = Object.values(positions);
-  const maxBottom = Math.max(0, ...allPositions.map((point) => point.y + BEHAVIOR_NODE_HEIGHT));
   const ordered = machine.transitions.map((transition, index) => ({ transition, index }))
-    .filter(({ transition }) => pointForState(positions, transition.fromStateId) && pointForState(positions, transition.toStateId));
+    .filter(({ transition }) => positions[transition.fromStateId] && positions[transition.toStateId]);
   const parallelGroups = new Map<string, number[]>();
   for (const { transition, index } of ordered) {
-    const key = `${transition.fromStateId}\u0000${transition.toStateId}`;
+    const [first, second] = [transition.fromStateId, transition.toStateId].sort();
+    const key = `${first}\u0000${second}`;
     parallelGroups.set(key, [...(parallelGroups.get(key) ?? []), index]);
   }
-  let backEdgeLane = 0;
   return ordered.map(({ transition, index }) => {
-    const from = pointForState(positions, transition.fromStateId)!;
-    const to = pointForState(positions, transition.toStateId)!;
-    const group = parallelGroups.get(`${transition.fromStateId}\u0000${transition.toStateId}`)!;
-    const lane = group.indexOf(index) - (group.length - 1) / 2;
+    const from = positions[transition.fromStateId]!;
+    const to = positions[transition.toStateId]!;
+    const [firstId, secondId] = [transition.fromStateId, transition.toStateId].sort();
+    const group = parallelGroups.get(`${firstId}\u0000${secondId}`)!;
+    const lane = (group.indexOf(index) - (group.length - 1) / 2) * 34;
     if (transition.fromStateId === transition.toStateId) {
-      const x = from.x, y = from.y;
-      const offset = lane * 24;
-      const path = `M ${x + BEHAVIOR_NODE_WIDTH * 0.68} ${y} C ${x + BEHAVIOR_NODE_WIDTH * 0.72} ${y - 58 + offset}, ${x + BEHAVIOR_NODE_WIDTH * 0.28} ${y - 58 + offset}, ${x + BEHAVIOR_NODE_WIDTH * 0.32} ${y}`;
-      return { transitionId: transition.id, path, labelX: x + BEHAVIOR_NODE_WIDTH / 2, labelY: y - 48 + lane * 30 };
+      const offset = lane * 0.55;
+      const path = `M ${from.x + BEHAVIOR_NODE_WIDTH * 0.68} ${from.y} C ${from.x + BEHAVIOR_NODE_WIDTH * 0.72} ${from.y - 58 + offset}, ${from.x + BEHAVIOR_NODE_WIDTH * 0.28} ${from.y - 58 + offset}, ${from.x + BEHAVIOR_NODE_WIDTH * 0.32} ${from.y}`;
+      return { transitionId: transition.id, path, labelX: from.x + BEHAVIOR_NODE_WIDTH / 2, labelY: from.y - 48 + offset };
     }
 
-    const fromCenterY = from.y + BEHAVIOR_NODE_HEIGHT / 2;
-    const toCenterY = to.y + BEHAVIOR_NODE_HEIGHT / 2;
-    const isForward = to.x > from.x;
-    const laneOffset = lane * 34;
-    if (Math.abs(to.x - from.x) < 1 && to.y > from.y) {
-      const blockedByNode = allPositions.some((point) => point !== from && point !== to
-        && point.x < from.x + BEHAVIOR_NODE_WIDTH && point.x + BEHAVIOR_NODE_WIDTH > from.x
-        && point.y < to.y && point.y + BEHAVIOR_NODE_HEIGHT > from.y + BEHAVIOR_NODE_HEIGHT);
-      if (!blockedByNode) {
-        const x = from.x + BEHAVIOR_NODE_WIDTH / 2 + lane * 24;
-        const startY = from.y + BEHAVIOR_NODE_HEIGHT;
-        const endY = to.y;
-        const control = Math.max(18, (endY - startY) / 3);
-        return {
-          transitionId: transition.id,
-          path: `M ${x} ${startY} C ${x} ${startY + control}, ${x} ${endY - control}, ${x} ${endY}`,
-          labelX: x,
-          labelY: (startY + endY) / 2 + lane * 30,
-        };
+    const pairs = facingSidePairs(from, to);
+    const candidates: BehaviorRouteCandidate[] = [];
+    for (let sideIndex = 0; sideIndex < pairs.length; sideIndex += 1) {
+      const [sourceSide, targetSide] = pairs[sideIndex]!;
+      const sideLane = sourceSide === "left" || sourceSide === "right" ? lane : -lane;
+      const offsets = [sideLane, sideLane + 38, sideLane - 38, sideLane + 76, sideLane - 76];
+      for (const offset of offsets) {
+        candidates.push(routeCandidate(from, to, transition.fromStateId, transition.toStateId, sourceSide, targetSide, offset, positions, sideIndex));
       }
+      candidates.push(detourCandidate(from, to, transition.fromStateId, transition.toStateId, sourceSide, targetSide, sideLane, positions));
     }
-    if (isForward && Math.abs(toCenterY - fromCenterY) < 1 && Math.abs(laneOffset) < BEHAVIOR_NODE_HEIGHT / 2 + BEHAVIOR_GRAPH_GAP_Y / 2 - 20) {
-      const crossesNode = allPositions.some((point) => point !== from && point !== to
-        && point.x > from.x + BEHAVIOR_NODE_WIDTH - 1 && point.x < to.x + 1
-        && Math.abs((point.y + BEHAVIOR_NODE_HEIGHT / 2) - fromCenterY) < BEHAVIOR_NODE_HEIGHT / 2 + 16);
-      if (!crossesNode) {
-        const startX = from.x + BEHAVIOR_NODE_WIDTH;
-        const endX = to.x;
-        const control = Math.max(38, (endX - startX) / 2);
-        return {
-          transitionId: transition.id,
-          path: `M ${startX} ${fromCenterY} C ${startX + control} ${fromCenterY + laneOffset}, ${endX - control} ${toCenterY + laneOffset}, ${endX} ${toCenterY}`,
-          labelX: (startX + endX) / 2,
-          labelY: (fromCenterY + toCenterY) / 2 + laneOffset - 12,
-        };
-      }
-    }
-
-    const routeY = maxBottom + 52 + backEdgeLane * 34 + Math.abs(lane) * 14;
-    backEdgeLane += 1;
-    const startX = from.x + BEHAVIOR_NODE_WIDTH * 0.74;
-    const endX = to.x + BEHAVIOR_NODE_WIDTH * 0.26;
-    return {
-      transitionId: transition.id,
-      path: `M ${startX} ${from.y + BEHAVIOR_NODE_HEIGHT} C ${startX} ${routeY}, ${endX} ${routeY}, ${endX} ${to.y + BEHAVIOR_NODE_HEIGHT}`,
-      labelX: (startX + endX) / 2,
-      labelY: routeY - 11,
-    };
+    const route = candidates.sort((left, right) => Number(left.blocked) - Number(right.blocked) || left.score - right.score)[0]!;
+    return { transitionId: transition.id, path: route.path, labelX: route.labelX, labelY: route.labelY };
   });
 }

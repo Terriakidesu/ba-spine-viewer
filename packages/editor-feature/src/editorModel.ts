@@ -4,7 +4,7 @@ import { DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_INTERACTION_RETURN_DURATION, DEF
 import { cheekControlNames } from "@ba-spine/spine-runtime/spine/spinePinch";
 import { normalizeSpineCameraTrack, type SpineCameraTrack } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import { DEFAULT_EFFECTS_STRENGTH } from "@ba-spine/spine-runtime/spine/spineEffects";
-import { migrateLegacyInteractionsToBehaviors, normalizeSpineBehaviorMachines, type SpineBehaviorMachine } from "@ba-spine/spine-runtime/spine/spineBehavior";
+import { migrateLegacyInteractionsToBehaviors, normalizeSpineBehaviorMachines, projectBehaviorMachinesToLegacyInteractions, spineLookFollowSettingsFromBehaviorMachines, synchronizeLegacyBehaviorMachines, type SpineBehaviorMachine } from "@ba-spine/spine-runtime/spine/spineBehavior";
 import { normalizeBehaviorGraphLayouts, type BehaviorGraphLayouts } from "./behaviorGraph";
 
 export const EDITOR_SCHEMA_VERSION = 8;
@@ -687,14 +687,18 @@ export function normalizeProject(value: unknown, directory: string): EditorProje
     .filter((item) => Boolean(item && typeof item === "object"))
     .map((item, index) => normalizeInteraction(item as Partial<EditorInteraction>, index))
     .filter((item): item is EditorInteraction => item !== null);
-  const lookFollow = normalizeSpineLookFollowSettings(project.lookFollow);
-  const behaviorMachines = Array.isArray(project.behaviorMachines)
+  const storedLookFollow = normalizeSpineLookFollowSettings(project.lookFollow);
+  const storedBehaviorMachines = Array.isArray(project.behaviorMachines)
     ? normalizeSpineBehaviorMachines(project.behaviorMachines)
-    : migrateLegacyInteractionsToBehaviors(interactions, lookFollow);
+    : migrateLegacyInteractionsToBehaviors(interactions, storedLookFollow);
+  const lookFollow = normalizeSpineLookFollowSettings(spineLookFollowSettingsFromBehaviorMachines(storedLookFollow, storedBehaviorMachines));
+  const behaviorMachines = synchronizeLegacyBehaviorMachines(interactions, lookFollow, storedBehaviorMachines);
+  const canonicalLookFollow = normalizeSpineLookFollowSettings(spineLookFollowSettingsFromBehaviorMachines(lookFollow, behaviorMachines));
+  const canonicalInteractions = projectBehaviorMachinesToLegacyInteractions(interactions, behaviorMachines);
   const behaviorGraphLayouts = normalizeBehaviorGraphLayouts(project.behaviorGraphLayouts, behaviorMachines);
   const requestedInteraction = typeof project.selectedInteractionId === "string" ? project.selectedInteractionId : "";
-  const selectedInteractionId = interactions.some((item) => item.id === requestedInteraction) ? requestedInteraction : interactions[0]?.id ?? null;
-  const selectedInteraction = interactions.find((item) => item.id === selectedInteractionId);
+  const selectedInteractionId = canonicalInteractions.some((item) => item.id === requestedInteraction) ? requestedInteraction : canonicalInteractions[0]?.id ?? null;
+  const selectedInteraction = canonicalInteractions.find((item) => item.id === selectedInteractionId);
   const requestedRegion = typeof project.selectedRegionId === "string" ? project.selectedRegionId : "";
   const selectedRegionId = selectedInteraction?.regions.some((item) => item.id === requestedRegion)
     ? requestedRegion
@@ -706,8 +710,8 @@ export function normalizeProject(value: unknown, directory: string): EditorProje
     talkMixDuration: Math.min(2, finiteNumber(project.talkMixDuration, DEFAULT_TALK_MIX_DURATION, 0)),
     effectsStrength: Math.max(0, Math.min(1, finiteNumber(project.effectsStrength, DEFAULT_EFFECTS_STRENGTH))),
     ...(project.entrySequence === null || typeof project.entrySequence === "string" ? { entrySequence: project.entrySequence } : {}),
-    lookFollow,
-    interactions,
+    lookFollow: canonicalLookFollow,
+    interactions: canonicalInteractions,
     behaviorMachines,
     behaviorGraphLayouts,
     ...(Array.isArray(project.sequenceOrder)

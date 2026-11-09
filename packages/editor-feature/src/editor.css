@@ -156,6 +156,11 @@ button:disabled { cursor: default; opacity: .4; }
 .behavior-check, .behavior-check label { display: flex; align-items: center; gap: 6px; color: var(--editor-text); font-size: 10px; }
 .behavior-check input[type="checkbox"] { margin: 0; }
 .behavior-region-heading { margin-top: 3px; }
+.behavior-selection-list { display: grid; gap: 4px; }
+.behavior-selection-list > button { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; min-width: 0; padding: 7px 8px; border: 1px solid var(--editor-line); border-radius: 5px; background: #0d1b27; color: var(--editor-text); text-align: left; }
+.behavior-selection-list > button:hover, .behavior-selection-list > button.is-selected { border-color: var(--editor-cyan); background: #123042; }
+.behavior-selection-list > button strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; text-transform: capitalize; white-space: nowrap; }
+.behavior-selection-list > button small { overflow: hidden; color: var(--editor-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .behavior-region-details { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 8px; border: 1px solid var(--editor-line); border-radius: 5px; }
 .behavior-region-details summary { color: var(--editor-cyan); cursor: pointer; font-size: 10px; font-weight: 700; }
 .behavior-inspector-heading > div { display: flex; align-items: center; gap: 8px; }
@@ -403,9 +408,6 @@ input[type="color"] { width: 100%; height: 32px; padding: 2px; border: 1px solid
 .editor-button.active { background: #16617b; border-color: var(--editor-cyan); color: white; }
 .editor-button.active.test { background: #22644d; border-color: #61d095; }
 .editor-autosave { align-self: center; color: #61d095; font-size: 10px; }
-.editor-tabs { position: sticky; top: 0; z-index: 2; display: flex; background: #0b1925; border-bottom: 1px solid var(--editor-line); }
-.editor-tabs button { flex: 1; background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 11px 4px; color: var(--editor-muted); }
-.editor-tabs button[aria-pressed="true"] { color: var(--editor-cyan); border-color: var(--editor-cyan); background: #173347; }
 .editor-animation-fields, .editor-movement-fields, .editor-region-fields { display: grid; gap: 8px; }
 .editor-inspector label { display: grid; gap: 4px; color: var(--editor-muted); font-size: 11px; }
 .editor-axis-checks { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 6px 7px; border: 1px solid var(--editor-line); border-radius: 3px; background: #0d202e; color: var(--editor-muted); font-size: 10px; }
@@ -466,10 +468,7 @@ input[type="color"] { width: 100%; height: 32px; padding: 2px; border: 1px solid
 .editor-bone-picker-list button small { color: var(--editor-muted); font-size: 9px; white-space: nowrap; }
 .editor-bone-picker-list button.editor-bone-option-none strong { color: var(--editor-cyan); }
 .editor-bone-picker-list .editor-bone-picker-empty { margin: 0; padding: 12px 8px; }
-.editor-right-panel:not(.tab-animation) .editor-animation-fields, .editor-right-panel:not(.tab-movement) .editor-movement-fields, .editor-right-panel:not(.tab-region) .editor-region-fields { display: none; }
-.editor-right-panel.tab-look .editor-inspector { display: none; }
-.editor-right-panel:not(.tab-look) .editor-look-inspector { display: none; }
-.editor-look-inspector { gap: 10px; }
+.editor-look-inspector { display: grid; gap: 10px; }
 .editor-look-inspector > .editor-section-title { align-items: center; }
 .editor-look-inspector > .editor-section-title label { font-size: 10px; }
 .editor-look-range-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 7px; }
@@ -569,6 +568,8 @@ input[type="color"] { width: 100%; height: 32px; padding: 2px; border: 1px solid
 .editor-validation summary svg { width: 13px; height: 13px; color: #61d095; }
 .editor-interaction-settings { display: grid; gap: 8px; border-top: 1px solid var(--editor-line); padding-top: 7px; }
 .editor-interaction-settings > summary { cursor: pointer; color: var(--editor-muted); font-size: 10px; font-weight: 750; }
+.editor-movement-settings, .editor-look-settings { display: grid; gap: 8px; }
+.editor-movement-settings > summary, .editor-look-settings > summary { cursor: pointer; color: var(--editor-muted); font-size: 10px; font-weight: 750; }
 .editor-settings-body { display: grid; gap: 8px; }
 .editor-checks { grid-template-columns: 1fr 1fr; }
 .editor-footer, .editor-statusbar, .editor-timeline { flex: none; }

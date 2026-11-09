@@ -1,6 +1,6 @@
 import { normalizeSpineTimeline, type SpineTimeline } from "./spineTimeline";
 import { DEFAULT_EFFECTS_STRENGTH } from "./spineEffects";
-import { migrateLegacyInteractionsToBehaviors, normalizeSpineBehaviorMachines, type SpineBehaviorMachine } from "./spineBehavior";
+import { migrateLegacyInteractionsToBehaviors, normalizeSpineBehaviorMachines, projectBehaviorMachinesToLegacyInteractions, spineLookFollowSettingsFromBehaviorMachines, synchronizeLegacyBehaviorMachines, type SpineBehaviorMachine } from "./spineBehavior";
 
 export type SpineInteractionReturnEasing = "linear" | "ease-out" | "ease-in-out";
 export const DEFAULT_INTERACTION_RETURN_DURATION = 0.35;
@@ -286,10 +286,14 @@ export function normalizeSpineInteractionProject(value: unknown, directory?: str
   const interactions = project.interactions
     .map((interaction, index) => normalizeAuthoredInteraction(interaction, index))
     .filter((interaction): interaction is SpineAuthoredInteraction => interaction !== null);
-  const lookFollow = normalizeSpineLookFollowSettings(project.lookFollow);
-  const behaviorMachines = Array.isArray(project.behaviorMachines)
+  const storedLookFollow = normalizeSpineLookFollowSettings(project.lookFollow);
+  const storedBehaviorMachines = Array.isArray(project.behaviorMachines)
     ? normalizeSpineBehaviorMachines(project.behaviorMachines)
-    : migrateLegacyInteractionsToBehaviors(interactions, lookFollow);
+    : migrateLegacyInteractionsToBehaviors(interactions, storedLookFollow);
+  const lookFollow = normalizeSpineLookFollowSettings(spineLookFollowSettingsFromBehaviorMachines(storedLookFollow, storedBehaviorMachines));
+  const behaviorMachines = synchronizeLegacyBehaviorMachines(interactions, lookFollow, storedBehaviorMachines);
+  const canonicalLookFollow = normalizeSpineLookFollowSettings(spineLookFollowSettingsFromBehaviorMachines(lookFollow, behaviorMachines));
+  const projectedInteractions = projectBehaviorMachinesToLegacyInteractions(interactions, behaviorMachines);
   return {
     schemaVersion: Math.max(1, Math.trunc(finiteNumber(project.schemaVersion, 1))),
     ...(typeof project.name === "string" ? { name: project.name } : {}),
@@ -297,9 +301,9 @@ export function normalizeSpineInteractionProject(value: unknown, directory?: str
     ...(project.entrySequence === null || typeof project.entrySequence === "string" ? { entrySequence: project.entrySequence } : {}),
     talkMixDuration: normalizeAnimationMixDuration(project.talkMixDuration, DEFAULT_TALK_MIX_DURATION),
     effectsStrength: Math.max(0, Math.min(1, finiteNumber(project.effectsStrength, DEFAULT_EFFECTS_STRENGTH))),
-    lookFollow,
+    lookFollow: canonicalLookFollow,
     behaviorMachines,
-    interactions,
+    interactions: projectedInteractions,
     ...(timeline ? { timeline } : {}),
     ...(Object.keys(sequences).length > 0 ? { sequences } : {}),
     ...(Array.isArray(project.sequenceOrder)

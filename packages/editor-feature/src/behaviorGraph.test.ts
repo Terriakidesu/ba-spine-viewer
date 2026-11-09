@@ -17,6 +17,21 @@ import {
   zoomBehaviorGraphView,
 } from "./behaviorGraph";
 
+function pathNumbers(path: string): number[] {
+  return (path.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+}
+
+function curveCrossesBox(path: string, box: { x: number; y: number }, width = 190, height = 108): boolean {
+  const [x0, y0, x1, y1, x2, y2, x3, y3] = pathNumbers(path);
+  for (let sample = 1; sample < 32; sample += 1) {
+    const t = sample / 32, inverse = 1 - t;
+    const x = inverse ** 3 * x0! + 3 * inverse ** 2 * t * x1! + 3 * inverse * t ** 2 * x2! + t ** 3 * x3!;
+    const y = inverse ** 3 * y0! + 3 * inverse ** 2 * t * y1! + 3 * inverse * t ** 2 * y2! + t ** 3 * y3!;
+    if (x >= box.x - 8 && x <= box.x + width + 8 && y >= box.y - 8 && y <= box.y + height + 8) return true;
+  }
+  return false;
+}
+
 describe("behavior graph layout and geometry", () => {
   test("graph gestures match the editor canvas: background pans, states move, and pan modifiers win", () => {
     expect(getBehaviorGraphPointerIntent(0, "background", "select", false)).toBe("pan");
@@ -106,15 +121,15 @@ describe("behavior graph layout and geometry", () => {
     expect(behaviorGraphPositionsForViewport(machine, layout, 1348)).toEqual(layout.statePositions);
   });
 
-  test("parallel, skipped-flow, reverse, and self-loop edges route on separate paths", () => {
+  test("parallel, skipped-flow, reverse, and self-loop edges route around nodes", () => {
     const machine = createSpineBehaviorPreset("head-interaction");
     const positions = autoArrangeBehaviorMachine(machine, 4);
     const skipped = routeBehaviorTransitions(machine, positions).find((route) => {
       const transition = machine.transitions.find((item) => item.id === route.transitionId)!;
       return transition.fromStateId === "starting" && transition.toStateId === "releasing";
     })!;
-    const bounds = Math.max(...Object.values(positions).map((point) => point.y + 108));
-    expect(skipped.labelY).toBeGreaterThan(bounds);
+    expect(Number.isFinite(skipped.labelY)).toBe(true);
+    expect(curveCrossesBox(skipped.path, positions.active!)).toBe(false);
 
     const multi = {
       ...machine,
@@ -131,7 +146,9 @@ describe("behavior graph layout and geometry", () => {
     expect(parallel).toHaveLength(2);
     expect(parallel[0]?.path).not.toBe(parallel[1]?.path);
     expect(parallel[0]?.labelY).not.toBe(parallel[1]?.labelY);
-    expect(routes.find((route) => route.transitionId === "return-to-start")?.labelY).toBeGreaterThan(bounds);
+    const reverse = routes.find((route) => route.transitionId === "return-to-start")!;
+    expect(Number.isFinite(reverse.labelY)).toBe(true);
+    expect(curveCrossesBox(reverse.path, positions.active!)).toBe(false);
     expect(routes.find((route) => route.transitionId === "self-loop")?.path).toContain("C");
     const releaseLabels = routes.filter((route) => [
       machine.transitions.find((item) => item.fromStateId === "active" && item.toStateId === "releasing")?.id,
@@ -139,6 +156,38 @@ describe("behavior graph layout and geometry", () => {
     ].includes(route.transitionId));
     expect(releaseLabels).toHaveLength(2);
     expect(Math.abs(releaseLabels[0]!.labelY - releaseLabels[1]!.labelY)).toBeGreaterThanOrEqual(30);
+  });
+
+  test("diagonal edges attach to the closest facing side instead of defaulting down", () => {
+    const machine = createSpineBehaviorPreset("head-interaction");
+    const transition = machine.transitions.find((item) => item.fromStateId === "idle" && item.toStateId === "starting")!;
+    const positions = {
+      idle: { x: 0, y: 0 },
+      starting: { x: 300, y: 200 },
+      active: { x: 800, y: 400 },
+      releasing: { x: 1000, y: 600 },
+    };
+    const route = routeBehaviorTransitions(machine, positions).find((item) => item.transitionId === transition.id)!;
+    const values = pathNumbers(route.path);
+    expect(values[1]).toBe(108);
+    expect(values[7]).toBe(200);
+    expect(values[0]).toBe(95);
+    expect(values[6]).toBe(395);
+  });
+
+  test("a direct edge detours around an intervening node instead of crossing it", () => {
+    const base = createSpineBehaviorPreset("head-interaction");
+    const machine = { ...base, transitions: [...base.transitions, { ...base.transitions[0]!, id: "blocked-route", fromStateId: "idle", toStateId: "releasing" }] };
+    const transition = machine.transitions.find((item) => item.id === "blocked-route")!;
+    const positions = {
+      idle: { x: 0, y: 0 },
+      starting: { x: 250, y: 0 },
+      active: { x: 900, y: 300 },
+      releasing: { x: 600, y: 0 },
+    };
+    const route = routeBehaviorTransitions(machine, positions).find((item) => item.transitionId === transition.id)!;
+    expect(curveCrossesBox(route.path, positions.starting!)).toBe(false);
+    expect(Number.isFinite(route.labelX) && Number.isFinite(route.labelY)).toBe(true);
   });
 
   test("cursor-centered zoom keeps the world point fixed and fit encloses node bounds", () => {
