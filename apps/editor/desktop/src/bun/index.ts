@@ -11,6 +11,7 @@ import { libraryIdentityForPath, MAX_SPINE_DRAFT_SNAPSHOT_BYTES, parseHandoffMes
 import { isEditorIgnored, parseEditorIgnore, type EditorIgnoreRule } from "@ba-spine/spine-runtime/spine/editorIgnore";
 import { EditorFileConflictError, saveEditorBatch, type EditorBatchFile } from "@ba-spine/desktop-host/transactionalSave";
 import { SpineEditorMcpBridge } from "./mcpBridge";
+import { discoverAudioAssets } from "./audioAssetCatalog";
 import { defaultDesktopWindowFrame, enforceDesktopWindowMinimum, readDesktopWindowState, restoreDesktopWindowState, startDesktopWindowStatePersistence, type WindowDisplay } from "@ba-spine/desktop-host/windowState";
 import { restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
 import { discoverPortableSuite, firstRecognizableLibraryPath } from "@ba-spine/desktop-host/portableSuite";
@@ -124,6 +125,12 @@ async function setFiles(directory: string): Promise<string[]> {
     .filter((entry) => entry.isFile() && !ignored(relativePath(join(full, entry.name)), rules))
     .map((entry) => entry.name)
     .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+}
+
+async function audioAssetCatalog(): Promise<{ assets: Array<{ path: string; sizeBytes: number; modifiedAt: string }>; truncated: boolean }> {
+  if (!assetRoot) throw new Error("Choose an asset root first.");
+  const rules = await ignoreRules();
+  return discoverAudioAssets(assetRoot, (path, isDirectory) => ignored(path, rules, isDirectory));
 }
 
 function contentType(path: string): string {
@@ -295,6 +302,7 @@ async function api(request: Request, url: URL): Promise<Response> {
       return json({ paths: acceptedPaths });
     }
     if (url.pathname === "/__spine/catalog") return json({ rootPath: assetRoot, sets: await catalog() });
+    if (url.pathname === "/__spine/audio-assets" && request.method === "GET") return json(await audioAssetCatalog());
     if (url.pathname === "/__spine/files") return json({ files: await setFiles(url.searchParams.get("directory") ?? ".") });
     if (url.pathname === "/__spine/file") {
       const path = (url.searchParams.get("path") ?? "").replaceAll("\\", "/").replace(/^\/+/, "");

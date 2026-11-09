@@ -38,6 +38,7 @@ export interface DesktopAssetSource extends AssetSource {
   openProject: () => Promise<DesktopTextFile | null>;
   readText: (path: string) => Promise<string | null>;
   openAudio: () => Promise<string[]>;
+  listAudioAssets?: () => Promise<{ assets: Array<{ path: string; sizeBytes: number; modifiedAt: string }>; truncated: boolean }>;
   saveText: (path: string, content: string) => Promise<void>;
   saveBatch: (files: readonly DesktopSaveFile[], overwriteVersions?: Readonly<Record<string, string>>) => Promise<{ backupPath: string | null }>;
 }
@@ -209,6 +210,17 @@ export function sourceFromDesktop(rootPath: string): DesktopAssetSource {
     openAudio: async () => {
       const selected = await request("/__spine/open-audio", { method: "POST" }).then((response) => response.json()) as { paths?: unknown };
       return Array.isArray(selected.paths) ? selected.paths.filter((path): path is string => typeof path === "string") : [];
+    },
+    listAudioAssets: async () => {
+      const value = await request("/__spine/audio-assets", { method: "GET" }).then((response) => response.json()) as { assets?: unknown; truncated?: unknown };
+      const assets = Array.isArray(value.assets) ? value.assets.flatMap((asset) => {
+        if (!asset || typeof asset !== "object" || Array.isArray(asset)) return [];
+        const item = asset as Record<string, unknown>;
+        return typeof item.path === "string" && typeof item.sizeBytes === "number" && typeof item.modifiedAt === "string"
+          ? [{ path: item.path, sizeBytes: item.sizeBytes, modifiedAt: item.modifiedAt }]
+          : [];
+      }) : [];
+      return { assets, truncated: value.truncated === true };
     },
     saveText: async (path, content) => {
       const original = await (async () => {

@@ -385,10 +385,10 @@ export function replaceSubtitleImport(project: EditorProject, subtitlePath: stri
   };
 }
 
-export function splitCue(timeline: EditorTimeline, id: string, time: number): EditorTimeline {
+export function splitCue(timeline: EditorTimeline, id: string, time: number, secondCueId: string = crypto.randomUUID()): EditorTimeline {
   const cue = timeline.subtitles.find((item) => item.id === id);
   if (!cue || time <= cue.start || time >= cue.end) return timeline;
-  return { ...timeline, subtitles: timeline.subtitles.flatMap((item) => item.id === id ? [{ ...item, end: time }, { ...item, id: crypto.randomUUID(), start: time, text: { ...item.text } }] : [item]) };
+  return { ...timeline, subtitles: timeline.subtitles.flatMap((item) => item.id === id ? [{ ...item, end: time }, { ...item, id: secondCueId, start: time, text: { ...item.text } }] : [item]) };
 }
 
 export interface TimelineSnapResolution {

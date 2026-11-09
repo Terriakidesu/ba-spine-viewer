@@ -1824,7 +1824,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
           })),
         }),
       subtitles: timeline.subtitles.map((cue) => ({ id: cue.id, start: cue.start, end: cue.end, enabled: cue.enabled, text: cueText(cue, timeline.language) })),
-      audio: timeline.audio.map((clip) => ({ id: clip.id, path: clip.path, start: clip.start, end: clip.end, enabled: clip.enabled })),
+      audio: timeline.audio.map((clip) => ({ id: clip.id, path: clip.path, start: clip.start, end: clip.end, enabled: clip.enabled, ...(audioDurations[clip.id] === undefined ? {} : { decodedDuration: audioDurations[clip.id] }) })),
       sequence: structuredClone(timeline),
       animationInfo: timeline.layers.map((layer) => ({
         layerId: layer.id,
@@ -2088,6 +2088,29 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         setPreviewUntil(null);
         setPlaying(command.playing);
         return { playing: command.playing };
+      case "match_audio_length": {
+        const clip = timeline.audio.find((item) => item.id === command.audioId);
+        const decodedDuration = audioDurations[command.audioId];
+        if (!clip) throw new Error(`Audio clip not found: ${command.audioId}`);
+        if (decodedDuration === undefined || decodedDuration <= 0) throw new Error(`Audio clip ${command.audioId} has not decoded its source duration yet.`);
+        const linked = linkedSubtitleForAudio(timeline, clip);
+        updateTimeline((value) => matchAudioAndSubtitleLength(value, command.audioId, decodedDuration));
+        return { audioId: command.audioId, decodedDuration, linkedSubtitleId: linked?.id ?? null, matched: true };
+      }
+      case "preview_audio_clip": {
+        const clip = timeline.audio.find((item) => item.id === command.audioId);
+        if (!clip) throw new Error(`Audio clip not found: ${command.audioId}`);
+        setSelectedAudio(command.audioId);
+        setCurrentTime(clip.start);
+        setPreviewUntil(clip.end);
+        setPlaying(true);
+        return { audioId: clip.id, previewing: true, start: clip.start, end: clip.end };
+      }
+      case "stop_audio_preview":
+        setPreviewUntil(null);
+        setPlaying(false);
+        for (const audio of Object.values(audioElementsRef.current)) audio?.pause();
+        return { stopped: true };
       case "set_preview_view": {
         const next = {
           scale: command.patch.scale === undefined ? stageView.scale : clampStageScale(command.patch.scale),
@@ -2151,6 +2174,26 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         updateLayer(command.layerId, patch);
         return { layerId: command.layerId, updated: Object.keys(patch) };
       }
+      case "create_spine_layer": {
+        const id = addLayer(command.directory);
+        if (!id) throw new Error(`Spine layer asset ${command.directory} is unavailable or already exists in this sequence.`);
+        return { layerId: id, directory: command.directory };
+      }
+      case "delete_spine_layer": {
+        const layer = timeline.layers.find((item) => item.id === command.layerId);
+        if (!layer) throw new Error(`Spine layer not found: ${command.layerId}`);
+        if (layer.role === "character") throw new Error("The main character layer cannot be deleted.");
+        if (layer.locked) throw new Error("The Spine layer is locked.");
+        let nextSelectedLayerId: string | null = null;
+        updateTimeline((value) => {
+          const layers = value.layers.filter((item) => item.id !== layer.id);
+          nextSelectedLayerId = layers.at(-1)?.id ?? null;
+          return { ...value, layers, selectedLayerId: nextSelectedLayerId };
+        });
+        setSelectedClips(nextSelectedLayerId ? [{ kind: "layer", id: nextSelectedLayerId }] : []);
+        setInspector(nextSelectedLayerId ? "layer" : "sequence");
+        return { layerId: layer.id, deleted: true, nextSelectedLayerId };
+      }
       case "add_animation_clip": {
         const layer = timeline.layers.find((item) => item.id === command.layerId);
         if (!layer) throw new Error(`Spine layer not found: ${command.layerId}`);
@@ -2178,6 +2221,14 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         setSelectedClips([{ kind: "animation", id: clip.id }]);
         setInspector("animation");
         return { clipId: clip.id, layerId: layer.id, start: clip.start, end: clip.end, endMode: clip.endMode, animationDuration: animationDuration || null };
+      }
+      case "duplicate_animation_clip": {
+        const found = findAnimationClip(command.clipId);
+        if (!found) throw new Error(`Animation clip not found: ${command.clipId}`);
+        if (found.layer.locked) throw new Error("The Spine layer is locked.");
+        const clipId = duplicateAnimationClipById(command.clipId);
+        if (!clipId) throw new Error(`Animation clip could not be duplicated: ${command.clipId}`);
+        return { sourceClipId: command.clipId, clipId, layerId: found.layer.id };
       }
       case "update_animation_clip": {
         const found = findAnimationClip(command.clipId);
@@ -2256,6 +2307,30 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         setSelectedClips((items) => items.filter((item) => item.id !== cue.id));
         return { cueId: cue.id, explicitAudioLinksCleared: timeline.audio.filter((clip) => clip.subtitleId === cue.id).length };
       }
+      case "duplicate_subtitle_cue": {
+        const cueId = duplicateCueById(command.cueId);
+        if (!cueId) throw new Error(`Subtitle cue not found: ${command.cueId}`);
+        return { sourceCueId: command.cueId, cueId };
+      }
+      case "select_subtitle_cue": {
+        const cue = timeline.subtitles.find((item) => item.id === command.cueId);
+        if (!cue) throw new Error(`Subtitle cue not found: ${command.cueId}`);
+        updateTimelineSelection((value) => ({ ...value, selectedLayerId: null, selectedCueId: cue.id, selectedColorLayerId: null, selectedColorClipId: null }));
+        setSelectedClips([{ kind: "cue", id: cue.id }]);
+        setSelectedAudioId(null);
+        setInspector("cue");
+        return { cueId: cue.id, selected: true };
+      }
+      case "split_subtitle_cue": {
+        const cue = timeline.subtitles.find((item) => item.id === command.cueId);
+        if (!cue) throw new Error(`Subtitle cue not found: ${command.cueId}`);
+        if (command.at <= cue.start || command.at >= cue.end) throw new Error("Subtitle split time must be strictly inside the cue.");
+        const secondCueId = crypto.randomUUID();
+        updateTimeline((value) => splitCue(value, cue.id, command.at, secondCueId));
+        setSelectedClips([{ kind: "cue", id: secondCueId }]);
+        setInspector("cue");
+        return { cueId: cue.id, secondCueId, splitAt: command.at };
+      }
       case "preview_subtitle_import":
         return previewMcpSubtitleImport(command);
       case "apply_subtitle_import": {
@@ -2286,6 +2361,30 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         if (!id) throw new Error("The color clip could not be added.");
         return { clipId: id };
       }
+      case "duplicate_color_clip": {
+        const found = findColorClip(command.clipId);
+        if (!found) throw new Error(`Color clip not found: ${command.clipId}`);
+        if (found.layer.locked) throw new Error("The color layer is locked.");
+        const clipId = duplicateColorClipById(command.clipId);
+        if (!clipId) throw new Error(`Color clip could not be duplicated: ${command.clipId}`);
+        return { sourceClipId: command.clipId, clipId, layerId: found.layer.id };
+      }
+      case "delete_color_clip": {
+        const found = findColorClip(command.clipId);
+        if (!found) throw new Error(`Color clip not found: ${command.clipId}`);
+        if (found.layer.locked) throw new Error("The color layer is locked.");
+        updateTimeline((value) => ({ ...value, colorLayers: value.colorLayers.map((layer) => layer.id === found.layer.id ? { ...layer, clips: layer.clips.filter((clip) => clip.id !== found.clip.id) } : layer), selectedColorClipId: value.selectedColorClipId === found.clip.id ? null : value.selectedColorClipId }));
+        setSelectedClips((items) => items.filter((item) => item.id !== found.clip.id));
+        return { clipId: found.clip.id, layerId: found.layer.id, deleted: true };
+      }
+      case "delete_color_layer": {
+        const layer = timeline.colorLayers.find((item) => item.id === command.layerId);
+        if (!layer) throw new Error(`Color layer not found: ${command.layerId}`);
+        if (layer.locked) throw new Error("The color layer is locked.");
+        updateTimeline((value) => ({ ...value, colorLayers: value.colorLayers.filter((item) => item.id !== layer.id), selectedColorLayerId: value.selectedColorLayerId === layer.id ? null : value.selectedColorLayerId, selectedColorClipId: layer.clips.some((clip) => clip.id === value.selectedColorClipId) ? null : value.selectedColorClipId }));
+        setSelectedClips((items) => items.filter((item) => item.id !== layer.id && !layer.clips.some((clip) => clip.id === item.id)));
+        return { layerId: layer.id, deleted: true };
+      }
       case "update_color_layer": {
         const layer = timeline.colorLayers.find((item) => item.id === command.layerId);
         if (!layer) throw new Error(`Color layer not found: ${command.layerId}`);
@@ -2299,6 +2398,35 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         if (found.layer.locked) throw new Error("The color layer is locked.");
         updateColorClip(command.clipId, command.patch);
         return { clipId: command.clipId, updated: Object.keys(command.patch) };
+      }
+      case "evaluate_camera_track": {
+        if (mode !== "camera") throw new Error("Camera evaluation requires the Camera workspace.");
+        if ((timeline.sequenceId ?? "legacy") !== command.sequenceId) throw new Error(`Camera sequence ${command.sequenceId} is not active. Select that sequence before evaluating its camera output.`);
+        if (!cameraTrack) throw new Error(`Sequence ${command.sequenceId} has no authored camera track.`);
+        if (!cameraProjectionRenderer) throw new Error("The camera projection renderer is not ready yet.");
+        const artworkFrame = cameraProjectionRenderer.getArtworkCameraFrame(cameraAspectValue(cameraTrack.aspectRatio));
+        const activeBoundId = activeCameraBoundIdRef.current.sequenceId === command.sequenceId ? activeCameraBoundIdRef.current.boundId : null;
+        const evaluated = evaluateSpineCameraTrack(cameraTrack, command.seconds, 1, 1, artworkFrame, activeBoundId);
+        return { sequenceId: command.sequenceId, seconds: command.seconds, evaluated };
+      }
+      case "frame_camera_item": {
+        if (mode !== "camera") throw new Error("Framing a camera item requires the Camera workspace.");
+        if (!cameraTrack) throw new Error("The active sequence has no camera track.");
+        if (!stageRef.current || !cameraProjectionRenderer || !cameraProjectionSize) throw new Error("The camera projection renderer is not ready yet.");
+        if (command.kind === "shot") {
+          if (!cameraTrack.keyframes.some((item) => item.id === command.id)) throw new Error(`Camera shot not found: ${command.id}`);
+          setSelectedCameraKeyframeId(command.id);
+          setCameraInspectorTarget("shot");
+          setCameraEditMode("shots");
+          frameCameraShotInScene(command.id);
+        } else {
+          if (!cameraTrack.safeBounds.some((item) => item.id === command.id)) throw new Error(`Camera bound not found: ${command.id}`);
+          setSelectedCameraBoundId(command.id);
+          setCameraInspectorTarget("boundary");
+          setCameraEditMode("boundaries");
+          frameCameraBoundInScene(command.id);
+        }
+        return { kind: command.kind, id: command.id, framed: true };
       }
       case "capture_preview":
         return captureMcpPreview(command.mode);
@@ -2994,9 +3122,9 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     onStatus(`Added ${animation || "animation"} at ${seconds(start)}.`);
   }
 
-  function duplicateAnimationClipById(clipId: string) {
+  function duplicateAnimationClipById(clipId: string): string | null {
     const found = findAnimationClip(clipId);
-    if (!found || found.layer.locked) return;
+    if (!found || found.layer.locked) return null;
     const id = `animation-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
     updateTimeline((value) => {
       const layer = value.layers.find((item) => item.id === found.layer.id);
@@ -3007,6 +3135,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     setSelectedClips([{ kind: "animation", id }]);
     setSelectedAudioId(null);
     setInspector("animation");
+    return id;
   }
 
   function duplicateSelectedAnimationClip() {
@@ -3363,8 +3492,8 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     }));
   }
 
-  function addLayer(directoryToAdd: string) {
-    if (!timeline || !directoryToAdd || timeline.layers.some((layer) => layer.directory === directoryToAdd)) return;
+  function addLayer(directoryToAdd: string): string | null {
+    if (!timeline || !directoryToAdd || timeline.layers.some((layer) => layer.directory === directoryToAdd)) return null;
     const found = discovered.find((item) => item.directory === directoryToAdd);
     const role = found?.role ?? (/_scene$/i.test(directoryToAdd) ? "scene" : /_bg$/i.test(directoryToAdd) ? "background" : "overlay");
     const layer = createTimelineLayer(directoryToAdd, role, Math.max(-1, ...timeline.layers.map((item) => item.order), ...timeline.colorLayers.map((item) => item.order)) + 1, duration);
@@ -3372,6 +3501,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     setSelectedClips([{ kind: "layer", id: layer.id }]);
     setInspector("layer");
     onStatus(`Added ${directoryToAdd} as a ${role} layer.`);
+    return layer.id;
   }
 
   function addColorLayer(nameHint?: string): string | null {
@@ -3437,9 +3567,9 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     return clip.id;
   }
 
-  function duplicateColorClipById(clipId: string) {
+  function duplicateColorClipById(clipId: string): string | null {
     const found = findColorClip(clipId);
-    if (!found || found.layer.locked) return;
+    if (!found || found.layer.locked) return null;
     const id = `color-clip-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2, 10)}`;
     const clips = duplicateColorClip(found.layer.clips, clipId, id);
     updateColorLayer(found.layer.id, { clips });
@@ -3447,6 +3577,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     setSelectedClips([{ kind: "color", id }]);
     setSelectedAudioId(null);
     setInspector("color-clip");
+    return id;
   }
 
   function duplicateSelectedColorClip() {
@@ -3944,9 +4075,9 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     setStageView(resetStageView());
   }
 
-  function duplicateCueById(cueId: string) {
+  function duplicateCueById(cueId: string): string | null {
     const sourceCue = timeline?.subtitles.find((item) => item.id === cueId);
-    if (!sourceCue) return;
+    if (!sourceCue) return null;
     const length = sourceCue.end - sourceCue.start;
     const start = sourceCue.end;
     const cue = { ...sourceCue, id: crypto.randomUUID(), start, end: start + length, text: { ...sourceCue.text } };
@@ -3954,6 +4085,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     setSelectedClips([{ kind: "cue", id: cue.id }]);
     setSelectedAudioId(null);
     setInspector("cue");
+    return cue.id;
   }
 
   function duplicateCue() {

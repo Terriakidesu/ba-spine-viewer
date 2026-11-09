@@ -18,6 +18,8 @@ import {
   blankInteraction,
   blankRegion,
   cloneProject,
+  compositionDirectories,
+  createTimelineLayer,
   createProject,
   DEFAULT_EDITOR_VIEW_SETTINGS,
   EDITOR_VIEW_SETTINGS_KEY,
@@ -28,11 +30,19 @@ import {
   validateProject,
   type EditorValidationWarning,
   type EditorInteraction,
+  type EditorAnimationClip,
+  type EditorColorLayer,
   type EditorProject,
   type EditorRegion,
+  type EditorSubtitleCue,
+  type EditorTimelineLayer,
+  type TimelineLayerRole,
   type EditorViewSettings,
 } from "./editorModel";
 import { normalizeBehaviorGraphLayouts } from "./behaviorGraph";
+import { addTalkSequence, deleteAnimationClipRipple, deleteSequence, duplicateAnimationClipRipple, extendTimelineDuration, insertAnimationClipRipple, linkAudioToSubtitle, moveAnimationClipRipple, sequenceIdsForProject, splitCue, switchSequence } from "./sequenceModel";
+import { colorClipPreset, deleteColorClip, duplicateColorClip, moveColorClip, trimColorClipEnd, trimColorClipStart, type ColorClipPreset } from "./colorLayerModel";
+import { normalizeColorClipFades, timelineLayerAnimationClips } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import "./editor.css";
 import { InteractionPreview, type InteractionPreviewDebug } from "./preview";
 import { hitRegion, inversePoint, regionMatrix, screenToWorld } from "./geometry";
@@ -61,7 +71,7 @@ import { persistRecoverySnapshot, readLegacyRecoveryRecord, readRecoveryRecord, 
 import { confirmProjectReplacement } from "./projectReplacement";
 import { isCommandPaletteShortcut, isTextEditingTarget } from "./editorKeyboard";
 import "./validationIssues.css";
-import type { EditorMcpCommand, EditorMcpState, EditorMcpTimelineBridge, EditorMcpTimelineSnapshot } from "./editorMcp";
+import { assertMcpTimelineLocksPreserved, editorDocumentFingerprint, type EditorMcpCommand, type EditorMcpState, type EditorMcpTimelineBridge, type EditorMcpTimelineSnapshot } from "./editorMcp";
 import { WaveformProfileRecorder } from "./waveformProfileDiagnostics";
 import type { AudioWaveformMeasurement } from "./AudioWaveform";
 import { DEFAULT_EDITOR_LAYOUT_PREFERENCES, EDITOR_LAYOUT_PREFERENCES_KEY, normalizeEditorLayoutPreferences, type WorkspaceLayoutPreset } from "./editorLayout";
@@ -597,6 +607,7 @@ export function Editor() {
   const mcpCommandRef = useRef<(command: EditorMcpCommand, expectedDocumentRevision?: number) => Promise<unknown>>(async () => { throw new Error("The editor MCP bridge is not ready."); });
   const mcpTimelineRef = useRef<EditorMcpTimelineBridge | null>(null);
   const mcpTimelineSnapshotRef = useRef<EditorMcpTimelineSnapshot | null>(null);
+  const mcpTimelineAnimationInfoRef = useRef<{ rootPath: string | null; directory: string | null; animationInfo: EditorMcpTimelineSnapshot["animationInfo"] } | null>(null);
   const mcpSnapshotRef = useRef<EditorMcpState | null>(null);
   const mcpPublishTimerRef = useRef<number | null>(null);
   const mcpRuntimeErrorsRef = useRef<Array<{ time: string; message: string }>>([]);
@@ -606,6 +617,7 @@ export function Editor() {
   const recoveryPromptRef = useRef<{ rootPath: string; directory: string; current: EditorProject | null; backups: EditorProject[]; savedAt: number; legacyCurrent: boolean; legacyBackups: boolean[] } | null>(null);
   const mcpDocumentFingerprintRef = useRef<string | null>(null);
   const mcpDocumentRevisionRef = useRef(0);
+  const mcpChangeSetsRef = useRef(new Map<string, { rootPath: string; directory: string; documentRevision: number; expiresAt: number; operations: EditorMcpCommand[]; project: EditorProject; warnings: string[] }>());
 
   projectRef.current = project;
   directoryRef.current = directory;
@@ -626,7 +638,7 @@ export function Editor() {
       }
       return mcpDocumentRevisionRef.current;
     }
-    const fingerprint = JSON.stringify(current);
+    const fingerprint = editorDocumentFingerprint(current);
     if (fingerprint !== mcpDocumentFingerprintRef.current) {
       mcpDocumentFingerprintRef.current = fingerprint;
       mcpDocumentRevisionRef.current += 1;
@@ -639,6 +651,7 @@ export function Editor() {
     assetRoot: source?.rootPath ?? null,
     assetSets: directories,
     directory: directory || null,
+    projectName: project?.name ?? null,
     assetLoading,
     loadProgress: { stage: loadProgress.stage, loaded: loadProgress.loaded, total: loadProgress.total },
     status,
@@ -648,6 +661,14 @@ export function Editor() {
     viewport: { width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio || 1 },
     runtimeErrors: [...mcpRuntimeErrorsRef.current],
     timeline: mcpTimelineSnapshotRef.current,
+    waveformProfilingAvailable: __EDITOR_WAVEFORM_PROFILE__,
+    behaviorRuntime: {
+      debug: [...behaviorDebug],
+      feedback: Object.values(behaviorActionFeedback),
+      interaction: previewRef.current.debug,
+      interactionTesting: testing,
+      lookFollowTesting: lookTesting,
+    },
     waveformProfile: __EDITOR_WAVEFORM_PROFILE__ ? waveformProfileRef.current?.snapshot(performance.now()) ?? null : null,
   };
 
@@ -695,12 +716,14 @@ export function Editor() {
     mcpTimelineRef.current = bridge;
     const snapshot = bridge?.snapshot() ?? null;
     mcpTimelineSnapshotRef.current = snapshot;
+    if (snapshot) mcpTimelineAnimationInfoRef.current = { rootPath: sourceRef.current?.rootPath ?? null, directory: directoryRef.current || null, animationInfo: snapshot.animationInfo };
     if (mcpSnapshotRef.current) mcpSnapshotRef.current = { ...mcpSnapshotRef.current, timeline: snapshot };
     publishMcpSnapshot();
   }
 
   function publishTimelineMcpSnapshot(snapshot: EditorMcpTimelineSnapshot | null) {
     mcpTimelineSnapshotRef.current = snapshot;
+    if (snapshot) mcpTimelineAnimationInfoRef.current = { rootPath: sourceRef.current?.rootPath ?? null, directory: directoryRef.current || null, animationInfo: snapshot.animationInfo };
     if (mcpSnapshotRef.current) mcpSnapshotRef.current = { ...mcpSnapshotRef.current, timeline: snapshot };
     publishMcpSnapshot();
   }
@@ -796,7 +819,7 @@ export function Editor() {
             await publishMcpSnapshotNow();
             await fetch("/__spine/mcp/ui-result", {
               method: "POST",
-              headers: { "content-type": "application/json" },
+              headers: { "content-type": "application/json", "x-ba-spine-command-id": item.id },
               body: JSON.stringify({ id: item.id, result, error }),
             }).catch(() => undefined);
           }
@@ -1797,12 +1820,1123 @@ export function Editor() {
     setStatus(`${label} restored as an unsaved draft. Save explicitly to write it to the library.`);
   }
 
-  mcpCommandRef.current = async (command, expectedDocumentRevision) => {
+  function updateMcpProjectSequence(projectValue: EditorProject, sequenceId: string, update: (timeline: EditorProject["timeline"]) => EditorProject["timeline"]): EditorProject {
+    const activeId = projectValue.timeline.sequenceId ?? "legacy";
+    if (activeId === sequenceId) return { ...projectValue, timeline: update(projectValue.timeline) };
+    const cached = projectValue.sequences?.[sequenceId];
+    if (cached) return { ...projectValue, sequences: { ...(projectValue.sequences ?? {}), [sequenceId]: update(cached) } };
+    const loadedMeta = metaRef.current;
+    if (!loadedMeta || !sequenceIdsForProject(projectValue, loadedMeta.animations).includes(sequenceId)) throw new Error(`Sequence not found: ${sequenceId}`);
+    const switched = switchSequence(projectValue, sequenceId, loadedMeta.animations, directories);
+    return { ...projectValue, sequences: { ...(switched.sequences ?? {}), [sequenceId]: update(switched.timeline) } };
+  }
+
+  function executeWorkspaceIndependentTimelineEdit(command: EditorMcpCommand): unknown | undefined {
+    const current = projectRef.current;
+    if (!current) throw new Error("Load a project before editing timeline data.");
+    const timeline = current.timeline;
+    const sequenceId = timeline.sequenceId ?? "legacy";
+    const commit = (next: EditorProject["timeline"]) => {
+      if (next !== timeline) mutate((value) => updateMcpProjectSequence(value, sequenceId, () => next));
+    };
+    const selection = (next: EditorProject["timeline"]) => {
+      if (next !== timeline) updateProjectSelection((value) => updateMcpProjectSequence(value, sequenceId, () => next));
+    };
+    const infoForLayer = (layer: EditorTimelineLayer) => {
+      const snapshot = mcpTimelineSnapshotRef.current;
+      if (snapshot && (snapshot.sequence.sequenceId ?? "legacy") === sequenceId) {
+        const found = snapshot.animationInfo.find((item) => item.layerId === layer.id);
+        if (found) return found;
+      }
+      const cached = mcpTimelineAnimationInfoRef.current;
+      if (cached?.rootPath === (sourceRef.current?.rootPath ?? null) && cached.directory === (directoryRef.current || null)) return cached.animationInfo.find((item) => item.layerId === layer.id);
+      return undefined;
+    };
+    const animationsForLayer = (layer: EditorTimelineLayer): string[] | null => {
+      if (layer.directory === directoryRef.current && metaRef.current) return metaRef.current.animations;
+      const info = infoForLayer(layer);
+      return info ? info.animations.map((item) => item.name) : null;
+    };
+    const clipsForLayer = (layer: EditorTimelineLayer): EditorAnimationClip[] => {
+      if (Array.isArray(layer.animationClips)) return layer.animationClips;
+      const meta = layer.directory === directoryRef.current ? metaRef.current : null;
+      if (meta) {
+        const info = infoForLayer(layer);
+        const introDuration = meta.introAnimation ? info?.animations.find((item) => item.name === meta.introAnimation)?.duration ?? 0 : 0;
+        return timelineLayerAnimationClips(layer, meta, sequenceId, timeline.openingMode ?? "direct", introDuration) as EditorAnimationClip[];
+      }
+      if (!layer.animation) return [];
+      return [{
+        id: sequenceId === "opening" && layer.role === "character" ? `${layer.id}-legacy-opening` : `${layer.id}-legacy`,
+        animation: layer.animation,
+        start: layer.start,
+        end: Math.max(layer.start + 0.01, layer.end),
+        endMode: layer.endMode,
+        animationOffset: layer.animationOffset,
+        loop: layer.loop,
+      }];
+    };
+    const findAnimation = (clipId: string) => {
+      for (const layer of timeline.layers) {
+        const clip = clipsForLayer(layer).find((item) => item.id === clipId);
+        if (clip) return { layer, clip };
+      }
+      return null;
+    };
+    const findColor = (clipId: string) => {
+      for (const layer of timeline.colorLayers) {
+        const clip = layer.clips.find((item) => item.id === clipId);
+        if (clip) return { layer, clip };
+      }
+      return null;
+    };
+
+    switch (command.name) {
+      case "select_visual": {
+        if (command.kind === "spine-layer") {
+          if (!timeline.layers.some((item) => item.id === command.id)) throw new Error(`Spine layer not found: ${command.id}`);
+          selection({ ...timeline, selectedLayerId: command.id, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null });
+        } else if (command.kind === "color-layer") {
+          if (!timeline.colorLayers.some((item) => item.id === command.id)) throw new Error(`Color layer not found: ${command.id}`);
+          selection({ ...timeline, selectedLayerId: null, selectedCueId: null, selectedColorLayerId: command.id, selectedColorClipId: null });
+        } else {
+          const found = findColor(command.id);
+          if (!found) throw new Error(`Color clip not found: ${command.id}`);
+          selection({ ...timeline, selectedLayerId: null, selectedCueId: null, selectedColorLayerId: found.layer.id, selectedColorClipId: command.id });
+        }
+        return { kind: command.kind, id: command.id, selected: true };
+      }
+      case "update_spine_layer": {
+        const layer = timeline.layers.find((item) => item.id === command.layerId);
+        if (!layer) throw new Error(`Spine layer not found: ${command.layerId}`);
+        if (layer.locked && Object.keys(command.patch).some((key) => key !== "locked" && key !== "enabled")) throw new Error("The Spine layer is locked.");
+        if (command.patch.animation) {
+          const available = animationsForLayer(layer);
+          if (!available) throw new Error(`Animation metadata for layer ${layer.name} is not loaded. Open the Timeline workspace before changing its animation.`);
+          if (!available.includes(command.patch.animation)) throw new Error(`Animation ${command.patch.animation} is not available on layer ${layer.name}.`);
+        }
+        if (command.patch.faceAnimation) {
+          const available = animationsForLayer(layer);
+          if (!available) throw new Error(`Animation metadata for layer ${layer.name} is not loaded. Open the Timeline workspace before changing its secondary animation.`);
+          if (!available.includes(command.patch.faceAnimation)) throw new Error(`Secondary animation ${command.patch.faceAnimation} is not available on layer ${layer.name}.`);
+        }
+        const start = command.patch.start ?? layer.start;
+        const end = command.patch.end ?? layer.end;
+        if (end < start + 0.01) throw new Error("Spine layer end must be at least 0.01 seconds after its start.");
+        const patch = { ...command.patch, ...(command.patch.end !== undefined && command.patch.endMode === undefined ? { endMode: "manual" as const } : {}) };
+        const layers = timeline.layers.map((item) => item.id === layer.id ? { ...item, ...patch } : item);
+        commit({ ...timeline, layers, duration: Math.max(timeline.duration, end), ...(sequenceId === "opening" && layer.role === "character" && command.patch.start !== undefined && timeline.openingMode === "scene-first" ? { sceneDuration: start } : {}) });
+        return { layerId: layer.id, updated: Object.keys(patch) };
+      }
+      case "create_spine_layer": {
+        if (!directories.includes(command.directory)) throw new Error(`Spine layer asset set not found: ${command.directory}`);
+        if (timeline.layers.some((item) => item.directory === command.directory)) throw new Error(`Spine layer asset set already exists in this sequence: ${command.directory}`);
+        const composition = compositionDirectories(directoryRef.current, directories);
+        const role: TimelineLayerRole = composition.find((item) => item.directory === command.directory)?.role
+          ?? (/_scene$/i.test(command.directory) ? "scene" : /_bg$/i.test(command.directory) ? "background" : "overlay");
+        const layer = createTimelineLayer(command.directory, role, Math.max(-1, ...timeline.layers.map((item) => item.order), ...timeline.colorLayers.map((item) => item.order)) + 1, timeline.duration);
+        commit({ ...timeline, layers: [...timeline.layers, layer], selectedLayerId: layer.id, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null });
+        return { layerId: layer.id, directory: layer.directory, role };
+      }
+      case "delete_spine_layer": {
+        const layer = timeline.layers.find((item) => item.id === command.layerId);
+        if (!layer) throw new Error(`Spine layer not found: ${command.layerId}`);
+        if (layer.role === "character") throw new Error("The main character layer cannot be deleted.");
+        if (layer.locked) throw new Error("The Spine layer is locked.");
+        const layers = timeline.layers.filter((item) => item.id !== layer.id);
+        const selectedLayerId = timeline.selectedLayerId === layer.id ? layers.at(-1)?.id ?? null : timeline.selectedLayerId;
+        commit({ ...timeline, layers, selectedLayerId });
+        return { layerId: layer.id, deleted: true, nextSelectedLayerId: selectedLayerId };
+      }
+      case "add_animation_clip": {
+        const layer = timeline.layers.find((item) => item.id === command.layerId);
+        if (!layer) throw new Error(`Spine layer not found: ${command.layerId}`);
+        if (layer.locked) throw new Error("The Spine layer is locked.");
+        const available = animationsForLayer(layer);
+        if (!available) throw new Error(`Animation metadata for layer ${layer.name} is not loaded. Open the Timeline workspace to load this layer before authoring its clips.`);
+        if (!available.includes(command.animation)) throw new Error(`Animation ${command.animation} is not available on layer ${layer.name}.`);
+        if (command.faceAnimation && !available.includes(command.faceAnimation)) throw new Error(`Secondary animation ${command.faceAnimation} is not available on layer ${layer.name}.`);
+        const duration = infoForLayer(layer)?.animations.find((item) => item.name === command.animation)?.duration ?? null;
+        const start = command.start;
+        const end = command.end ?? start + Math.max(0.01, duration && duration > 0 ? duration : 2);
+        if (end < start + 0.01) throw new Error("Animation clip end must be at least 0.01 seconds after its start.");
+        const clip: EditorAnimationClip = {
+          id: `animation-${crypto.randomUUID()}`, animation: command.animation, start, end,
+          endMode: command.end === undefined ? "auto" : "manual", animationOffset: 0, loop: command.loop ?? false, enabled: true,
+          ...(command.faceAnimation == null ? {} : { faceAnimation: command.faceAnimation }),
+          ...(command.continueAfterOpening === undefined ? {} : { continueAfterOpening: command.continueAfterOpening }),
+        };
+        const clips = insertAnimationClipRipple(clipsForLayer(layer), clip);
+        const layers = timeline.layers.map((item) => item.id === layer.id ? { ...item, animationClips: clips } : item);
+        const next = extendTimelineDuration({ ...timeline, layers, selectedLayerId: layer.id, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null, duration: Math.max(timeline.duration, ...clips.map((item) => item.end)) });
+        commit(next);
+        return { clipId: clip.id, layerId: layer.id, start: clip.start, end: clip.end, endMode: clip.endMode, animationDuration: duration };
+      }
+      case "duplicate_animation_clip": {
+        const found = findAnimation(command.clipId);
+        if (!found) throw new Error(`Animation clip not found: ${command.clipId}`);
+        if (found.layer.locked) throw new Error("The Spine layer is locked.");
+        const id = `animation-${crypto.randomUUID()}`;
+        const clips = duplicateAnimationClipRipple(clipsForLayer(found.layer), command.clipId, id);
+        commit(extendTimelineDuration({ ...timeline, layers: timeline.layers.map((layer) => layer.id === found.layer.id ? { ...layer, animationClips: clips } : layer), selectedLayerId: found.layer.id, selectedCueId: null, selectedColorLayerId: null, selectedColorClipId: null, duration: Math.max(timeline.duration, ...clips.map((item) => item.end)) }));
+        return { sourceClipId: command.clipId, clipId: id, layerId: found.layer.id };
+      }
+      case "update_animation_clip": {
+        const found = findAnimation(command.clipId);
+        if (!found) throw new Error(`Animation clip not found: ${command.clipId}`);
+        if (found.layer.locked) throw new Error("The Spine layer is locked.");
+        const available = animationsForLayer(found.layer);
+        const animation = command.patch.animation ?? found.clip.animation;
+        if (!available) throw new Error(`Animation metadata for layer ${found.layer.name} is not loaded. Open the Timeline workspace before editing this clip.`);
+        if (!available.includes(animation)) throw new Error(`Animation ${animation} is not available on layer ${found.layer.name}.`);
+        if (command.patch.faceAnimation && !available.includes(command.patch.faceAnimation)) throw new Error(`Secondary animation ${command.patch.faceAnimation} is not available on layer ${found.layer.name}.`);
+        const start = command.patch.start ?? found.clip.start;
+        const end = command.patch.end ?? found.clip.end;
+        if (end < start + 0.01) throw new Error("Animation clip end must be at least 0.01 seconds after its start.");
+        const { faceAnimation, ...fields } = command.patch;
+        const patch: Partial<EditorAnimationClip> = { ...fields, ...(faceAnimation === null ? { faceAnimation: undefined } : faceAnimation === undefined ? {} : { faceAnimation }) };
+        if (command.patch.end !== undefined && command.patch.endMode === undefined) patch.endMode = "manual";
+        const duration = infoForLayer(found.layer)?.animations.find((item) => item.name === animation)?.duration ?? null;
+        if (command.patch.animation && command.patch.animation !== found.clip.animation && command.patch.end === undefined && (command.patch.endMode ?? found.clip.endMode) !== "manual" && duration && duration > 0) {
+          patch.end = start + Math.max(0.01, duration - (command.patch.animationOffset ?? found.clip.animationOffset));
+        }
+        const clips = clipsForLayer(found.layer).map((item) => item.id === command.clipId ? { ...item, ...patch } : item);
+        const next = extendTimelineDuration({ ...timeline, layers: timeline.layers.map((layer) => layer.id === found.layer.id ? { ...layer, animationClips: clips } : layer), duration: Math.max(timeline.duration, ...clips.map((item) => item.end)) });
+        commit(next);
+        return { clipId: command.clipId, layerId: found.layer.id, updated: Object.keys(command.patch) };
+      }
+      case "move_animation_clip":
+      case "delete_animation_clip": {
+        const found = findAnimation(command.clipId);
+        if (!found) throw new Error(`Animation clip not found: ${command.clipId}`);
+        if (found.layer.locked) throw new Error("The Spine layer is locked.");
+        const currentClips = clipsForLayer(found.layer);
+        const clips = command.name === "move_animation_clip"
+          ? command.ripple
+            ? moveAnimationClipRipple(currentClips, command.clipId, command.start, timeline.snap)
+            : currentClips.map((item) => item.id === command.clipId ? { ...item, start: command.start, end: command.start + Math.max(0.01, found.clip.end - found.clip.start) } : item)
+          : command.ripple ? deleteAnimationClipRipple(currentClips, command.clipId) : currentClips.filter((item) => item.id !== command.clipId);
+        commit(extendTimelineDuration({ ...timeline, layers: timeline.layers.map((layer) => layer.id === found.layer.id ? { ...layer, animationClips: clips } : layer), duration: Math.max(timeline.duration, ...clips.map((item) => item.end)) }));
+        return command.name === "move_animation_clip"
+          ? { clipId: command.clipId, layerId: found.layer.id, start: command.start, ripple: command.ripple }
+          : { clipId: command.clipId, layerId: found.layer.id, ripple: command.ripple, deleted: true };
+      }
+      case "add_subtitle_cue": {
+        const cue: EditorSubtitleCue = { id: `subtitle-${crypto.randomUUID()}`, start: command.start, end: command.end, enabled: true, text: { en: command.text.en ?? "", ja: command.text.ja ?? "", ko: command.text.ko ?? "" } };
+        commit(extendTimelineDuration({ ...timeline, subtitles: [...timeline.subtitles, cue], selectedCueId: cue.id, selectedLayerId: null, selectedColorLayerId: null, selectedColorClipId: null }));
+        return { cueId: cue.id };
+      }
+      case "update_subtitle_cue": {
+        const cue = timeline.subtitles.find((item) => item.id === command.cueId);
+        if (!cue) throw new Error(`Subtitle cue not found: ${command.cueId}`);
+        const start = command.patch.start ?? cue.start;
+        const end = command.patch.end ?? cue.end;
+        if (end < start + 0.01) throw new Error("Subtitle cue end must be at least 0.01 seconds after its start.");
+        const { text, ...fields } = command.patch;
+        commit(extendTimelineDuration({ ...timeline, subtitles: timeline.subtitles.map((item) => item.id === cue.id ? { ...item, ...fields, ...(text ? { text: { ...cue.text, ...text } } : {}) } : item) }));
+        return { cueId: cue.id, updated: Object.keys(command.patch) };
+      }
+      case "delete_subtitle_cue": {
+        if (!timeline.subtitles.some((item) => item.id === command.cueId)) throw new Error(`Subtitle cue not found: ${command.cueId}`);
+        const cleared = timeline.audio.filter((item) => item.subtitleId === command.cueId).length;
+        commit({ ...timeline, subtitles: timeline.subtitles.filter((item) => item.id !== command.cueId), audio: timeline.audio.map((item) => item.subtitleId === command.cueId ? { ...item, subtitleId: null } : item), selectedCueId: timeline.selectedCueId === command.cueId ? null : timeline.selectedCueId });
+        return { cueId: command.cueId, explicitAudioLinksCleared: cleared };
+      }
+      case "duplicate_subtitle_cue": {
+        const cue = timeline.subtitles.find((item) => item.id === command.cueId);
+        if (!cue) throw new Error(`Subtitle cue not found: ${command.cueId}`);
+        const id = `subtitle-${crypto.randomUUID()}`;
+        const copy = { ...cue, id, start: cue.end, end: cue.end + Math.max(0.01, cue.end - cue.start), text: { ...cue.text } };
+        commit(extendTimelineDuration({ ...timeline, subtitles: [...timeline.subtitles, copy], selectedCueId: id }));
+        return { sourceCueId: cue.id, cueId: id };
+      }
+      case "select_subtitle_cue": {
+        const cue = timeline.subtitles.find((item) => item.id === command.cueId);
+        if (!cue) throw new Error(`Subtitle cue not found: ${command.cueId}`);
+        selection({ ...timeline, selectedLayerId: null, selectedCueId: cue.id, selectedColorLayerId: null, selectedColorClipId: null });
+        return { cueId: cue.id, selected: true };
+      }
+      case "split_subtitle_cue": {
+        const cue = timeline.subtitles.find((item) => item.id === command.cueId);
+        if (!cue) throw new Error(`Subtitle cue not found: ${command.cueId}`);
+        if (command.at <= cue.start || command.at >= cue.end) throw new Error("Subtitle split time must be strictly inside the cue.");
+        const secondCueId = `subtitle-${crypto.randomUUID()}`;
+        commit({ ...splitCue(timeline, cue.id, command.at, secondCueId), selectedCueId: secondCueId });
+        return { cueId: cue.id, secondCueId, splitAt: command.at };
+      }
+      case "reorder_visual_layer": {
+        const tracks = [...timeline.layers.map((layer) => ({ id: layer.id, kind: "spine" as const, order: layer.order, locked: Boolean(layer.locked) })), ...timeline.colorLayers.map((layer) => ({ id: layer.id, kind: "color" as const, order: layer.order, locked: layer.locked }))].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+        const sourceIndex = tracks.findIndex((item) => item.id === command.layerId);
+        const targetIndex = tracks.findIndex((item) => item.id === command.targetLayerId);
+        if (sourceIndex < 0 || targetIndex < 0) throw new Error("Both visual layer IDs must exist in the active sequence.");
+        const [start, end] = [Math.min(sourceIndex, targetIndex), Math.max(sourceIndex, targetIndex)];
+        if (tracks.slice(start, end + 1).some((item) => item.locked)) throw new Error("A visual layer in the requested reorder range is locked.");
+        const [moved] = tracks.splice(sourceIndex, 1);
+        tracks.splice(targetIndex, 0, moved!);
+        const orders = new Map(tracks.map((item, index) => [item.id, index]));
+        commit({ ...timeline, layers: timeline.layers.map((item) => ({ ...item, order: orders.get(item.id) ?? item.order })), colorLayers: timeline.colorLayers.map((item) => ({ ...item, order: orders.get(item.id) ?? item.order })) });
+        return { moved: command.layerId, target: command.targetLayerId };
+      }
+      case "add_color_layer": {
+        if (sequenceId !== "opening") throw new Error("Color layers can only be added to the Opening sequence.");
+        const layer: EditorColorLayer = { id: `color-layer-${crypto.randomUUID()}`, name: command.nameHint?.trim() || `Color ${timeline.colorLayers.length + 1}`, enabled: true, locked: false, opacity: 1, order: Math.max(-1, ...timeline.layers.map((item) => item.order), ...timeline.colorLayers.map((item) => item.order)) + 1, blendMode: "normal", clips: [] };
+        commit({ ...timeline, colorLayers: [...timeline.colorLayers, layer], selectedLayerId: null, selectedCueId: null, selectedColorLayerId: layer.id, selectedColorClipId: null });
+        return { layerId: layer.id };
+      }
+      case "add_color_clip": {
+        if (sequenceId !== "opening") throw new Error("Color clips can only be added to the Opening sequence.");
+        const requested = command.layerId ? timeline.colorLayers.find((item) => item.id === command.layerId) : undefined;
+        if (command.layerId && (!requested || requested.locked)) throw new Error("Choose an existing unlocked color layer.");
+        let layer = requested ?? timeline.colorLayers.find((item) => item.id === timeline.selectedColorLayerId && !item.locked) ?? [...timeline.colorLayers].reverse().find((item) => !item.locked);
+        const createLayer = !layer;
+        if (!layer) layer = { id: `color-layer-${crypto.randomUUID()}`, name: `Color ${timeline.colorLayers.length + 1}`, enabled: true, locked: false, opacity: 1, order: Math.max(-1, ...timeline.layers.map((item) => item.order), ...timeline.colorLayers.map((item) => item.order)) + 1, blendMode: "normal", clips: [] };
+        const clipId = `color-clip-${crypto.randomUUID()}`;
+        const playhead = mcpTimelineSnapshotRef.current?.sequence.sequenceId === sequenceId ? mcpTimelineSnapshotRef.current.currentTime : 0;
+        const start = timeline.snap > 0 ? Math.max(0, Number((Math.round(playhead / timeline.snap) * timeline.snap).toFixed(3))) : Math.max(0, playhead);
+        const clip = colorClipPreset(clipId, command.preset ?? "solid" as ColorClipPreset, start);
+        const clips = moveColorClip([...layer.clips, clip], clip.id, clip.start);
+        const colorLayers = createLayer ? [...timeline.colorLayers, { ...layer, clips }] : timeline.colorLayers.map((item) => item.id === layer!.id ? { ...item, clips } : item);
+        commit(extendTimelineDuration({ ...timeline, colorLayers, selectedLayerId: null, selectedCueId: null, selectedColorLayerId: layer.id, selectedColorClipId: clipId }));
+        return { layerId: layer.id, clipId };
+      }
+      case "duplicate_color_clip": {
+        const found = findColor(command.clipId);
+        if (!found) throw new Error(`Color clip not found: ${command.clipId}`);
+        if (found.layer.locked) throw new Error("The color layer is locked.");
+        const clipId = `color-clip-${crypto.randomUUID()}`;
+        const clips = duplicateColorClip(found.layer.clips, found.clip.id, clipId);
+        commit(extendTimelineDuration({ ...timeline, colorLayers: timeline.colorLayers.map((item) => item.id === found.layer.id ? { ...item, clips } : item), selectedLayerId: null, selectedCueId: null, selectedColorLayerId: found.layer.id, selectedColorClipId: clipId }));
+        return { sourceClipId: found.clip.id, clipId, layerId: found.layer.id };
+      }
+      case "delete_color_clip": {
+        const found = findColor(command.clipId);
+        if (!found) throw new Error(`Color clip not found: ${command.clipId}`);
+        if (found.layer.locked) throw new Error("The color layer is locked.");
+        commit({ ...timeline, colorLayers: timeline.colorLayers.map((item) => item.id === found.layer.id ? { ...item, clips: deleteColorClip(item.clips, found.clip.id) } : item), selectedColorClipId: timeline.selectedColorClipId === found.clip.id ? null : timeline.selectedColorClipId });
+        return { clipId: found.clip.id, layerId: found.layer.id, deleted: true };
+      }
+      case "delete_color_layer": {
+        const layer = timeline.colorLayers.find((item) => item.id === command.layerId);
+        if (!layer) throw new Error(`Color layer not found: ${command.layerId}`);
+        if (layer.locked) throw new Error("The color layer is locked.");
+        commit({ ...timeline, colorLayers: timeline.colorLayers.filter((item) => item.id !== layer.id), selectedColorLayerId: timeline.selectedColorLayerId === layer.id ? null : timeline.selectedColorLayerId, selectedColorClipId: layer.clips.some((clip) => clip.id === timeline.selectedColorClipId) ? null : timeline.selectedColorClipId });
+        return { layerId: layer.id, deleted: true };
+      }
+      case "update_color_layer": {
+        const layer = timeline.colorLayers.find((item) => item.id === command.layerId);
+        if (!layer) throw new Error(`Color layer not found: ${command.layerId}`);
+        if (layer.locked && Object.keys(command.patch).some((key) => key !== "locked" && key !== "enabled")) throw new Error("The color layer is locked.");
+        commit({ ...timeline, colorLayers: timeline.colorLayers.map((item) => item.id === layer.id ? { ...item, ...command.patch } : item) });
+        return { layerId: layer.id, updated: Object.keys(command.patch) };
+      }
+      case "update_color_clip": {
+        const found = findColor(command.clipId);
+        if (!found) throw new Error(`Color clip not found: ${command.clipId}`);
+        if (found.layer.locked) throw new Error("The color layer is locked.");
+        const { start: requestedStart, end: requestedEnd, ...fields } = command.patch;
+        const colorLayers = timeline.colorLayers.map((layer) => {
+          if (layer.id !== found.layer.id) return layer;
+          let clips = layer.clips;
+          if (requestedStart !== undefined) clips = trimColorClipStart(clips, found.clip.id, requestedStart);
+          if (requestedEnd !== undefined) clips = trimColorClipEnd(clips, found.clip.id, requestedEnd);
+          return { ...layer, clips: clips.map((item) => item.id === found.clip.id ? normalizeColorClipFades({ ...item, ...fields }) : item) };
+        });
+        commit(extendTimelineDuration({ ...timeline, colorLayers }));
+        return { clipId: found.clip.id, updated: Object.keys(command.patch) };
+      }
+      default:
+        return undefined;
+    }
+  }
+
+  function prepareMcpChangeSet(current: EditorProject, operations: EditorMcpCommand[]): { project: EditorProject; warnings: string[]; diff: Array<{ domain: string; before: unknown; after: unknown }> } {
+    let draft = cloneProject(current);
+    const loadedMeta = metaRef.current;
+    const assertKnownSequence = (sequenceId: string) => {
+      if (!sequenceIdsForProject(draft, loadedMeta?.animations ?? []).includes(sequenceId)) throw new Error(`Sequence not found: ${sequenceId}`);
+    };
+    for (const operation of operations) {
+      let next = draft;
+      switch (operation.name) {
+        case "add_interaction": {
+          if (!loadedMeta) throw new Error("Load a Spine skeleton before adding interactions in a change set.");
+          const interaction = blankInteraction(loadedMeta.animations, frame?.bones ?? [], draft.interactions.length);
+          next = { ...draft, interactions: [...draft.interactions, interaction], selectedInteractionId: interaction.id, selectedRegionId: interaction.regions[0]?.id ?? null };
+          break;
+        }
+        case "update_interaction": {
+          if (!draft.interactions.some((item) => item.id === operation.interactionId)) throw new Error(`Interaction not found: ${operation.interactionId}`);
+          next = { ...draft, interactions: draft.interactions.map((item) => item.id === operation.interactionId ? { ...item, ...operation.patch } : item) };
+          break;
+        }
+        case "duplicate_interaction": {
+          const source = draft.interactions.find((item) => item.id === operation.interactionId);
+          if (!source) throw new Error(`Interaction not found: ${operation.interactionId}`);
+          const copy = structuredClone(source);
+          copy.id = crypto.randomUUID();
+          copy.name = `${copy.name} copy`;
+          copy.regions = copy.regions.map((region) => ({ ...region, id: crypto.randomUUID(), placement: "manual" }));
+          next = { ...draft, interactions: [...draft.interactions, copy], selectedInteractionId: copy.id, selectedRegionId: copy.regions[0]?.id ?? null };
+          break;
+        }
+        case "delete_interaction": {
+          if (!draft.interactions.some((item) => item.id === operation.interactionId)) throw new Error(`Interaction not found: ${operation.interactionId}`);
+          const interactions = draft.interactions.filter((item) => item.id !== operation.interactionId);
+          next = { ...draft, interactions, selectedInteractionId: interactions[0]?.id ?? null, selectedRegionId: interactions[0]?.regions[0]?.id ?? null };
+          break;
+        }
+        case "add_region": {
+          const interaction = draft.interactions.find((item) => item.id === operation.interactionId);
+          if (!interaction) throw new Error(`Interaction not found: ${operation.interactionId}`);
+          const requestedPath = operation.anchorBonePath === undefined ? draft.selectedBonePath : operation.anchorBonePath;
+          const anchor = requestedPath ? frame?.bones.find((bone) => bone.path === requestedPath) : frame?.bones[0];
+          if (requestedPath && !anchor) throw new Error(`Bone not found in the loaded skeleton: ${requestedPath}`);
+          const region = blankRegion(anchor, interaction.regions.length);
+          next = { ...draft, interactions: draft.interactions.map((item) => item.id === interaction.id ? { ...item, regions: [...item.regions, region] } : item), selectedInteractionId: interaction.id, selectedRegionId: region.id };
+          break;
+        }
+        case "update_region": {
+          const interaction = draft.interactions.find((item) => item.id === operation.interactionId);
+          if (!interaction?.regions.some((item) => item.id === operation.regionId)) throw new Error(`Region not found: ${operation.regionId}`);
+          next = { ...draft, interactions: draft.interactions.map((item) => item.id !== interaction.id ? item : { ...item, regions: item.regions.map((region) => region.id === operation.regionId ? { ...region, ...operation.patch } : region) }) };
+          break;
+        }
+        case "duplicate_region": {
+          const interaction = draft.interactions.find((item) => item.id === operation.interactionId);
+          const region = interaction?.regions.find((item) => item.id === operation.regionId);
+          if (!interaction || !region) throw new Error(`Region not found: ${operation.regionId}`);
+          const copy = { ...region, id: crypto.randomUUID(), name: `${region.name} copy`, offsetX: region.offsetX + 20, placement: "manual" as const };
+          next = { ...draft, interactions: draft.interactions.map((item) => item.id === interaction.id ? { ...item, regions: [...item.regions, copy] } : item), selectedInteractionId: interaction.id, selectedRegionId: copy.id };
+          break;
+        }
+        case "delete_region": {
+          const interaction = draft.interactions.find((item) => item.id === operation.interactionId);
+          if (!interaction?.regions.some((item) => item.id === operation.regionId)) throw new Error(`Region not found: ${operation.regionId}`);
+          next = { ...draft, interactions: draft.interactions.map((item) => item.id === interaction.id ? { ...item, regions: item.regions.filter((region) => region.id !== operation.regionId) } : item), selectedRegionId: draft.selectedRegionId === operation.regionId ? null : draft.selectedRegionId };
+          break;
+        }
+        case "update_look_follow":
+          next = { ...draft, lookFollow: { ...draft.lookFollow, ...operation.patch } };
+          break;
+        case "replace_behavior_machines":
+          next = { ...draft, behaviorMachines: operation.machines, ...(operation.graphLayouts ? { behaviorGraphLayouts: operation.graphLayouts } : {}) };
+          break;
+        case "update_project_settings":
+          if (operation.patch.entrySequence) assertKnownSequence(operation.patch.entrySequence);
+          next = { ...draft, ...operation.patch };
+          break;
+        case "create_talk_sequence":
+          if (!loadedMeta) throw new Error("Load a Spine skeleton before adding sequences in a change set.");
+          next = addTalkSequence(draft, loadedMeta.animations, directories);
+          break;
+        case "delete_sequence":
+          if (!loadedMeta) throw new Error("Load a Spine skeleton before deleting sequences in a change set.");
+          assertKnownSequence(operation.sequenceId);
+          if (operation.sequenceId === "opening") throw new Error("The Opening sequence cannot be deleted.");
+          next = deleteSequence(draft, operation.sequenceId, loadedMeta.animations, directories);
+          break;
+        case "reorder_sequences": {
+          const existing = sequenceIdsForProject(draft, loadedMeta?.animations ?? []);
+          if (operation.sequenceIds.length !== existing.length || existing.some((id) => !operation.sequenceIds.includes(id))) throw new Error("Sequence order must include every available sequence exactly once.");
+          next = { ...draft, sequenceOrder: operation.sequenceIds };
+          break;
+        }
+        case "replace_sequence":
+          assertKnownSequence(operation.sequenceId);
+          next = updateMcpProjectSequence(draft, operation.sequenceId, () => ({ ...operation.sequence, sequenceId: operation.sequenceId }));
+          break;
+        case "update_camera_track":
+          assertKnownSequence(operation.sequenceId);
+          next = updateMcpProjectSequence(draft, operation.sequenceId, (timeline) => {
+            const { camera: _previousCamera, ...rest } = timeline;
+            return operation.camera ? { ...rest, camera: operation.camera } : rest;
+          });
+          break;
+        default:
+          throw new Error(`The ${operation.name} operation is not supported inside reviewed atomic change sets.`);
+      }
+      draft = synchronizeProjectAuthoring(draft, next);
+      for (const machine of draft.behaviorMachines ?? []) {
+        for (const transition of machine.transitions) for (const condition of transition.conditions) {
+          if (condition.type !== "machine-state") continue;
+          const target = (draft.behaviorMachines ?? []).find((item) => item.id === condition.machineId);
+          if (!target?.states.some((state) => state.id === condition.stateId)) throw new Error(`Change set leaves an invalid cross-machine state reference: ${condition.machineId}/${condition.stateId}.`);
+        }
+      }
+    }
+
+    const domainSnapshots = (value: EditorProject) => {
+      const authored = cloneProject(value);
+      const clearSelection = (timeline: EditorProject["timeline"]) => {
+        timeline.selectedLayerId = null;
+        timeline.selectedCueId = null;
+        timeline.selectedColorLayerId = null;
+        timeline.selectedColorClipId = null;
+      };
+      clearSelection(authored.timeline);
+      const sequences = { ...(authored.sequences ?? {}), [authored.timeline.sequenceId ?? "legacy"]: authored.timeline };
+      const { timeline: _timeline, sequences: _sequences, ...settings } = authored;
+      return {
+        settings: { name: settings.name, entrySequence: settings.entrySequence ?? null, talkMixDuration: settings.talkMixDuration, effectsStrength: settings.effectsStrength },
+        interactions: authored.interactions,
+        lookFollow: authored.lookFollow,
+        behaviors: { machines: authored.behaviorMachines ?? [], graphLayouts: authored.behaviorGraphLayouts },
+        sequenceOrder: authored.sequenceOrder ?? [],
+        sequences: Object.fromEntries(Object.entries(sequences).sort(([left], [right]) => left.localeCompare(right))),
+      };
+    };
+    const before = domainSnapshots(current);
+    const after = domainSnapshots(draft);
+    const diff = Object.keys(before).flatMap((domain) => JSON.stringify(before[domain as keyof typeof before]) === JSON.stringify(after[domain as keyof typeof after])
+      ? []
+      : [{ domain, before: before[domain as keyof typeof before], after: after[domain as keyof typeof after] }]);
+    const warnings: string[] = [];
+    if (current.entrySequence && current.entrySequence !== draft.entrySequence && !sequenceIdsForProject(draft, loadedMeta?.animations ?? []).includes(current.entrySequence)) warnings.push(`Entry sequence ${current.entrySequence} was removed; the project model selected ${draft.entrySequence ?? "runtime intro"} instead.`);
+    const removedMachineIds = (current.behaviorMachines ?? []).filter((machine) => !(draft.behaviorMachines ?? []).some((candidate) => candidate.id === machine.id)).map((machine) => machine.id);
+    if (removedMachineIds.length) warnings.push(`Behavior machines removed by the reviewed changes: ${removedMachineIds.join(", ")}.`);
+    if (new TextEncoder().encode(JSON.stringify(diff)).byteLength > 900_000) throw new Error("The proposed change set is too large to return as a reviewable diff. Split it into smaller batches.");
+    return { project: draft, warnings, diff };
+  }
+
+    mcpCommandRef.current = async (command, expectedDocumentRevision) => {
     if (expectedDocumentRevision !== undefined) {
       const actual = currentMcpDocumentRevision();
       if (actual !== expectedDocumentRevision) throw new Error(`MCP_STALE_DOCUMENT_REVISION: expected document revision ${expectedDocumentRevision}, but the Editor is now at ${actual}. Re-read editor_state and review the change before retrying.`);
     }
     switch (command.name) {
+      case "preview_change_set": {
+        const current = projectRef.current;
+        const currentSource = sourceRef.current;
+        const currentDirectory = directoryRef.current;
+        if (!current || !currentSource || !currentDirectory) throw new Error("Load a project before preparing an authored change set.");
+        const now = Date.now();
+        for (const [id, changeSet] of mcpChangeSetsRef.current) if (changeSet.expiresAt <= now) mcpChangeSetsRef.current.delete(id);
+        if (mcpChangeSetsRef.current.size >= 20) throw new Error("The Editor already has 20 pending reviewed change sets. Apply or let them expire before previewing another.");
+        const prepared = prepareMcpChangeSet(current, command.operations);
+        if (prepared.diff.length === 0) throw new Error("The proposed operations do not change authored project data.");
+        const changeSetId = crypto.randomUUID();
+        const documentRevision = currentMcpDocumentRevision();
+        const expiresAt = now + 60_000;
+        mcpChangeSetsRef.current.set(changeSetId, {
+          rootPath: currentSource.rootPath,
+          directory: currentDirectory,
+          documentRevision,
+          expiresAt,
+          operations: command.operations,
+          project: prepared.project,
+          warnings: prepared.warnings,
+        });
+        return { changeSetId, projectName: current.name, assetDirectory: currentDirectory, documentRevision, expiresAt: new Date(expiresAt).toISOString(), operationNames: command.operations.map((item) => item.name), diff: prepared.diff, warnings: prepared.warnings };
+      }
+      case "apply_change_set": {
+        const changeSet = mcpChangeSetsRef.current.get(command.changeSetId);
+        if (!changeSet) throw new Error("The reviewed change set is missing or expired; preview the changes again.");
+        const currentRevision = currentMcpDocumentRevision();
+        if (changeSet.expiresAt <= Date.now()) {
+          mcpChangeSetsRef.current.delete(command.changeSetId);
+          throw new Error("The reviewed change set expired; preview the changes again.");
+        }
+        if (changeSet.rootPath !== sourceRef.current?.rootPath || changeSet.directory !== directoryRef.current || changeSet.documentRevision !== currentRevision) {
+          mcpChangeSetsRef.current.delete(command.changeSetId);
+          throw new Error("The Editor host, project, or document revision changed after review. Preview the changes again.");
+        }
+        mutate(() => changeSet.project);
+        mcpChangeSetsRef.current.delete(command.changeSetId);
+        return { changeSetId: command.changeSetId, applied: true, beforeDocumentRevision: changeSet.documentRevision, afterDocumentRevision: currentMcpDocumentRevision(), operationNames: changeSet.operations.map((item) => item.name), warnings: changeSet.warnings, saveState: saveStateRef.current };
+      }
+      case "add_interaction": {
+        const current = projectRef.current;
+        const loadedMeta = metaRef.current;
+        if (!current || !loadedMeta) throw new Error("Load a Spine asset before adding an interaction.");
+        const interaction = blankInteraction(loadedMeta.animations, frame?.bones ?? [], current.interactions.length);
+        mutate((value) => ({ ...value, interactions: [...value.interactions, interaction], selectedInteractionId: interaction.id, selectedRegionId: interaction.regions[0]?.id ?? null }));
+        return { interactionId: interaction.id, regionIds: interaction.regions.map((region) => region.id) };
+      }
+      case "update_interaction": {
+        const current = projectRef.current;
+        const interaction = current?.interactions.find((item) => item.id === command.interactionId);
+        if (!current || !interaction) throw new Error(`Interaction not found: ${command.interactionId}`);
+        mutate((value) => ({ ...value, interactions: value.interactions.map((item) => item.id === command.interactionId ? { ...item, ...command.patch } : item) }));
+        return { interactionId: command.interactionId, updated: Object.keys(command.patch) };
+      }
+      case "duplicate_interaction": {
+        const interaction = projectRef.current?.interactions.find((item) => item.id === command.interactionId);
+        if (!interaction) throw new Error(`Interaction not found: ${command.interactionId}`);
+        const copy = structuredClone(interaction);
+        copy.id = crypto.randomUUID();
+        copy.name = `${copy.name} copy`;
+        copy.regions = copy.regions.map((region) => ({ ...region, id: crypto.randomUUID(), placement: "manual" }));
+        mutate((value) => ({ ...value, interactions: [...value.interactions, copy], selectedInteractionId: copy.id, selectedRegionId: copy.regions[0]?.id ?? null }));
+        return { interactionId: copy.id, sourceInteractionId: command.interactionId, regionIds: copy.regions.map((region) => region.id) };
+      }
+      case "delete_interaction": {
+        const current = projectRef.current;
+        if (!current?.interactions.some((item) => item.id === command.interactionId)) throw new Error(`Interaction not found: ${command.interactionId}`);
+        let nextSelection: string | null = null;
+        mutate((value) => {
+          const remaining = value.interactions.filter((item) => item.id !== command.interactionId);
+          nextSelection = remaining[0]?.id ?? null;
+          return { ...value, interactions: remaining, selectedInteractionId: nextSelection, selectedRegionId: remaining[0]?.regions[0]?.id ?? null };
+        });
+        return { interactionId: command.interactionId, deleted: true, nextSelectedInteractionId: nextSelection };
+      }
+      case "select_interaction": {
+        const current = projectRef.current;
+        const interaction = current?.interactions.find((item) => item.id === command.interactionId);
+        if (!current || !interaction) throw new Error(`Interaction not found: ${command.interactionId}`);
+        updateProjectSelection((value) => ({ ...value, selectedInteractionId: interaction.id, selectedRegionId: interaction.regions[0]?.id ?? null }));
+        return { interactionId: interaction.id, selectedRegionId: interaction.regions[0]?.id ?? null };
+      }
+      case "add_region": {
+        const current = projectRef.current;
+        const interaction = current?.interactions.find((item) => item.id === command.interactionId);
+        if (!current || !interaction) throw new Error(`Interaction not found: ${command.interactionId}`);
+        const requestedPath = command.anchorBonePath === undefined ? current.selectedBonePath : command.anchorBonePath;
+        const anchor = requestedPath ? frame?.bones.find((bone) => bone.path === requestedPath) : frame?.bones[0];
+        if (requestedPath && !anchor) throw new Error(`Bone not found in the loaded skeleton: ${requestedPath}`);
+        const region = blankRegion(anchor, interaction.regions.length);
+        mutate((value) => ({ ...value, interactions: value.interactions.map((item) => item.id === interaction.id ? { ...item, regions: [...item.regions, region] } : item), selectedInteractionId: interaction.id, selectedRegionId: region.id }));
+        return { interactionId: interaction.id, regionId: region.id, anchorBone: region.anchorBone };
+      }
+      case "update_region": {
+        const interaction = projectRef.current?.interactions.find((item) => item.id === command.interactionId);
+        const region = interaction?.regions.find((item) => item.id === command.regionId);
+        if (!interaction || !region) throw new Error(`Region ${command.regionId} was not found in interaction ${command.interactionId}.`);
+        mutate((value) => ({ ...value, interactions: value.interactions.map((item) => item.id !== interaction.id ? item : { ...item, regions: item.regions.map((candidate) => candidate.id === region.id ? { ...candidate, ...command.patch } : candidate) }) }));
+        return { interactionId: interaction.id, regionId: region.id, updated: Object.keys(command.patch) };
+      }
+      case "duplicate_region": {
+        const interaction = projectRef.current?.interactions.find((item) => item.id === command.interactionId);
+        const region = interaction?.regions.find((item) => item.id === command.regionId);
+        if (!interaction || !region) throw new Error(`Region ${command.regionId} was not found in interaction ${command.interactionId}.`);
+        const copy = { ...region, id: crypto.randomUUID(), name: `${region.name} copy`, offsetX: region.offsetX + 20, placement: "manual" as const };
+        mutate((value) => ({ ...value, interactions: value.interactions.map((item) => item.id === interaction.id ? { ...item, regions: [...item.regions, copy] } : item), selectedInteractionId: interaction.id, selectedRegionId: copy.id }));
+        return { interactionId: interaction.id, regionId: copy.id, sourceRegionId: region.id };
+      }
+      case "delete_region": {
+        const interaction = projectRef.current?.interactions.find((item) => item.id === command.interactionId);
+        if (!interaction?.regions.some((item) => item.id === command.regionId)) throw new Error(`Region ${command.regionId} was not found in interaction ${command.interactionId}.`);
+        mutate((value) => ({
+          ...value,
+          interactions: value.interactions.map((item) => item.id === interaction.id ? { ...item, regions: item.regions.filter((region) => region.id !== command.regionId) } : item),
+          selectedInteractionId: interaction.id,
+          selectedRegionId: value.selectedRegionId === command.regionId ? null : value.selectedRegionId,
+        }));
+        return { interactionId: interaction.id, regionId: command.regionId, deleted: true };
+      }
+      case "select_region": {
+        const interaction = projectRef.current?.interactions.find((item) => item.id === command.interactionId);
+        if (!interaction?.regions.some((item) => item.id === command.regionId)) throw new Error(`Region ${command.regionId} was not found in interaction ${command.interactionId}.`);
+        updateProjectSelection((value) => ({ ...value, selectedInteractionId: interaction.id, selectedRegionId: command.regionId }));
+        return { interactionId: interaction.id, regionId: command.regionId };
+      }
+      case "update_look_follow":
+        if (!projectRef.current) throw new Error("Load a Spine asset before editing Look-follow settings.");
+        mutate((value) => ({ ...value, lookFollow: { ...value.lookFollow, ...command.patch } }));
+        return { updated: Object.keys(command.patch) };
+      case "replace_behavior_machines": {
+        const current = projectRef.current;
+        if (!current) throw new Error("Load a Spine asset before editing behavior machines.");
+        const priorIds = new Set((current.behaviorMachines ?? []).map((machine) => machine.id));
+        mutate((value) => ({
+          ...value,
+          behaviorMachines: command.machines,
+          ...(command.graphLayouts ? { behaviorGraphLayouts: command.graphLayouts } : {}),
+        }));
+        return { machineIds: command.machines.map((machine) => machine.id), removedMachineIds: [...priorIds].filter((id) => !command.machines.some((machine) => machine.id === id)), graphLayoutsUpdated: command.graphLayouts !== undefined };
+      }
+      case "create_talk_sequence": {
+        const current = projectRef.current;
+        const loadedMeta = metaRef.current;
+        if (!current || !loadedMeta) throw new Error("Load a Spine asset before adding a sequence.");
+        const next = addTalkSequence(current, loadedMeta.animations, directories);
+        const createdId = next.timeline.sequenceId ?? "";
+        mutate(() => next);
+        return { sequenceId: createdId, sequenceOrder: next.sequenceOrder ?? [] };
+      }
+      case "delete_sequence": {
+        const current = projectRef.current;
+        const loadedMeta = metaRef.current;
+        if (!current || !loadedMeta) throw new Error("Load a Spine asset before deleting a sequence.");
+        if (command.sequenceId === "opening") throw new Error("The Opening sequence cannot be deleted.");
+        if (!sequenceIdsForProject(current, loadedMeta.animations).includes(command.sequenceId)) throw new Error(`Sequence not found: ${command.sequenceId}`);
+        const next = deleteSequence(current, command.sequenceId, loadedMeta.animations, directories);
+        mutate(() => next);
+        return { sequenceId: command.sequenceId, deleted: true, activeSequenceId: next.timeline.sequenceId ?? "legacy", sequenceOrder: next.sequenceOrder ?? [] };
+      }
+      case "reorder_sequences": {
+        const current = projectRef.current;
+        const loadedMeta = metaRef.current;
+        if (!current || !loadedMeta) throw new Error("Load a Spine asset before reordering sequences.");
+        const existingIds = sequenceIdsForProject(current, loadedMeta.animations);
+        if (command.sequenceIds.length !== existingIds.length || existingIds.some((id) => !command.sequenceIds.includes(id))) throw new Error("sequenceIds must contain every available sequence exactly once.");
+        if (command.sequenceIds[0] !== "opening") throw new Error("The Opening sequence must remain first.");
+        mutate((value) => ({ ...value, sequenceOrder: command.sequenceIds }));
+        return { sequenceOrder: command.sequenceIds };
+      }
+      case "replace_sequence": {
+        const current = projectRef.current;
+        const loadedMeta = metaRef.current;
+        if (!current || !loadedMeta) throw new Error("Load a Spine asset before editing a sequence.");
+        if (!sequenceIdsForProject(current, loadedMeta.animations).includes(command.sequenceId)) throw new Error(`Sequence not found: ${command.sequenceId}`);
+        const previous = current.timeline.sequenceId === command.sequenceId
+          ? current.timeline
+          : current.sequences?.[command.sequenceId] ?? switchSequence(current, command.sequenceId, loadedMeta.animations, directories).timeline;
+        const sequence = { ...command.sequence, sequenceId: command.sequenceId };
+        assertMcpTimelineLocksPreserved(previous, sequence);
+        mutate((value) => value.timeline.sequenceId === command.sequenceId
+          ? { ...value, timeline: sequence }
+          : { ...value, sequences: { ...(value.sequences ?? {}), [command.sequenceId]: sequence } });
+        return { sequenceId: command.sequenceId, replaced: true, layerCount: sequence.layers.length, audioClipCount: sequence.audio.length, subtitleCueCount: sequence.subtitles.length };
+      }
+      case "update_camera_track": {
+        const current = projectRef.current;
+        const loadedMeta = metaRef.current;
+        if (!current || !loadedMeta) throw new Error("Load a Spine asset before editing camera tracks.");
+        if (!sequenceIdsForProject(current, loadedMeta.animations).includes(command.sequenceId)) throw new Error(`Sequence not found: ${command.sequenceId}`);
+        const targetTimeline = current.timeline.sequenceId === command.sequenceId
+          ? current.timeline
+          : current.sequences?.[command.sequenceId] ?? switchSequence(current, command.sequenceId, loadedMeta.animations, directories).timeline;
+        if (command.camera?.referenceLayerId && !targetTimeline.layers.some((layer) => layer.id === command.camera!.referenceLayerId)) throw new Error(`Camera reference layer not found in sequence ${command.sequenceId}: ${command.camera.referenceLayerId}`);
+        assertMcpTimelineLocksPreserved(targetTimeline, { ...targetTimeline, ...(command.camera ? { camera: command.camera } : { camera: undefined }) });
+        mutate((value) => {
+          const update = (timeline: EditorProject["timeline"]) => {
+            const { camera: _camera, ...rest } = timeline;
+            return command.camera ? { ...rest, camera: command.camera } : rest;
+          };
+          if (value.timeline.sequenceId === command.sequenceId) return { ...value, timeline: update(value.timeline) };
+          const switched = switchSequence(value, command.sequenceId, loadedMeta.animations, directories);
+          return { ...value, sequences: { ...(switched.sequences ?? {}), [command.sequenceId]: update(switched.timeline) } };
+        });
+        return { sequenceId: command.sequenceId, cameraUpdated: command.camera !== null, safeBoundCount: command.camera?.safeBounds.length ?? 0, keyframeCount: command.camera?.keyframes.length ?? 0 };
+      }
+      case "update_project_settings": {
+        const current = projectRef.current;
+        const loadedMeta = metaRef.current;
+        if (!current) throw new Error("Load a Spine asset before editing project settings.");
+        if (command.patch.entrySequence && !sequenceIdsForProject(current, loadedMeta?.animations ?? []).includes(command.patch.entrySequence)) throw new Error(`Entry sequence not found: ${command.patch.entrySequence}`);
+        mutate((value) => ({ ...value, ...command.patch }));
+        return { updated: Object.keys(command.patch), entrySequence: command.patch.entrySequence ?? current.entrySequence ?? null };
+      }
+      case "add_audio_clip": {
+        const current = projectRef.current;
+        const source = sourceRef.current;
+        if (!current || !source) throw new Error("Load an asset root before adding audio.");
+        if (!/\.(?:ogg|wav|mp3|m4a|flac|aac|opus)$/i.test(command.audio.path)) throw new Error("Audio path must use a supported audio file extension.");
+        if (!(await source.getFile(command.audio.path))) throw new Error(`Audio asset not found inside the selected asset root: ${command.audio.path}`);
+        if (command.audio.end < command.audio.start + 0.01) throw new Error("Audio clip end must be at least 0.01 seconds after its start.");
+        const target = current.timeline.sequenceId === command.sequenceId ? current.timeline : current.sequences?.[command.sequenceId];
+        if (target?.audio.some((clip) => clip.id === command.audio.id)) throw new Error(`Audio clip ID already exists: ${command.audio.id}`);
+        if (command.audio.subtitleId && !target?.subtitles.some((cue) => cue.id === command.audio.subtitleId)) throw new Error(`Subtitle cue not found: ${command.audio.subtitleId}`);
+        mutate((value) => updateMcpProjectSequence(value, command.sequenceId, (timeline) => {
+          const added = extendTimelineDuration({ ...timeline, audio: [...timeline.audio, command.audio] });
+          return command.audio.subtitleId ? linkAudioToSubtitle(added, command.audio.id, command.audio.subtitleId) : added;
+        }));
+        return { sequenceId: command.sequenceId, audioId: command.audio.id, path: command.audio.path };
+      }
+      case "duplicate_audio_clip": {
+        const current = projectRef.current;
+        const timeline = current?.timeline.sequenceId === command.sequenceId ? current.timeline : current?.sequences?.[command.sequenceId];
+        const clip = timeline?.audio.find((item) => item.id === command.audioId);
+        if (!current || !timeline || !clip) throw new Error(`Audio clip not found: ${command.audioId} in sequence ${command.sequenceId}.`);
+        const { lineId: _lineId, subtitleId: _subtitleId, ...fields } = clip;
+        const id = `audio-${crypto.randomUUID()}`;
+        const length = Math.max(0.01, clip.end - clip.start);
+        const duplicate = { ...fields, id, start: clip.end, end: clip.end + length };
+        mutate((value) => updateMcpProjectSequence(value, command.sequenceId, (sequence) => extendTimelineDuration({ ...sequence, audio: [...sequence.audio, duplicate] })));
+        return { sequenceId: command.sequenceId, sourceAudioId: clip.id, audioId: id, start: duplicate.start, end: duplicate.end, subtitleLink: null };
+      }
+      case "update_audio_clip": {
+        const current = projectRef.current;
+        const source = sourceRef.current;
+        if (!current || !source) throw new Error("Load an asset root before editing audio.");
+        const timeline = current.timeline.sequenceId === command.sequenceId ? current.timeline : current.sequences?.[command.sequenceId];
+        const clip = timeline?.audio.find((item) => item.id === command.audioId);
+        if (!timeline || !clip) throw new Error(`Audio clip not found: ${command.audioId} in sequence ${command.sequenceId}.`);
+        if (command.patch.path !== undefined) {
+          if (!/\.(?:ogg|wav|mp3|m4a|flac|aac|opus)$/i.test(command.patch.path)) throw new Error("Audio path must use a supported audio file extension.");
+          if (!(await source.getFile(command.patch.path))) throw new Error(`Audio asset not found inside the selected asset root: ${command.patch.path}`);
+        }
+        const start = command.patch.start ?? clip.start;
+        const end = command.patch.end ?? clip.end;
+        if (end < start + 0.01) throw new Error("Audio clip end must be at least 0.01 seconds after its start.");
+        mutate((value) => updateMcpProjectSequence(value, command.sequenceId, (sequence) => extendTimelineDuration({ ...sequence, audio: sequence.audio.map((item) => item.id === clip.id ? { ...item, ...command.patch } : item) })));
+        return { sequenceId: command.sequenceId, audioId: clip.id, updated: Object.keys(command.patch) };
+      }
+      case "delete_audio_clip": {
+        const current = projectRef.current;
+        const timeline = current?.timeline.sequenceId === command.sequenceId ? current.timeline : current?.sequences?.[command.sequenceId];
+        if (!current || !timeline?.audio.some((item) => item.id === command.audioId)) throw new Error(`Audio clip not found: ${command.audioId} in sequence ${command.sequenceId}.`);
+        mutate((value) => updateMcpProjectSequence(value, command.sequenceId, (sequence) => ({ ...sequence, audio: sequence.audio.filter((item) => item.id !== command.audioId) })));
+        return { sequenceId: command.sequenceId, audioId: command.audioId, deleted: true };
+      }
+      case "link_audio_subtitle": {
+        const current = projectRef.current;
+        const timeline = current?.timeline.sequenceId === command.sequenceId ? current.timeline : current?.sequences?.[command.sequenceId];
+        if (!current || !timeline?.audio.some((item) => item.id === command.audioId)) throw new Error(`Audio clip not found: ${command.audioId} in sequence ${command.sequenceId}.`);
+        if (command.subtitleId !== null && !timeline.subtitles.some((cue) => cue.id === command.subtitleId)) throw new Error(`Subtitle cue not found: ${command.subtitleId}`);
+        mutate((value) => updateMcpProjectSequence(value, command.sequenceId, (sequence) => linkAudioToSubtitle(sequence, command.audioId, command.subtitleId)));
+        return { sequenceId: command.sequenceId, audioId: command.audioId, subtitleId: command.subtitleId };
+      }
+      case "set_timeline_items_enabled":
+      case "delete_timeline_items": {
+        const current = projectRef.current;
+        if (!current) throw new Error("Load a project before editing timeline items.");
+        const timeline = current.timeline;
+        const selected = new Set(command.items.map((item) => `${item.kind}:${item.id}`));
+        const cachedAnimationInfo = mcpTimelineAnimationInfoRef.current?.rootPath === (sourceRef.current?.rootPath ?? null)
+          && mcpTimelineAnimationInfoRef.current.directory === (directoryRef.current || null)
+          ? mcpTimelineAnimationInfoRef.current.animationInfo
+          : [];
+        const getClips = (layer: EditorTimelineLayer): EditorAnimationClip[] => {
+          if (Array.isArray(layer.animationClips)) return layer.animationClips;
+          const meta = layer.directory === directoryRef.current ? metaRef.current : null;
+          const info = cachedAnimationInfo.find((item) => item.layerId === layer.id);
+          const introDuration = meta?.introAnimation ? info?.animations.find((item) => item.name === meta.introAnimation)?.duration ?? 0 : 0;
+          return timelineLayerAnimationClips(layer, meta, timeline.sequenceId ?? "legacy", timeline.openingMode ?? "direct", introDuration) as EditorAnimationClip[];
+        };
+        const allAnimations = timeline.layers.flatMap((layer) => getClips(layer).map((clip) => ({ layer, clip })));
+        const exists = (item: typeof command.items[number]) => {
+          switch (item.kind) {
+            case "layer": return timeline.layers.some((layer) => layer.id === item.id);
+            case "color-layer": return timeline.colorLayers.some((layer) => layer.id === item.id);
+            case "animation": return allAnimations.some(({ clip }) => clip.id === item.id);
+            case "color": return timeline.colorLayers.some((layer) => layer.clips.some((clip) => clip.id === item.id));
+            case "cue": return timeline.subtitles.some((cue) => cue.id === item.id);
+            case "audio": return timeline.audio.some((clip) => clip.id === item.id);
+          }
+        };
+        const missing = command.items.find((item) => !exists(item));
+        if (missing) throw new Error(`Timeline ${missing.kind} not found: ${missing.id}`);
+        if (command.name === "set_timeline_items_enabled") {
+          let changedCount = 0;
+          let skippedLockedCount = 0;
+          const enabled = command.enabled;
+          const layers = timeline.layers.map((layer) => {
+            const selectedLayer = selected.has(`layer:${layer.id}`);
+            const clips = getClips(layer);
+            const selectedClips = clips.some((clip) => selected.has(`animation:${clip.id}`));
+            if (!selectedLayer && !selectedClips) return layer;
+            if (layer.locked) { skippedLockedCount += Number(selectedLayer) + Number(selectedClips); return layer; }
+            if (selectedLayer && layer.enabled !== enabled) changedCount++;
+            if (selectedClips) for (const clip of clips) if (selected.has(`animation:${clip.id}`) && clip.enabled !== enabled) changedCount++;
+            return {
+              ...layer,
+              ...(selectedLayer ? { enabled } : {}),
+              ...(selectedClips ? { animationClips: clips.map((clip) => selected.has(`animation:${clip.id}`) ? { ...clip, enabled } : clip) } : {}),
+            };
+          });
+          const colorLayers = timeline.colorLayers.map((layer) => {
+            const selectedLayer = selected.has(`color-layer:${layer.id}`);
+            const selectedClips = layer.clips.some((clip) => selected.has(`color:${clip.id}`));
+            if (!selectedLayer && !selectedClips) return layer;
+            if (layer.locked) { skippedLockedCount += Number(selectedLayer) + Number(selectedClips); return layer; }
+            if (selectedLayer && layer.enabled !== enabled) changedCount++;
+            if (selectedClips) for (const clip of layer.clips) if (selected.has(`color:${clip.id}`) && clip.enabled !== enabled) changedCount++;
+            return { ...layer, ...(selectedLayer ? { enabled } : {}), ...(selectedClips ? { clips: layer.clips.map((clip) => selected.has(`color:${clip.id}`) ? { ...clip, enabled } : clip) } : {}) };
+          });
+          const subtitles = timeline.subtitles.map((cue) => {
+            if (!selected.has(`cue:${cue.id}`)) return cue;
+            if (cue.enabled !== enabled) changedCount++;
+            return { ...cue, enabled };
+          });
+          const audio = timeline.audio.map((clip) => {
+            if (!selected.has(`audio:${clip.id}`)) return clip;
+            if (clip.enabled !== enabled) changedCount++;
+            return { ...clip, enabled };
+          });
+          if (changedCount > 0) mutate((value) => updateMcpProjectSequence(value, timeline.sequenceId ?? "legacy", (sequence) => ({ ...sequence, layers, colorLayers, subtitles, audio })));
+          return { enabled, requestedCount: command.items.length, changedCount, skippedLockedCount };
+        }
+
+        const removableLayers = new Set(timeline.layers.filter((layer) => selected.has(`layer:${layer.id}`) && layer.role !== "character" && !layer.locked).map((layer) => layer.id));
+        const removableColorLayers = new Set(timeline.colorLayers.filter((layer) => selected.has(`color-layer:${layer.id}`) && !layer.locked).map((layer) => layer.id));
+        const selectedAnimationIds = new Set(command.items.filter((item) => item.kind === "animation").map((item) => item.id));
+        const selectedColorIds = new Set(command.items.filter((item) => item.kind === "color").map((item) => item.id));
+        const selectedCueIds = new Set(command.items.filter((item) => item.kind === "cue").map((item) => item.id));
+        const selectedAudioIds = new Set(command.items.filter((item) => item.kind === "audio").map((item) => item.id));
+        let skippedLockedCount = timeline.layers.filter((layer) => layer.locked && getClips(layer).some((clip) => selectedAnimationIds.has(clip.id))).length
+          + timeline.colorLayers.filter((layer) => layer.locked && layer.clips.some((clip) => selectedColorIds.has(clip.id))).length;
+        skippedLockedCount += timeline.layers.filter((layer) => selected.has(`layer:${layer.id}`) && (layer.role === "character" || layer.locked) && !removableLayers.has(layer.id)).length;
+        skippedLockedCount += timeline.colorLayers.filter((layer) => selected.has(`color-layer:${layer.id}`) && layer.locked && !removableColorLayers.has(layer.id)).length;
+        const layers = timeline.layers.filter((layer) => !removableLayers.has(layer.id)).map((layer) => {
+          if (layer.locked) return layer;
+          const clips = getClips(layer);
+          const ids = clips.filter((clip) => selectedAnimationIds.has(clip.id)).map((clip) => clip.id);
+          return ids.length ? { ...layer, animationClips: ids.reduce((value, id) => deleteAnimationClipRipple(value, id), clips) } : layer;
+        });
+        const colorLayers = timeline.colorLayers.filter((layer) => !removableColorLayers.has(layer.id)).map((layer) => layer.locked ? layer : { ...layer, clips: layer.clips.filter((clip) => !selectedColorIds.has(clip.id)) });
+        const subtitles = timeline.subtitles.filter((cue) => !selectedCueIds.has(cue.id));
+        const audio = timeline.audio.filter((clip) => !selectedAudioIds.has(clip.id)).map((clip) => clip.subtitleId && selectedCueIds.has(clip.subtitleId) ? { ...clip, subtitleId: null } : clip);
+        const deletedCount = removableLayers.size + removableColorLayers.size
+          + allAnimations.filter(({ layer, clip }) => !layer.locked && selectedAnimationIds.has(clip.id) && !removableLayers.has(layer.id)).length
+          + timeline.colorLayers.filter((layer) => !layer.locked).reduce((count, layer) => count + layer.clips.filter((clip) => selectedColorIds.has(clip.id)).length, 0)
+          + timeline.subtitles.filter((cue) => selectedCueIds.has(cue.id)).length
+          + timeline.audio.filter((clip) => selectedAudioIds.has(clip.id)).length;
+        if (deletedCount > 0) mutate((value) => updateMcpProjectSequence(value, timeline.sequenceId ?? "legacy", (sequence) => ({
+          ...sequence,
+          layers,
+          colorLayers,
+          subtitles,
+          audio,
+          selectedLayerId: removableLayers.has(sequence.selectedLayerId ?? "") ? null : sequence.selectedLayerId,
+          selectedCueId: selectedCueIds.has(sequence.selectedCueId ?? "") ? null : sequence.selectedCueId,
+          selectedColorLayerId: null,
+          selectedColorClipId: null,
+        })));
+        return { requestedCount: command.items.length, deletedCount, skippedLockedCount };
+      }
+      case "list_audio_assets": {
+        const source = sourceRef.current;
+        if (!source) throw new Error("Open an asset root before listing audio assets.");
+        if (!source.listAudioAssets) throw new Error("Audio asset discovery is unavailable from this asset source.");
+        return source.listAudioAssets();
+      }
+      case "inspect_recovery": {
+        const prompt = recoveryPromptRef.current;
+        if (!prompt || prompt.rootPath !== sourceRef.current?.rootPath || prompt.directory !== directoryRef.current) return { available: false, candidates: [] };
+        const summarize = (candidate: EditorProject, slot: string) => ({
+          slot,
+          name: candidate.name,
+          assetDirectory: candidate.assetDirectory,
+          sequenceCount: 1 + Object.keys(candidate.sequences ?? {}).length,
+          interactionCount: candidate.interactions.length,
+          behaviorMachineCount: candidate.behaviorMachines?.length ?? 0,
+        });
+        const candidates = [
+          ...(prompt.current ? [summarize(prompt.current, "latest")] : []),
+          ...prompt.backups.map((candidate, backupIndex) => summarize(candidate, `backup:${backupIndex}`)),
+        ];
+        return { available: candidates.length > 0, rootPath: prompt.rootPath, directory: prompt.directory, savedAt: prompt.savedAt || null, candidates };
+      }
+      case "restore_recovery": {
+        const prompt = recoveryPromptRef.current;
+        if (!prompt || prompt.rootPath !== sourceRef.current?.rootPath || prompt.directory !== directoryRef.current) throw new Error("There is no recovery snapshot for the loaded project.");
+        const candidate = command.candidate === "latest" ? prompt.current : prompt.backups[command.backupIndex ?? -1];
+        if (!candidate) throw new Error("The requested recovery snapshot is unavailable.");
+        const legacyAspectRatio = command.candidate === "latest"
+          ? prompt.legacyCurrent
+          : prompt.legacyBackups[command.backupIndex ?? -1] ?? false;
+        restoreRecoveryProject(candidate, command.candidate === "latest" ? "Latest recovery snapshot" : `Recovery backup ${command.backupIndex ?? 0}`, legacyAspectRatio);
+        return { restored: true, candidate: command.candidate, ...(command.backupIndex === undefined ? {} : { backupIndex: command.backupIndex }), projectName: candidate.name, saveState: "dirty" };
+      }
+      case "open_project_file": {
+        const currentSaveState = saveStateRef.current;
+        if (currentSaveState === "dirty" || currentSaveState === "saving" || currentSaveState === "error") throw new Error("Save the current project before opening another project file. MCP never discards unsaved work.");
+        if (recoveryPromptRef.current) throw new Error("Resolve or dismiss the pending recovery prompt before opening another project file. MCP never discards recovery data.");
+        const currentSource = sourceRef.current;
+        if (!currentSource) throw new Error("Open an asset root before opening a project file.");
+        if (!command.path.toLocaleLowerCase().endsWith(".json")) throw new Error("Project files must use the .json extension.");
+        const content = await currentSource.readText(command.path);
+        if (!content) throw new Error(`Project file not found inside the selected asset root: ${command.path}`);
+        const raw = JSON.parse(content) as Record<string, unknown>;
+        const assetDirectory = typeof raw.assetDirectory === "string" ? raw.assetDirectory : "";
+        if (!assetDirectory) throw new Error("This project file does not identify an asset set.");
+        const restored = normalizeProject(raw, assetDirectory);
+        if (!restored) throw new Error("The selected file is not a compatible Spine Editor project.");
+        const nextSource = await chooseDesktopSourceAt(currentSource.rootPath);
+        if (!nextSource) throw new Error("The project asset root could not be reopened.");
+        pendingProjectRef.current = restored;
+        setPendingSubtitlePath(null);
+        setPendingAudioPaths(null);
+        setAssetLoading(true);
+        recordRecentFile({ kind: "project", path: command.path, rootPath: nextSource.rootPath, label: displayName(command.path), directory: restored.assetDirectory });
+        await useSource(nextSource, restored.assetDirectory);
+        setLegacyAspectRatioNotice(hasLegacySquareCameraAspectRatio(raw));
+        setWorkspace("interaction");
+        setStatus(`Opened project ${displayName(command.path)}.`);
+        return { opened: true, path: command.path, directory: restored.assetDirectory, projectName: restored.name };
+      }
+      case "preview_interaction_phase": {
+        const interaction = projectRef.current?.interactions.find((item) => item.id === command.interactionId);
+        if (!interaction) throw new Error(`Interaction not found: ${command.interactionId}`);
+        const phase = command.phase === "start"
+          ? [interaction.startAnimation, interaction.faceStartAnimation]
+          : command.phase === "follow"
+            ? [interaction.followAnimation, interaction.faceFollowAnimation]
+            : [interaction.endAnimation, interaction.faceEndAnimation];
+        if (!phase[0] && !phase[1]) throw new Error(`The ${command.phase} phase has no animation assigned.`);
+        previewPhase(`${interaction.name} ${command.phase}`, phase[0], phase[1], command.phase === "follow");
+        return { interactionId: interaction.id, phase: command.phase, bodyAnimation: phase[0], faceAnimation: phase[1] };
+      }
+      case "start_interaction_test": {
+        const interaction = projectRef.current?.interactions.find((item) => item.id === command.interactionId);
+        if (!interaction) throw new Error(`Interaction not found: ${command.interactionId}`);
+        if (!frame) throw new Error("The interaction preview renderer is not ready.");
+        if (command.regionId && !interaction.regions.some((region) => region.id === command.regionId && region.enabled)) throw new Error(`Enabled region not found: ${command.regionId}`);
+        updateProjectSelection((value) => ({ ...value, selectedInteractionId: interaction.id, selectedRegionId: command.regionId ?? interaction.regions[0]?.id ?? null }));
+        startSelectedTest(interaction, command.regionId);
+        return { interactionId: interaction.id, regionId: command.regionId ?? interaction.regions.find((region) => region.enabled)?.id ?? null, testing: true };
+      }
+      case "move_interaction_test":
+        if (!testing) throw new Error("Start an interaction test before moving its pointer.");
+        previewRef.current.move(command.worldX, command.worldY);
+        setPreviewDebug(previewRef.current.debug);
+        return { worldX: command.worldX, worldY: command.worldY, preview: previewRef.current.debug };
+      case "release_interaction_test":
+        if (!testing) throw new Error("There is no active interaction test to release.");
+        releaseTest();
+        return { released: true, preview: previewRef.current.debug };
+      case "cancel_interaction_test":
+        if (!testing) throw new Error("There is no active interaction test to cancel.");
+        previewRef.current.release();
+        testPointerRef.current = null;
+        resetPreview();
+        setTesting(false);
+        setPreviewStatus("cancelled");
+        return { cancelled: true, preview: previewRef.current.debug };
+      case "test_look_follow":
+        if (command.enabled && (!projectRef.current?.lookFollow.enabled || !frame?.lookFollow)) throw new Error("Look-follow testing requires enabled settings and a loaded Look-follow controller.");
+        if (command.enabled !== lookTesting) toggleLookFollowTest();
+        return { lookFollowTesting: command.enabled && projectRef.current?.lookFollow.enabled === true && Boolean(frame?.lookFollow) };
+      case "inject_behavior_event": {
+        const machine = projectRef.current?.behaviorMachines?.find((item) => item.id === command.machineId);
+        if (!machine) throw new Error(`Behavior machine not found: ${command.machineId}`);
+        if (command.regionId && !machine.activation.regions.some((region) => region.id === command.regionId)) throw new Error(`Activation region not found: ${command.regionId}`);
+        const renderer = rendererRef.current;
+        if (!renderer) throw new Error("The behavior runtime renderer is not ready.");
+        setWorkspace("interaction");
+        setBehaviorMode(true);
+        renderer.testBehaviorEvent(command.machineId, command.event, command.regionId ?? null);
+        return { machineId: command.machineId, event: command.event, regionId: command.regionId ?? null, injected: true };
+      }
+      case "cancel_behavior_test":
+        if (!rendererRef.current) throw new Error("The behavior runtime renderer is not ready.");
+        rendererRef.current.cancelBehaviorTest();
+        return { cancelled: true };
+      case "get_project": {
+        const current = projectRef.current;
+        if (!current) throw new Error("Load a Spine asset before inspecting the project.");
+        return {
+          project: cloneProject(current),
+          assetRoot: sourceRef.current?.rootPath ?? null,
+          directory: directoryRef.current,
+          workspace: workspaceRef.current,
+          saveState: saveStateRef.current,
+          undoAvailable: undo.length > 0,
+          redoAvailable: redo.length > 0,
+          documentRevision: currentMcpDocumentRevision(),
+          animations: metaRef.current?.animations ?? [],
+          skeleton: frame ? {
+            bones: frame.bones.map(({ path, name, parentPath, length, rotation, active }) => ({ path, name, parentPath, length, rotation, active })),
+            constraints: frame.constraints,
+          } : null,
+        };
+      }
+      case "validate_project": {
+        const current = projectRef.current;
+        const currentSource = sourceRef.current;
+        if (!current || !currentSource) throw new Error("Load a project before running whole-project validation.");
+        const validationRevision = currentMcpDocumentRevision();
+        const activeId = current.timeline.sequenceId ?? "legacy";
+        const sequences = new Map(Object.entries(current.sequences ?? {}));
+        sequences.set(activeId, current.timeline);
+        const findings: Array<{ code: string; severity: "error" | "warning"; message: string; sequenceId?: string; entityId?: string }> = [];
+        const maximumFindings = 500;
+        let truncated = false;
+        const addFinding = (finding: typeof findings[number]) => {
+          if (findings.length >= maximumFindings) { truncated = true; return; }
+          findings.push(finding);
+        };
+        const sequenceIds = new Set(sequences.keys());
+        if (current.entrySequence && !sequenceIds.has(current.entrySequence)) addFinding({ code: "missing_entry_sequence", severity: "error", message: `Entry sequence ${current.entrySequence} does not exist.` });
+        const ordered = current.sequenceOrder ?? [];
+        if (ordered[0] !== "opening") addFinding({ code: "opening_order", severity: "error", message: "Opening must be first in the authored sequence order." });
+        if (new Set(ordered).size !== ordered.length) addFinding({ code: "duplicate_sequence_order", severity: "error", message: "Sequence order contains duplicate IDs." });
+        for (const id of ordered) if (!sequenceIds.has(id)) addFinding({ code: "missing_ordered_sequence", severity: "error", message: `Sequence order references missing sequence ${id}.`, sequenceId: id });
+
+        const allCueIds = new Set<string>();
+        const allAudioIds = new Set<string>();
+        const availableDirectories = new Set(directories);
+        const animationInfo = new Map((mcpTimelineSnapshotRef.current?.animationInfo ?? []).map((layer) => [layer.layerId, new Set(layer.animations.map((animation) => animation.name))]));
+        for (const [sequenceId, timeline] of sequences) {
+          if (timeline.sequenceId && timeline.sequenceId !== sequenceId) addFinding({ code: "sequence_id_mismatch", severity: "error", message: `Timeline identifies itself as ${timeline.sequenceId}, but is stored as ${sequenceId}.`, sequenceId });
+          if (!Number.isFinite(timeline.duration) || timeline.duration <= 0) addFinding({ code: "invalid_duration", severity: "error", message: "Sequence duration must be finite and positive.", sequenceId });
+          const localIds = new Set<string>();
+          const checkId = (id: string, kind: string) => {
+            if (localIds.has(id)) addFinding({ code: "duplicate_entity_id", severity: "error", message: `Duplicate ${kind} ID ${id} in this sequence.`, sequenceId, entityId: id });
+            localIds.add(id);
+          };
+          for (const layer of timeline.layers) {
+            checkId(layer.id, "visual layer");
+            if (!availableDirectories.has(layer.directory)) addFinding({ code: "missing_layer_asset", severity: "error", message: `Spine layer ${layer.name} references unavailable asset set ${layer.directory}.`, sequenceId, entityId: layer.id });
+            if (sequenceId === activeId) {
+              const available = animationInfo.get(layer.id);
+              const clips = layer.animationClips ?? [];
+              for (const clip of clips) if (clip.animation && available && !available.has(clip.animation)) addFinding({ code: "missing_animation", severity: "error", message: `Animation ${clip.animation} is unavailable on layer ${layer.name}.`, sequenceId, entityId: clip.id });
+            }
+          }
+          for (const layer of timeline.colorLayers) {
+            checkId(layer.id, "color layer");
+            for (const clip of layer.clips) checkId(clip.id, "color clip");
+          }
+          for (const cue of timeline.subtitles) {
+            checkId(cue.id, "subtitle cue");
+            if (cue.end < cue.start + 0.01) addFinding({ code: "invalid_subtitle_timing", severity: "error", message: `Subtitle cue ${cue.id} ends before its start plus 0.01 seconds.`, sequenceId, entityId: cue.id });
+            allCueIds.add(cue.id);
+          }
+          const linkedCueIds = new Set<string>();
+          for (const clip of timeline.audio) {
+            checkId(clip.id, "audio clip");
+            allAudioIds.add(clip.id);
+            if (clip.end < clip.start + 0.01) addFinding({ code: "invalid_audio_timing", severity: "error", message: `Audio clip ${clip.id} has invalid timing.`, sequenceId, entityId: clip.id });
+            if (clip.subtitleId) {
+              if (!timeline.subtitles.some((cue) => cue.id === clip.subtitleId)) addFinding({ code: "missing_subtitle_link", severity: "error", message: `Audio clip ${clip.id} links to missing subtitle cue ${clip.subtitleId}.`, sequenceId, entityId: clip.id });
+              if (linkedCueIds.has(clip.subtitleId)) addFinding({ code: "duplicate_subtitle_link", severity: "error", message: `Subtitle cue ${clip.subtitleId} is linked to more than one audio clip.`, sequenceId, entityId: clip.id });
+              linkedCueIds.add(clip.subtitleId);
+            }
+          }
+          if (timeline.camera) {
+            const camera = timeline.camera;
+            const boundIds = new Set(camera.safeBounds.map((bound) => bound.id));
+            const referenceLayer = camera.referenceLayerId;
+            if (referenceLayer && !timeline.layers.some((layer) => layer.id === referenceLayer)) addFinding({ code: "missing_camera_reference_layer", severity: "error", message: `Camera references missing layer ${referenceLayer}.`, sequenceId, entityId: referenceLayer });
+            for (const constraint of [camera.constraint, ...camera.keyframes.flatMap((keyframe) => keyframe.constraint ? [keyframe.constraint] : [])]) {
+              if (constraint.mode === "manual" && !boundIds.has(constraint.boundId)) addFinding({ code: "missing_camera_bound", severity: "error", message: `Camera constraint references missing safe bound ${constraint.boundId}.`, sequenceId, entityId: constraint.boundId });
+            }
+            for (const keyframe of camera.keyframes) if (keyframe.time > timeline.duration) addFinding({ code: "camera_keyframe_after_duration", severity: "warning", message: `Camera keyframe ${keyframe.id} is after the sequence duration.`, sequenceId, entityId: keyframe.id });
+          }
+        }
+        const loadedBonePaths = new Set(frame?.bones.map((bone) => bone.path) ?? []);
+        if (current.lookFollow.targetBonePath && loadedBonePaths.size && !loadedBonePaths.has(current.lookFollow.targetBonePath)) addFinding({ code: "missing_look_follow_bone", severity: "error", message: `Look-follow target bone ${current.lookFollow.targetBonePath} is unavailable.`, entityId: current.lookFollow.targetBonePath });
+        for (const interaction of current.interactions) {
+          if (interaction.followTargetBone && loadedBonePaths.size && !loadedBonePaths.has(interaction.followTargetBone)) addFinding({ code: "missing_interaction_bone", severity: "error", message: `Interaction ${interaction.name} targets missing bone ${interaction.followTargetBone}.`, entityId: interaction.id });
+          for (const region of interaction.regions) if (region.anchorBone && loadedBonePaths.size && !loadedBonePaths.has(region.anchorBone)) addFinding({ code: "missing_region_bone", severity: "error", message: `Region ${region.name} is anchored to missing bone ${region.anchorBone}.`, entityId: region.id });
+        }
+        const machines = current.behaviorMachines ?? [];
+        for (const machine of machines) {
+          const stateIds = new Set(machine.states.map((state) => state.id));
+          if (!stateIds.has(machine.initialStateId)) addFinding({ code: "missing_initial_state", severity: "error", message: `Behavior machine ${machine.name} has no valid initial state.`, entityId: machine.id });
+          for (const transition of machine.transitions) {
+            if (!stateIds.has(transition.fromStateId) || !stateIds.has(transition.toStateId)) addFinding({ code: "invalid_behavior_transition", severity: "error", message: `Transition ${transition.id} references a missing local state.`, entityId: transition.id });
+            for (const condition of transition.conditions) if (condition.type === "machine-state") {
+              const target = machines.find((candidate) => candidate.id === condition.machineId);
+              if (!target?.states.some((state) => state.id === condition.stateId)) addFinding({ code: "invalid_cross_machine_condition", severity: "error", message: `Condition references missing machine state ${condition.machineId}/${condition.stateId}.`, entityId: transition.id });
+            }
+          }
+          for (const state of machine.states) for (const action of [...state.actions, ...state.exitActions, ...state.cancelActions]) {
+            if (action.type === "pointer-follow" || action.type === "drag-bone" || action.type === "rotate-bone") {
+              if (action.targetBonePath && loadedBonePaths.size && !loadedBonePaths.has(action.targetBonePath)) addFinding({ code: "missing_behavior_bone", severity: "error", message: `Behavior action targets missing bone ${action.targetBonePath}.`, entityId: machine.id });
+            } else if (action.type === "play-audio" && !allAudioIds.has(action.audioId)) addFinding({ code: "missing_behavior_audio", severity: "warning", message: `Behavior action references audio clip ${action.audioId} not found in authored sequences.`, entityId: machine.id });
+            else if (action.type === "show-subtitle" && !allCueIds.has(action.cueId)) addFinding({ code: "missing_behavior_subtitle", severity: "warning", message: `Behavior action references subtitle cue ${action.cueId} not found in authored sequences.`, entityId: machine.id });
+          }
+        }
+        const sourceFilePaths = [...new Set([...sequences.values()].flatMap((timeline) => timeline.audio.map((clip) => clip.path)))].slice(0, 200);
+        if (sourceFilePaths.length < new Set([...sequences.values()].flatMap((timeline) => timeline.audio.map((clip) => clip.path))).size) truncated = true;
+        const missingFiles = await Promise.all(sourceFilePaths.map(async (path) => ({ path, exists: Boolean(await currentSource.getFile(path).catch(() => null)) })));
+        for (const file of missingFiles) if (!file.exists) addFinding({ code: "missing_audio_asset", severity: "error", message: `Audio asset is missing or outside the selected root: ${file.path}.`, entityId: file.path });
+        const revisionAfter = currentMcpDocumentRevision();
+        if (revisionAfter !== validationRevision) addFinding({ code: "project_changed_during_validation", severity: "warning", message: `The authored project changed during validation (revision ${validationRevision} to ${revisionAfter}). Re-run validation for the latest document.` });
+        return { scope: "project", assetRoot: currentSource.rootPath, directory: current.assetDirectory, documentRevision: validationRevision, documentRevisionAfter: revisionAfter, scannedSequenceCount: sequences.size, scannedInteractionCount: current.interactions.length, scannedBehaviorMachineCount: machines.length, checkedAudioPaths: sourceFilePaths.length, count: findings.length, truncated, findings };
+      }
+      case "undo":
+        if (undo.length === 0) throw new Error("There is no project edit to undo.");
+        undoProject();
+        return { undone: true, documentRevision: currentMcpDocumentRevision(), undoAvailable: undo.length > 1, redoAvailable: true };
+      case "redo":
+        if (redo.length === 0) throw new Error("There is no project edit to redo.");
+        redoProject();
+        return { redone: true, documentRevision: currentMcpDocumentRevision(), undoAvailable: true, redoAvailable: redo.length > 1 };
       case "start_waveform_profile": {
         if (!__EDITOR_WAVEFORM_PROFILE__) throw new Error("Waveform profiling is not enabled in this Editor build.");
         if (waveformProfileRef.current?.recording) throw new Error("A waveform profile is already recording; stop it before starting another.");
@@ -1820,7 +2954,7 @@ export function Editor() {
         return recorder.snapshot(performance.now());
       }
       case "open_asset_root": {
-        if (saveStateRef.current === "dirty" || saveStateRef.current === "saving" || saveStateRef.current === "error") throw new Error("Save the current project before opening another asset root.");
+        if (saveStateRef.current === "dirty" || saveStateRef.current === "saving" || saveStateRef.current === "error" || recoveryPromptRef.current) throw new Error("Save the current project and resolve recovery before opening another asset root.");
         const next = await chooseDesktopSourceAt(command.rootPath);
         if (!next) throw new Error("The asset root could not be opened.");
         pendingProjectRef.current = null;
@@ -1832,7 +2966,7 @@ export function Editor() {
         return { assetRoot: next.rootPath, status: "Loading asset root." };
       }
       case "select_asset_set": {
-        if (saveStateRef.current === "dirty" || saveStateRef.current === "saving" || saveStateRef.current === "error") throw new Error("Save the current project before switching asset sets.");
+        if (saveStateRef.current === "dirty" || saveStateRef.current === "saving" || saveStateRef.current === "error" || recoveryPromptRef.current) throw new Error("Save the current project and resolve recovery before switching asset sets.");
         if (!sourceRef.current) throw new Error("Open an asset root first.");
         if (!directories.includes(command.directory)) throw new Error(`Asset set not found: ${command.directory}`);
         setAssetLoading(true);
@@ -1844,6 +2978,16 @@ export function Editor() {
         if (command.workspace !== "interaction") setBehaviorMode(false);
         setWorkspace(command.workspace);
         return { workspace: command.workspace };
+      case "select_sequence": {
+        const timeline = mcpTimelineRef.current;
+        if (timeline) return timeline.execute(command);
+        const current = projectRef.current;
+        const loadedMeta = metaRef.current;
+        if (!current || !loadedMeta || !sequenceIdsForProject(current, loadedMeta.animations).includes(command.sequenceId)) throw new Error(`Sequence not found: ${command.sequenceId}`);
+        const next = switchSequence(current, command.sequenceId, loadedMeta.animations, directories);
+        updateProjectSelection(() => next);
+        return { sequenceId: command.sequenceId, workspace: workspaceRef.current };
+      }
       case "save": {
         await saveProject({ rejectExternalChanges: true });
         const saved = saveResultRef.current;
@@ -1852,7 +2996,13 @@ export function Editor() {
       }
       default: {
         const timeline = mcpTimelineRef.current;
-        if (!timeline) throw new Error("Open the timeline workspace first.");
+        if (!timeline) {
+          const result = executeWorkspaceIndependentTimelineEdit(command);
+          if (result !== undefined) return result;
+          if (command.name === "match_audio_length") throw new Error("Audio duration matching requires decoded media metadata. Open the Timeline workspace and wait for the audio clip to decode first.");
+          if (command.name === "preview_audio_clip" || command.name === "stop_audio_preview" || command.name === "capture_preview") throw new Error(`${command.name} requires the Timeline preview workspace to be mounted.`);
+          throw new Error("This operation requires the Timeline workspace. Call editor_set_workspace first and verify timelineWorkspaceMounted in editor_capabilities.");
+        }
         return timeline.execute(command);
       }
     }
@@ -2046,13 +3196,15 @@ export function Editor() {
     setStatus("Look-follow test is ready. Press and hold the canvas, then move the pointer to preview gaze and limits.");
   }
 
-  function startSelectedTest(interactionOverride?: EditorInteraction) {
+  function startSelectedTest(interactionOverride?: EditorInteraction, regionIdOverride?: string) {
     const interaction = interactionOverride ?? selectedInteraction;
     if (!interaction || !frame) return;
     if (lookTesting) stopLookFollowTest();
-    const testRegion = !interactionOverride && selectedRegion?.enabled && interaction.regions.some((region) => region.id === selectedRegion.id)
-      ? selectedRegion
-      : interaction.regions.find((region) => region.enabled) ?? null;
+    const testRegion = regionIdOverride
+      ? interaction.regions.find((region) => region.id === regionIdOverride) ?? null
+      : !interactionOverride && selectedRegion?.enabled && interaction.regions.some((region) => region.id === selectedRegion.id)
+        ? selectedRegion
+        : interaction.regions.find((region) => region.enabled) ?? null;
     const center = testRegion
       ? regionMatrix(frame, testRegion)
       : { e: frame.canvasWidth / 2, f: frame.canvasHeight / 2 };

@@ -89,6 +89,21 @@ describe("Spine editor MCP bridge", () => {
     }
   });
 
+  test("requires document revisions at the native boundary for authored edits", async () => {
+    const bridge = new SpineEditorMcpBridge(true);
+    const connectionFile = await bridge.start(43210);
+    try {
+      await bridge.handle(jsonRequest("/__spine/mcp/ui-state", { workspace: "interaction", documentRevision: 9 }), new URL("/__spine/mcp/ui-state", bridgeUrl));
+      const token = JSON.parse(await readFile(connectionFile!, "utf8")).token as string;
+      const auth = { authorization: `Bearer ${token}` };
+      const missingRevision = await bridge.handle(jsonRequest("/__spine/mcp/command", { command: { name: "delete_interaction", interactionId: "pat" } }, auth), new URL("/__spine/mcp/command", bridgeUrl));
+      expect(missingRevision.status).toBe(400);
+      expect((await missingRevision.json()).error).toContain("expectedDocumentRevision is required");
+    } finally {
+      bridge.cleanup();
+    }
+  });
+
   test("rejects cross-origin UI bridge requests and disables MCP by default", async () => {
     const bridge = new SpineEditorMcpBridge(true);
     const disabled = new SpineEditorMcpBridge(false);
@@ -100,6 +115,32 @@ describe("Spine editor MCP bridge", () => {
     } finally {
       bridge.cleanup();
       disabled.cleanup();
+    }
+  });
+
+  test("enforces request, snapshot, and command-result size limits", async () => {
+    const bridge = new SpineEditorMcpBridge(true, { commandTimeoutMs: 1000 });
+    const connectionFile = await bridge.start(43210);
+    try {
+      const tooLargeState = await bridge.handle(jsonRequest("/__spine/mcp/ui-state", { workspace: "timeline", padding: "x".repeat(2 * 1024 * 1024) }), new URL("/__spine/mcp/ui-state", bridgeUrl));
+      expect(tooLargeState.status).toBe(413);
+
+      await bridge.handle(jsonRequest("/__spine/mcp/ui-state", { workspace: "timeline", documentRevision: 1 }), new URL("/__spine/mcp/ui-state", bridgeUrl));
+      const token = JSON.parse(await readFile(connectionFile!, "utf8")).token as string;
+      const auth = { authorization: `Bearer ${token}` };
+      const tooLargeCommand = await bridge.handle(jsonRequest("/__spine/mcp/command", { command: { name: "seek", seconds: 1 }, padding: "x".repeat(2 * 1024 * 1024) }, auth), new URL("/__spine/mcp/command", bridgeUrl));
+      expect(tooLargeCommand.status).toBe(413);
+
+      const pending = bridge.handle(jsonRequest("/__spine/mcp/command", { command: { name: "seek", seconds: 2 }, expectedDocumentRevision: 1 }, auth), new URL("/__spine/mcp/command", bridgeUrl));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const queued = await (await bridge.handle(new Request(new URL("/__spine/mcp/ui-command", bridgeUrl)), new URL("/__spine/mcp/ui-command", bridgeUrl))).json() as { id: string };
+      const oversizedResult = await bridge.handle(jsonRequest("/__spine/mcp/ui-result", { id: queued.id, result: "x".repeat(1024 * 1024 + 1) }, { "x-ba-spine-command-id": queued.id }), new URL("/__spine/mcp/ui-result", bridgeUrl));
+      expect(oversizedResult.status).toBe(413);
+      const commandResponse = await pending;
+      expect(commandResponse.status).toBe(502);
+      expect((await commandResponse.json()).error).toContain("1 MiB response limit");
+    } finally {
+      bridge.cleanup();
     }
   });
 });

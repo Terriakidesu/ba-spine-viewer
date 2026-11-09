@@ -3,7 +3,13 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { normalizeEditorMcpCommand, type EditorMcpCommand, type EditorMcpConnectionInfo, type EditorMcpState } from "@ba-spine/editor-feature/editorMcp";
+import { readBoundedBody } from "@ba-spine/desktop-host/companion";
+import { EDITOR_MCP_REVISION_REQUIRED_COMMANDS, normalizeEditorMcpCommand, type EditorMcpCommand, type EditorMcpConnectionInfo, type EditorMcpState } from "@ba-spine/editor-feature/editorMcp";
+
+const MAX_STATE_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_COMMAND_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_RESULT_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_COMMAND_RESULT_BYTES = 1024 * 1024;
 
 interface PendingCommand {
   resolve: (response: Response) => void;
@@ -126,7 +132,9 @@ export class SpineEditorMcpBridge {
 
   private async receiveState(request: Request): Promise<Response> {
     try {
-      const value = await request.json();
+      const body = await readBoundedBody(request, MAX_STATE_BODY_BYTES);
+      if (body.tooLarge) return errorResponse("Editor state snapshot exceeds the 2 MiB limit.", 413);
+      const value = JSON.parse(body.text) as unknown;
       if (!record(value) || typeof value.workspace !== "string") return errorResponse("Invalid editor state snapshot.");
       this.state = value as unknown as EditorMcpState;
       this.stateUpdatedAt = Date.now();
@@ -139,10 +147,28 @@ export class SpineEditorMcpBridge {
 
   private async receiveResult(request: Request): Promise<Response> {
     try {
-      const value = await request.json();
+      const body = await readBoundedBody(request, MAX_RESULT_BODY_BYTES);
+      if (body.tooLarge) {
+        const id = request.headers.get("x-ba-spine-command-id");
+        const pending = id ? this.pending.get(id) : undefined;
+        if (pending && id) {
+          clearTimeout(pending.timer);
+          this.pending.delete(id);
+          pending.resolve(errorResponse("Editor command result exceeded the 1 MiB response limit.", 502));
+        }
+        return errorResponse("Editor command result exceeds the 2 MiB transport limit.", 413);
+      }
+      const value = JSON.parse(body.text) as unknown;
       if (!record(value) || typeof value.id !== "string") return errorResponse("A command id is required.");
       const pending = this.pending.get(value.id);
       if (!pending) return json({ ok: false, ignored: true });
+      const resultBytes = Buffer.byteLength(JSON.stringify(value.result ?? null), "utf8");
+      if (resultBytes > MAX_COMMAND_RESULT_BYTES) {
+        clearTimeout(pending.timer);
+        this.pending.delete(value.id);
+        pending.resolve(errorResponse("Editor command result exceeded the 1 MiB response limit.", 502));
+        return errorResponse("Editor command result exceeds the 1 MiB response limit.", 413);
+      }
       clearTimeout(pending.timer);
       this.pending.delete(value.id);
       if (typeof value.error === "string" && value.error) {
@@ -157,11 +183,14 @@ export class SpineEditorMcpBridge {
 
   private async dispatchCommand(request: Request): Promise<Response> {
     try {
-      const value = await request.json();
+      const body = await readBoundedBody(request, MAX_COMMAND_BODY_BYTES);
+      if (body.tooLarge) return errorResponse("MCP command exceeds the 2 MiB request limit.", 413);
+      const value = JSON.parse(body.text) as unknown;
       if (!record(value) || !record(value.command) || typeof value.command.name !== "string") return errorResponse("A named editor command is required.");
       const command = normalizeEditorMcpCommand(value.command);
       const expectedDocumentRevision = value.expectedDocumentRevision;
       if (expectedDocumentRevision !== undefined && (typeof expectedDocumentRevision !== "number" || !Number.isSafeInteger(expectedDocumentRevision) || expectedDocumentRevision < 0)) return errorResponse("expectedDocumentRevision must be a non-negative safe integer.");
+      if (EDITOR_MCP_REVISION_REQUIRED_COMMANDS.has(command.name) && expectedDocumentRevision === undefined) return errorResponse("expectedDocumentRevision is required for this authored project operation.");
       if (command.name === "open_asset_root" && !isAbsolute(command.rootPath)) return errorResponse("Asset root paths must be absolute.");
       if (this.queue.length >= 32) return errorResponse("The editor command queue is full.", 429);
       if (!this.state || Date.now() - this.stateUpdatedAt >= 5000) return errorResponse("The editor UI is not connected yet.", 503);
