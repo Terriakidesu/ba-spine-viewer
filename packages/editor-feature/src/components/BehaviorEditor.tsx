@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS } from "@ba-spine/spine-runtime/spine/spineInteraction";
-import { migrateLegacyInteractionsToBehaviors, normalizeSpineBehaviorMachine, normalizeSpineBehaviorMachines, type SpineBehaviorAction, type SpineBehaviorCondition, type SpineBehaviorEvent, type SpineBehaviorMachine, type SpineBehaviorState, type SpineBehaviorTransition } from "@ba-spine/spine-runtime/spine/spineBehavior";
+import { normalizeSpineBehaviorMachine, normalizeSpineBehaviorMachines, type SpineBehaviorAction, type SpineBehaviorCondition, type SpineBehaviorEvent, type SpineBehaviorMachine, type SpineBehaviorState, type SpineBehaviorTransition } from "@ba-spine/spine-runtime/spine/spineBehavior";
 import type { SpineBehaviorDebugMachine } from "@ba-spine/spine-runtime/spine/spineBehaviorRuntime";
+import { applySpineBehaviorPreset, SPINE_BEHAVIOR_PRESETS, type SpineBehaviorPresetId } from "../behaviorPresets";
 
 const events: SpineBehaviorEvent[] = ["pointer-press", "pointer-release", "pointer-drag", "pointer-cancel", "pointer-leave", "timer-elapsed", "animation-complete", "state-entered", "manual"];
 const actions = ["play-animation", "pointer-follow", "drag-bone", "rotate-bone", "play-audio", "show-subtitle", "set-variable", "wait", "restore-resource"] as const;
@@ -12,50 +12,6 @@ function makeId(prefix: string): string {
 
 function blankState(index: number): SpineBehaviorState {
   return { id: makeId("state"), name: `State ${index + 1}`, actions: [], exitActions: [], cancelActions: [], resourceClaims: [] };
-}
-
-function blankMachine(name = "New behavior"): SpineBehaviorMachine {
-  const idle = { ...blankState(0), id: "idle", name: "Idle" };
-  return {
-    id: makeId("behavior"),
-    name,
-    enabled: true,
-    priority: 0,
-    exclusiveGroup: null,
-    resourceClaims: [],
-    activation: { kind: "pointer-region", trigger: "press", regions: [], holdDelay: 0, dragThreshold: 4, timerSeconds: 0, event: "pointer-press" },
-    initialStateId: idle.id,
-    cancelPolicy: "run-exit",
-    states: [idle],
-    transitions: [],
-    sourceLegacyInteractionId: null,
-  };
-}
-
-function presetMachine(preset: "head" | "look"): SpineBehaviorMachine {
-  if (preset === "look") {
-    const machine = migrateLegacyInteractionsToBehaviors([], DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS).find((item) => item.name === "Look-follow")!;
-    return { ...machine, id: makeId("behavior"), sourceLegacyInteractionId: null };
-  }
-  const idle = { ...blankState(0), id: "idle", name: "Idle" };
-  const start = { ...blankState(1), id: "starting", name: "Starting", actions: [{ type: "play-animation", mainAnimation: null, faceAnimation: null, bodyTrack: 3, faceTrack: 4, loop: false, mixDuration: 0.14 } satisfies SpineBehaviorAction] };
-  const active = { ...blankState(2), id: "active", name: "Active", actions: [{ type: "play-animation", mainAnimation: null, faceAnimation: null, bodyTrack: 3, faceTrack: 4, loop: true, mixDuration: 0.14 } satisfies SpineBehaviorAction] };
-  const release = { ...blankState(3), id: "releasing", name: "Releasing", actions: [] };
-  const region = { id: makeId("region"), name: "Head region", enabled: true, shape: "ellipse" as const, anchorBone: null, offsetX: 0, offsetY: 0, radiusX: 120, radiusY: 90, rotation: 0 };
-  return normalizeSpineBehaviorMachine({
-    ...blankMachine("Head interaction"),
-    exclusiveGroup: "character-input",
-    activation: { kind: "pointer-region", trigger: "hold", regions: [region], holdDelay: 0, dragThreshold: 4, timerSeconds: 0, event: "pointer-press" },
-    states: [idle, start, active, release],
-    transitions: [
-      { id: makeId("transition"), fromStateId: "idle", toStateId: "starting", event: "pointer-press", conditions: [{ type: "region-hit", regionIds: [region.id] }], afterSeconds: 0, priority: 0, blendDuration: 0.14, interruptPolicy: "deny" },
-      { id: makeId("transition"), fromStateId: "starting", toStateId: "active", event: "animation-complete", conditions: [{ type: "pointer-held", value: true }], afterSeconds: 0, priority: 1, blendDuration: 0.14, interruptPolicy: "allow" },
-      { id: makeId("transition"), fromStateId: "starting", toStateId: "releasing", event: "animation-complete", conditions: [{ type: "pointer-held", value: false }], afterSeconds: 0, priority: 0, blendDuration: 0.14, interruptPolicy: "allow" },
-      { id: makeId("transition"), fromStateId: "active", toStateId: "releasing", event: "pointer-release", conditions: [], afterSeconds: 0, priority: 0, blendDuration: 0.14, interruptPolicy: "allow" },
-      { id: makeId("transition"), fromStateId: "releasing", toStateId: "idle", event: "animation-complete", conditions: [], afterSeconds: 0, priority: 0, blendDuration: 0.14, interruptPolicy: "allow" },
-    ],
-    sourceLegacyInteractionId: null,
-  })!;
 }
 
 function initialAction(type: typeof actions[number]): SpineBehaviorAction {
@@ -123,13 +79,11 @@ export function BehaviorEditor({ machines, animations, debug, testFeedback = [],
     onChange(normalizeSpineBehaviorMachines(machines.map((item) => item.id === next.id ? normalized : item)));
   }
 
-  function addMachine(preset: "blank" | "head" | "look") {
-    const next = preset === "blank" ? blankMachine() : presetMachine(preset);
-    const all = normalizeSpineBehaviorMachines([...machines, next]);
-    onChange(all);
-    const created = all.find((item) => item.id === next.id) ?? all.at(-1);
-    setMachineId(created?.id ?? all.at(-1)?.id ?? "");
-    setSelection(created?.states[0] ? { kind: "state", id: created.states[0].id } : null);
+  function addMachine(preset: SpineBehaviorPresetId) {
+    const applied = applySpineBehaviorPreset(machines, preset);
+    onChange(applied.machines);
+    setMachineId(applied.machine.id);
+    setSelection(applied.machine.states[0] ? { kind: "state", id: applied.machine.states[0].id } : null);
   }
 
   function updateState(stateId: string, update: (state: SpineBehaviorState) => SpineBehaviorState) {
@@ -179,7 +133,7 @@ export function BehaviorEditor({ machines, animations, debug, testFeedback = [],
     updateTransition(selectedTransition.id, { conditions });
   }
 
-  if (!machine) return <section className="behavior-editor-empty"><strong>No behavior machines</strong><span>Start with a blank machine or use a behavior preset.</span><div><button onClick={() => addMachine("blank")}>Blank</button><button onClick={() => addMachine("head")}>Head interaction</button><button onClick={() => addMachine("look")}>Look-follow</button></div></section>;
+  if (!machine) return <section className="behavior-editor-empty"><strong>No behavior machines</strong><span>Start with a blank machine or choose a named behavior preset.</span><div>{SPINE_BEHAVIOR_PRESETS.map((preset) => <button key={preset.id} title={preset.description} onClick={() => addMachine(preset.id)}>{preset.name}</button>)}</div></section>;
 
   const statePositions = new Map(machine.states.map((state, index) => [state.id, { x: 36 + (index % 3) * 225, y: 38 + Math.floor(index / 3) * 138 }]));
   const debugState = activeDebug?.stateId;
@@ -188,7 +142,7 @@ export function BehaviorEditor({ machines, animations, debug, testFeedback = [],
     <aside className="behavior-nav">
       <div className="behavior-nav-heading"><strong>Machines</strong><span>{machines.length}</span></div>
       <div className="behavior-machine-list">{machines.map((item) => <button key={item.id} className={item.id === machine.id ? "is-selected" : ""} onClick={() => { setMachineId(item.id); setSelection(null); }}><span className={`behavior-state-dot${debugByMachine.get(item.id)?.active ? " is-active" : ""}`} />{item.name}<small>{item.states.length} states</small></button>)}</div>
-      <div className="behavior-add-menu"><label>Add preset<select aria-label="Add behavior preset" value="" onChange={(event) => { if (event.target.value) addMachine(event.target.value as "blank" | "head" | "look"); }}><option value="">Choose…</option><option value="blank">Blank machine</option><option value="head">Head interaction</option><option value="look">Look-follow</option></select></label></div>
+       <div className="behavior-add-menu"><label>Add preset<select aria-label="Add behavior preset" value="" onChange={(event) => { if (event.target.value) addMachine(event.target.value as SpineBehaviorPresetId); }}><option value="">Choose…</option>{SPINE_BEHAVIOR_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select></label></div>
     </aside>
 
     <main className="behavior-graph-panel">
