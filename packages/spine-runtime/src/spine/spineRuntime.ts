@@ -21,11 +21,13 @@ import {
   SceneRenderer,
   Vector3,
 } from "@esotericsoftware/spine-webgl";
-import { authoredViewport, cameraPositionForZoomAnchor, fitScene, interactionTargetAtPoint, interactionZonesForDisplay, sceneBounds, type InteractionHitKind, type InteractionHitTarget, type SceneBounds } from "./spineCamera";
+import { authoredViewport, behaviorRegionAtPoint, cameraPositionForZoomAnchor, fitScene, interactionTargetAtPoint, interactionZonesForDisplay, sceneBounds, type InteractionHitKind, type InteractionHitTarget, type SceneBounds, type SpineBehaviorHitRegion } from "./spineCamera";
 import { findIdleAnimation } from "./spineAnimation";
 import { spineCanvasBackingSize } from "./spineCanvasResolution";
 import { DEFAULT_EFFECTS_STRENGTH, drawWithEffectsStrength } from "./spineEffects";
-import { authoredInteraction, authoredInteractionAction, authoredRegions, clearInteractionTrack, DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_TALK_MIX_DURATION, interactionKind, interactionPhaseAfterStart, interactionPressReady, normalizeAnimationMixDuration, profileFromProject, queueInteractionFadeOut, setInteractionTrack, type SpineAnimationPair, type SpineInteractionAction, type SpineInteractionProfile, type SpineInteractionProject, type SpineAuthoredInteraction, type SpineAuthoredRegion } from "./spineInteraction";
+import { authoredInteraction, authoredInteractionAction, authoredRegions, clearInteractionTrack, DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, DEFAULT_TALK_MIX_DURATION, interactionKind, interactionPhaseAfterStart, interactionPressReady, lookFollowTarget, normalizeAnimationMixDuration, normalizeSpineLookFollowSettings, profileFromProject, queueInteractionFadeOut, setInteractionTrack, smoothLookFollowPoint, type SpineAnimationPair, type SpineInteractionAction, type SpineInteractionProfile, type SpineInteractionProject, type SpineAuthoredInteraction, type SpineAuthoredRegion, type SpineLookFollowSettings } from "./spineInteraction";
+import { SpineBehaviorRuntime, type SpineBehaviorDebugMachine, type SpineBehaviorRuntimeContext } from "./spineBehaviorRuntime";
+import { normalizeSpineBehaviorMachines, type SpineBehaviorAction, type SpineBehaviorEvent, type SpineBehaviorMachine, type SpineBehaviorState } from "./spineBehavior";
 import {
   applyInteractionMotion,
   applyInteractionMotionReturn,
@@ -43,7 +45,7 @@ import {
 export { findIdleAnimation };
 
 export const INTRO_ANIMATION = "__intro__";
-export const EYE_FOLLOW_DELAY = 0.3;
+export const EYE_FOLLOW_DELAY = DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS.delay;
 const MAX_CANVAS_RESOLUTION_SCALE = 20;
 const MAX_EYE_FOLLOW_RANGE = 64;
 const MIN_TOUCH_FOLLOW_X = 45;
@@ -136,6 +138,18 @@ export interface SpineEditorFrame {
   screenUnitYEndY: number;
   bones: SpineEditorBone[];
   constraints: SpineEditorConstraint[];
+  lookFollow?: SpineLookFollowGizmoFrame | null;
+}
+
+export interface SpineLookFollowGizmoFrame {
+  targetBonePath: string;
+  centerScreenX: number;
+  centerScreenY: number;
+  currentScreenX: number;
+  currentScreenY: number;
+  rangeX: number;
+  rangeY: number;
+  active: boolean;
 }
 
 export interface SpineInteractionMeta {
@@ -176,6 +190,9 @@ export interface SpineRendererCallbacks {
   onIntro?: (animation: string, eventCount: number) => boolean;
   onIntroClip?: (clipIndex: number) => void;
   onEditorFrame?: (frame: SpineEditorFrame) => void;
+  onBehaviorDebug?: (snapshot: SpineBehaviorDebugMachine[]) => void;
+  onBehaviorAudio?: (machineId: string, audioId: string, volume: number, loop: boolean) => void | (() => void);
+  onBehaviorSubtitle?: (machineId: string, cueId: string, visible: boolean) => void;
   /** Private authoring hooks. Not used by the published viewer. */
   onBeforeEditorUpdate?: (skeleton: Skeleton) => void;
   onEditorUpdate?: (delta: number, skeleton: Skeleton, state: AnimationState) => void;
@@ -184,6 +201,7 @@ export interface SpineRendererCallbacks {
 interface LoadedBundle {
   atlas: TextureAtlas;
   images: Array<HTMLImageElement | ImageBitmap>;
+  directory: string;
   skeleton: Skeleton;
   state: AnimationState;
   meta: SpineMeta;
@@ -192,9 +210,32 @@ interface LoadedBundle {
   viewport: SceneBounds;
   interaction: SpineInteractionProfile;
   project: SpineInteractionProject | null;
+  behaviorRuntime: SpineBehaviorRuntime;
+  lookFollow: SpineLookFollowSettings;
   authoredRegions: SpineAuthoredRegion[];
+  behaviorHitRegions: SpineBehaviorHitRegion[];
   eyeTarget: EyeTarget | null;
   touchTarget: InteractionTarget | null;
+}
+
+interface BehaviorBoneControl {
+  key: string;
+  machineId: string;
+  bone: Bone;
+  action: Extract<SpineBehaviorAction, { type: "pointer-follow" | "drag-bone" | "rotate-bone" }>;
+  baseX: number;
+  baseY: number;
+  baseRotation: number;
+  currentWorldX: number;
+  currentWorldY: number;
+  currentRotation: number;
+  originLocal: { x: number; y: number } | null;
+  returning: boolean;
+  returnElapsed: number;
+  returnDuration: number;
+  returnFromX: number;
+  returnFromY: number;
+  returnFromRotation: number;
 }
 
 const HEAD_BONE_NAME = /^(?:(?:pc|head)[ _-](?:[ab][ _-])?)?(?:head|face)(?:[ _-]?(?:root|rot|rotation|main|base|pos|ani|top))?(?:[ _-]?\d+[a-z]?)?$/i;
@@ -369,6 +410,7 @@ function closeImage(image: HTMLImageElement | ImageBitmap) {
 }
 
 function disposeBundle(bundle: LoadedBundle) {
+  bundle.behaviorRuntime.dispose();
   bundle.atlas.dispose();
   for (const image of bundle.images) closeImage(image);
 }
@@ -420,7 +462,11 @@ async function readSkeleton(
   throw new Error(`No usable lobby skeleton was found. ${failures.join(" ")}`);
 }
 
-function findEyeTarget(skeleton: Skeleton): Bone | null {
+function resolveEyeTargetBone(skeleton: Skeleton, requestedPath: string | null): Bone | null {
+  if (requestedPath) {
+    const configured = skeleton.bones.find((bone) => bonePath(bone) === requestedPath);
+    if (configured) return configured;
+  }
   const exact = ["Touch_Eye_Key", "Touch_Eye_key", "Touch_Eye"];
   for (const wanted of exact) {
     const found = skeleton.findBone(wanted);
@@ -442,12 +488,24 @@ function targetState(bone: Bone, rangeX = Infinity, rangeY = Infinity): Interact
   return { bone, baseX: bone.x, baseY: bone.y, rangeX, rangeY };
 }
 
-function eyeTargetState(skeleton: Skeleton, touchTarget: InteractionTarget | null): EyeTarget | null {
-  const bone = findEyeTarget(skeleton);
+function eyeTargetState(
+  skeleton: Skeleton,
+  touchTarget: InteractionTarget | null,
+  settings: SpineLookFollowSettings,
+  previous: EyeTarget | null = null,
+): EyeTarget | null {
+  const bone = resolveEyeTargetBone(skeleton, settings.targetBonePath);
   if (!bone) return null;
   const distance = touchTarget ? Math.hypot(bone.worldX - touchTarget.bone.worldX, bone.worldY - touchTarget.bone.worldY) : MAX_EYE_FOLLOW_RANGE;
-  const range = Math.max(24, Math.min(MAX_EYE_FOLLOW_RANGE, distance * 0.4));
-  return { ...targetState(bone), rangeX: range, rangeY: range * 0.75 };
+  const defaultRangeX = Math.max(24, Math.min(MAX_EYE_FOLLOW_RANGE, distance * 0.4));
+  const sameTarget = previous?.bone === bone;
+  return {
+    bone,
+    baseX: sameTarget ? previous.baseX : bone.x,
+    baseY: sameTarget ? previous.baseY : bone.y,
+    rangeX: settings.rangeX ?? defaultRangeX,
+    rangeY: settings.rangeY ?? defaultRangeX * 0.75,
+  };
 }
 
 function touchTargetState(skeleton: Skeleton, bounds: SceneBounds | null): InteractionTarget | null {
@@ -516,6 +574,20 @@ function artworkBoundsAcrossAnimations(
   return { x: minX - width * 0.06, y: minY - height * 0.06, width: width * 1.12, height: height * 1.12 };
 }
 
+function legacyExecutionProject(project?: SpineInteractionProject | null): SpineInteractionProject | null {
+  if (!project) return null;
+  const authoredMachineIds = new Set((project.behaviorMachines ?? [])
+    .filter((machine) => machine.sourceLegacyInteractionId === null)
+    .map((machine) => machine.id));
+  if (authoredMachineIds.size === 0) return project;
+  return { ...project, interactions: project.interactions.filter((interaction) => !authoredMachineIds.has(interaction.id)) };
+}
+
+function hasAuthoredLookFollow(project?: SpineInteractionProject | null): boolean {
+  return Boolean(project?.behaviorMachines?.some((machine) => (machine.id === "look-follow" || /^look-follow-\d+$/.test(machine.id))
+    && machine.sourceLegacyInteractionId === null));
+}
+
 async function loadBundle(files: SpineFiles, directoryName: string, renderer: SceneRenderer, context: ManagedWebGLRenderingContext, project?: SpineInteractionProject | null, onLoadProgress?: (progress: SpineLoadProgress) => void): Promise<LoadedBundle> {
   const atlasFile = filesWithExtension(files, ".atlas")[0];
   if (!atlasFile) throw new Error("This set does not contain an .atlas file.");
@@ -560,8 +632,16 @@ async function loadBundle(files: SpineFiles, directoryName: string, renderer: Sc
     const state = new AnimationState(stateData);
     const introAnimation = findIntroAnimation(animations);
     const idleAnimation = findIdleAnimation(animations);
-    const interaction = profileFromProject(animations, project);
-    const configuredRegions = authoredRegions(project);
+    const legacyProject = legacyExecutionProject(project);
+    const lookFollowSettings = normalizeSpineLookFollowSettings(project?.lookFollow);
+    const lookFollow = { ...lookFollowSettings, enabled: lookFollowSettings.enabled && !hasAuthoredLookFollow(project) };
+    const interaction = profileFromProject(animations, legacyProject);
+    const configuredRegions = authoredRegions(legacyProject);
+    const behaviorHitRegions: SpineBehaviorHitRegion[] = (project?.behaviorMachines ?? []).flatMap((machine) =>
+      machine.activation.kind === "pointer-region"
+        ? machine.activation.regions.map((region) => ({ machineId: machine.id, region }))
+        : [],
+    );
     const defaultAnimation = defaultSpineAnimation(animations);
     const meta: SpineMeta = {
       animations,
@@ -571,7 +651,7 @@ async function loadBundle(files: SpineFiles, directoryName: string, renderer: Sc
       duration: 0,
       hasGameCamera: false,
       interaction: {
-        hasEyeFollow: Boolean(findEyeTarget(skeleton)),
+        hasEyeFollow: Boolean(resolveEyeTargetBone(skeleton, lookFollow.targetBonePath)),
         canPat: Boolean(interaction.pat),
         canPinch: Boolean(interaction.pinch),
         canTouch: Boolean(interaction.touch),
@@ -609,10 +689,15 @@ async function loadBundle(files: SpineFiles, directoryName: string, renderer: Sc
     state.apply(skeleton);
     skeleton.updateWorldTransform(Physics.update);
     const touchTarget = touchTargetState(skeleton, bounds);
-    const eyeTarget = eyeTargetState(skeleton, touchTarget);
+    const eyeTarget = eyeTargetState(skeleton, touchTarget, lookFollow);
     renderer.resize(ResizeMode.Expand);
     onLoadProgress?.({ stage: "finalizing", loaded: 0, total: 0 });
-    return { atlas, images, skeleton, state, meta, bounds, artworkBounds, viewport, interaction, project: project ?? null, authoredRegions: configuredRegions, eyeTarget, touchTarget };
+    return {
+      atlas, images, directory: directoryName, skeleton, state, meta, bounds, artworkBounds, viewport, interaction,
+      project: project ?? null,
+      behaviorRuntime: new SpineBehaviorRuntime(project?.behaviorMachines ?? []),
+      lookFollow, authoredRegions: configuredRegions, behaviorHitRegions, eyeTarget, touchTarget,
+    };
   } catch (error) {
     atlas.dispose();
     for (const image of images) closeImage(image);
@@ -649,6 +734,7 @@ export class SpineRenderer {
   private interactionTrackName: string | null = null;
   private interactionReady = false;
   private eyeFollowHold = 0;
+  private lookFollowPreview = false;
   private talkIndex = 0;
   private activeTalkIndex = -1;
   private talkEventIndex = 0;
@@ -659,6 +745,14 @@ export class SpineRenderer {
   private interactionFollowWorld: { x: number; y: number } | null = null;
   private touchPointerOrigin: { x: number; y: number } | null = null;
   private touchFollowOffset: { x: number; y: number } | null = null;
+  private behaviorPointerHeldSeconds = 0;
+  private behaviorDebugSignature = "";
+  private behaviorMachinesSignature = "";
+  private behaviorTestContext: { machineId: string; pointerHeld: boolean; regionId: string | null; heldSeconds: number; dragDistance: number } | null = null;
+  private behaviorControls = new Map<string, BehaviorBoneControl>();
+  private behaviorActionCleanups = new Map<string, { machineId: string; cleanup: () => void }>();
+  private interactionPressedBehaviorRegionId: string | null = null;
+  private behaviorPressDispatched = false;
   private sampledEditorFace = "";
   private sampledEditorSequenceId: string | null = null;
   private sampledEditorTalkSequence = false;
@@ -697,8 +791,13 @@ export class SpineRenderer {
 
   async load(files: SpineFiles, directoryName: string, project?: SpineInteractionProject | null) {
     const serial = ++this.loadSerial;
+    this.lookFollowPreview = false;
     this.disposeBundle();
     this.interactionPressedTarget = null;
+    this.interactionPressedBehaviorRegionId = null;
+    this.behaviorPressDispatched = false;
+    this.behaviorPointerHeldSeconds = 0;
+    this.behaviorDebugSignature = "";
     this.activeGestureInteractionId = null;
     this.fitCameraPose = null;
     this.pendingCameraPose = null;
@@ -725,6 +824,10 @@ export class SpineRenderer {
         return;
       }
       this.bundle = bundle;
+      bundle.behaviorRuntime.dispose();
+      bundle.behaviorRuntime = this.createBehaviorRuntime(bundle, bundle.project?.behaviorMachines ?? []);
+      this.behaviorMachinesSignature = JSON.stringify(bundle.project?.behaviorMachines ?? []);
+      bundle.behaviorRuntime.start();
       const initialEntry = bundle.state.getCurrent(0);
       if (initialEntry) {
         if (initialEntry.animation?.name !== bundle.meta.introAnimation) initialEntry.loop = this.loop;
@@ -749,6 +852,7 @@ export class SpineRenderer {
 
   clear() {
     ++this.loadSerial;
+    this.lookFollowPreview = false;
     this.resetInteractionTargets();
     this.disposeBundle();
     this.fitCameraPose = null;
@@ -760,7 +864,10 @@ export class SpineRenderer {
     this.interactionPointer = null;
     this.interactionPointerId = null;
     this.interactionPointerHeld = false;
+    this.behaviorPointerHeldSeconds = 0;
     this.interactionPressedTarget = null;
+    this.interactionPressedBehaviorRegionId = null;
+    this.behaviorPressDispatched = false;
     this.interactionPressedTrigger = "hold";
     this.interactionPressOrigin = null;
     this.activeGestureInteractionId = null;
@@ -779,6 +886,8 @@ export class SpineRenderer {
     this.talkFadeQueued = false;
     this.introAudioEntry = null;
     this.introEventIndex = 0;
+    this.callbacks.onBehaviorDebug?.([]);
+    this.behaviorDebugSignature = "";
   }
 
   setPlaying(playing: boolean) {
@@ -895,6 +1004,403 @@ export class SpineRenderer {
     if (!show) this.callbacks.onInteractionPoints?.({ canvasWidth: 0, canvasHeight: 0, points: [] });
   }
 
+  setLookFollowSettings(value: unknown) {
+    const bundle = this.bundle;
+    if (!bundle) return;
+    const settings = normalizeSpineLookFollowSettings(value);
+    const oldSettings = bundle.lookFollow;
+    const nextTarget = resolveEyeTargetBone(bundle.skeleton, settings.targetBonePath);
+    const targetChanged = bundle.eyeTarget?.bone !== nextTarget;
+    const phasesChanged = oldSettings.startAnimation !== settings.startAnimation
+      || oldSettings.faceStartAnimation !== settings.faceStartAnimation
+      || oldSettings.endAnimation !== settings.endAnimation
+      || oldSettings.faceEndAnimation !== settings.faceEndAnimation;
+    if (this.interactionState === "look" && (targetChanged || phasesChanged || !settings.enabled)) this.endLook();
+
+    const project = {
+      ...(bundle.project ?? { schemaVersion: 1, assetDirectory: bundle.directory, interactions: [] }),
+      lookFollow: settings,
+    };
+    bundle.project = project;
+    bundle.lookFollow = { ...settings, enabled: settings.enabled && !hasAuthoredLookFollow(project) };
+    const legacyProject = legacyExecutionProject(project);
+    bundle.interaction = profileFromProject(bundle.meta.animations, legacyProject);
+    bundle.authoredRegions = authoredRegions(legacyProject);
+    bundle.eyeTarget = eyeTargetState(bundle.skeleton, bundle.touchTarget, settings, bundle.eyeTarget);
+    if (!bundle.lookFollow.enabled) this.eyeFollowHold = 0;
+    this.emitEditorFrame();
+  }
+
+  /** Replace authored declarative machines in the live preview without reloading the Spine rig. */
+  setBehaviorMachines(value: unknown) {
+    const bundle = this.bundle;
+    if (!bundle) return;
+    const machines = normalizeSpineBehaviorMachines(value);
+    const signature = JSON.stringify(machines);
+    if (signature === this.behaviorMachinesSignature) return;
+    this.behaviorMachinesSignature = signature;
+    this.endGesture();
+    this.endLook();
+    this.behaviorTestContext = null;
+    bundle.behaviorRuntime.dispose();
+    this.clearBehaviorSideEffects();
+    bundle.behaviorRuntime = this.createBehaviorRuntime(bundle, machines);
+    bundle.behaviorHitRegions = machines.flatMap((machine) => machine.activation.kind === "pointer-region"
+      ? machine.activation.regions.map((region) => ({ machineId: machine.id, region }))
+      : []);
+    bundle.project = {
+      ...(bundle.project ?? { schemaVersion: 1, assetDirectory: bundle.directory, interactions: [] }),
+      behaviorMachines: machines,
+    };
+    const lookFollowSettings = normalizeSpineLookFollowSettings(bundle.project.lookFollow);
+    bundle.lookFollow = { ...lookFollowSettings, enabled: lookFollowSettings.enabled && !hasAuthoredLookFollow(bundle.project) };
+    const legacyProject = legacyExecutionProject(bundle.project);
+    bundle.interaction = profileFromProject(bundle.meta.animations, legacyProject);
+    bundle.authoredRegions = authoredRegions(legacyProject);
+    bundle.eyeTarget = eyeTargetState(bundle.skeleton, bundle.touchTarget, lookFollowSettings, bundle.eyeTarget);
+    bundle.behaviorRuntime.start();
+    this.behaviorDebugSignature = "";
+    this.emitBehaviorDebug(bundle);
+  }
+
+  /** Dispatch a deterministic test event from the Behavior Editor debugger. */
+  testBehaviorEvent(machineId: string, event: SpineBehaviorEvent, regionId: string | null = null) {
+    const bundle = this.bundle;
+    if (!bundle) return;
+    const activation = bundle.behaviorRuntime.getActivation(machineId);
+    const pointerHeld = event === "pointer-press" || event === "pointer-drag"
+      ? true
+      : event === "pointer-release" || event === "pointer-cancel" || event === "pointer-leave"
+        ? false
+        : this.behaviorTestContext?.pointerHeld ?? false;
+    this.behaviorTestContext = {
+      machineId,
+      pointerHeld,
+      regionId,
+      heldSeconds: pointerHeld ? 0 : this.behaviorTestContext?.heldSeconds ?? 0,
+      dragDistance: activation?.trigger === "drag" ? activation.dragThreshold : 0,
+    };
+    const context = {
+      ...this.behaviorRuntimeContext(regionId, this.behaviorTestContext.dragDistance),
+      pointerHeld,
+      heldSeconds: this.behaviorTestContext.heldSeconds,
+      regionId,
+    };
+    bundle.behaviorRuntime.dispatch(event, context, [machineId], { bypassActivation: true });
+    this.emitBehaviorDebug(bundle);
+  }
+
+  cancelBehaviorTest() {
+    const bundle = this.bundle;
+    const machineId = this.behaviorTestContext?.machineId;
+    this.behaviorTestContext = null;
+    if (!bundle || !machineId) return;
+    bundle.behaviorRuntime.cancel(machineId, "cancel");
+    this.emitBehaviorDebug(bundle);
+  }
+
+  private createBehaviorRuntime(bundle: LoadedBundle, machines: readonly SpineBehaviorMachine[]): SpineBehaviorRuntime {
+    return new SpineBehaviorRuntime(machines, {
+      onActions: (machine, state, actions, phase) => this.applyBehaviorActions(bundle, machine, state, actions, phase),
+      onOwnershipChange: (machine, state, owned) => {
+        if (!owned) this.releaseBehaviorMachineResources(bundle, machine, state);
+      },
+    });
+  }
+
+  private applyBehaviorActions(
+    bundle: LoadedBundle,
+    machine: SpineBehaviorMachine,
+    state: SpineBehaviorState,
+    actions: readonly SpineBehaviorAction[],
+    phase: "enter" | "update" | "exit" | "cancel",
+  ) {
+    // Compatibility-generated machines are mirrored for debugger visibility;
+    // until their preset is edited, the parity-tested legacy executor owns them.
+    if (machine.sourceLegacyInteractionId !== null || phase === "update") return;
+    actions.forEach((action, index) => {
+      const key = `${machine.id}/${state.id}/${index}`;
+      if (phase === "enter") {
+        switch (action.type) {
+          case "play-animation": this.playBehaviorAnimation(bundle, action); break;
+          case "pointer-follow":
+          case "drag-bone":
+          case "rotate-bone": this.beginBehaviorBoneControl(bundle, machine, state, key, action); break;
+          case "play-audio": {
+            try {
+              const cleanup = this.callbacks.onBehaviorAudio?.(machine.id, action.audioId, action.volume, action.loop);
+              if (cleanup) this.behaviorActionCleanups.set(key, { machineId: machine.id, cleanup });
+            } catch (error) { this.callbacks.onError(errorFrom(error)); }
+            break;
+          }
+          case "show-subtitle": {
+            try {
+              this.callbacks.onBehaviorSubtitle?.(machine.id, action.cueId, true);
+              this.behaviorActionCleanups.set(key, { machineId: machine.id, cleanup: () => this.callbacks.onBehaviorSubtitle?.(machine.id, action.cueId, false) });
+            } catch (error) { this.callbacks.onError(errorFrom(error)); }
+            break;
+          }
+          case "set-variable": bundle.behaviorRuntime.setVariable(action.name, action.value); break;
+          case "wait": break;
+          case "restore-resource": break;
+        }
+        return;
+      }
+
+      switch (action.type) {
+        case "play-animation": this.clearBehaviorAnimation(bundle, action); break;
+        case "pointer-follow":
+        case "drag-bone":
+        case "rotate-bone": this.returnBehaviorBoneControl(key, action.type === "drag-bone" || action.type === "rotate-bone" ? action.returnDuration : 0.35); break;
+        case "play-audio":
+        case "show-subtitle": this.cleanupBehaviorAction(key); break;
+        case "restore-resource": this.restoreBehaviorResource(bundle, machine, action.resource); break;
+        case "set-variable":
+        case "wait": break;
+      }
+    });
+  }
+
+  private behaviorAnimationPair(bundle: LoadedBundle, action: Extract<SpineBehaviorAction, { type: "play-animation" }>): { main: string | null; face: string | null } {
+    const fallback = action.fallbackProfile === "look-start" ? bundle.interaction.look?.start
+      : action.fallbackProfile === "look-end" ? bundle.interaction.look?.end
+        : null;
+    return {
+      main: action.mainAnimation || fallback?.main || null,
+      face: action.faceAnimation || fallback?.face || null,
+    };
+  }
+
+  private playBehaviorAnimation(bundle: LoadedBundle, action: Extract<SpineBehaviorAction, { type: "play-animation" }>) {
+    const pair = this.behaviorAnimationPair(bundle, action);
+    if (pair.main && bundle.meta.animations.includes(pair.main)) setInteractionTrack(bundle.state, action.bodyTrack, pair.main, action.loop, action.mixDuration);
+    else clearInteractionTrack(bundle.state, action.bodyTrack, true, action.mixDuration);
+    if (pair.face && bundle.meta.animations.includes(pair.face)) setInteractionTrack(bundle.state, action.faceTrack, pair.face, action.loop, action.mixDuration);
+    else clearInteractionTrack(bundle.state, action.faceTrack, true, action.mixDuration);
+  }
+
+  private clearBehaviorAnimation(bundle: LoadedBundle, action: Extract<SpineBehaviorAction, { type: "play-animation" }>) {
+    clearInteractionTrack(bundle.state, action.bodyTrack, true, action.mixDuration);
+    clearInteractionTrack(bundle.state, action.faceTrack, true, action.mixDuration);
+  }
+
+  private beginBehaviorBoneControl(
+    bundle: LoadedBundle,
+    machine: SpineBehaviorMachine,
+    _state: SpineBehaviorState,
+    key: string,
+    action: Extract<SpineBehaviorAction, { type: "pointer-follow" | "drag-bone" | "rotate-bone" }>,
+  ) {
+    const targetPath = action.targetBonePath;
+    const bone = targetPath
+      ? bundle.skeleton.bones.find((candidate) => bonePath(candidate) === targetPath) ?? null
+      : action.type === "pointer-follow"
+        ? resolveEyeTargetBone(bundle.skeleton, bundle.lookFollow.targetBonePath)
+        : null;
+    if (!bone) return;
+    const pointer = this.pointerWorld();
+    const originLocal = pointer ? this.behaviorPointerToParentLocal(bundle, bone, pointer) : null;
+    const baseWorld = bone.parent
+      ? bone.parent.localToWorld(new Vector2(bone.x, bone.y))
+      : new Vector2(bone.x + bundle.skeleton.x, bone.y + bundle.skeleton.y);
+    this.behaviorControls.set(key, {
+      key,
+      machineId: machine.id,
+      bone,
+      action,
+      baseX: bone.x,
+      baseY: bone.y,
+      baseRotation: bone.rotation,
+      currentWorldX: baseWorld.x,
+      currentWorldY: baseWorld.y,
+      currentRotation: bone.rotation,
+      originLocal,
+      returning: false,
+      returnElapsed: 0,
+      returnDuration: 0.35,
+      returnFromX: bone.x,
+      returnFromY: bone.y,
+      returnFromRotation: bone.rotation,
+    });
+  }
+
+  private returnBehaviorBoneControl(key: string, duration: number) {
+    const control = this.behaviorControls.get(key);
+    if (!control) return;
+    control.returning = true;
+    control.returnElapsed = 0;
+    control.returnDuration = Math.max(0.05, duration);
+    control.returnFromX = control.bone.x;
+    control.returnFromY = control.bone.y;
+    control.returnFromRotation = control.bone.rotation;
+  }
+
+  private behaviorPointerToParentLocal(bundle: LoadedBundle, bone: Bone, point: { x: number; y: number }): { x: number; y: number } {
+    if (bone.parent) {
+      const local = bone.parent.worldToLocal(new Vector2(point.x, point.y));
+      return { x: local.x, y: local.y };
+    }
+    return { x: point.x - bundle.skeleton.x, y: point.y - bundle.skeleton.y };
+  }
+
+  private applyBehaviorBoneControls(bundle: LoadedBundle, delta: number) {
+    const pointer = this.pointerWorld();
+    for (const [key, control] of this.behaviorControls) {
+      if (!bundle.skeleton.bones.includes(control.bone)) {
+        this.behaviorControls.delete(key);
+        continue;
+      }
+      const bone = control.bone;
+      if (control.returning) {
+        control.returnElapsed += delta;
+        const progress = Math.min(1, control.returnElapsed / control.returnDuration);
+        const eased = 1 - (1 - progress) * (1 - progress);
+        bone.x = control.returnFromX + (control.baseX - control.returnFromX) * eased;
+        bone.y = control.returnFromY + (control.baseY - control.returnFromY) * eased;
+        bone.rotation = control.returnFromRotation + (control.baseRotation - control.returnFromRotation) * eased;
+        if (progress >= 1) {
+          bone.x = control.baseX;
+          bone.y = control.baseY;
+          bone.rotation = control.baseRotation;
+          this.behaviorControls.delete(key);
+        }
+        continue;
+      }
+      if (!pointer) continue;
+      if (control.action.type === "pointer-follow") {
+        const base = bone.parent
+          ? bone.parent.localToWorld(new Vector2(control.baseX, control.baseY))
+          : new Vector2(control.baseX + bundle.skeleton.x, control.baseY + bundle.skeleton.y);
+        const automaticRange = this.bundle?.eyeTarget?.bone === bone
+          ? this.bundle.eyeTarget
+          : null;
+        const rangeX = control.action.rangeX ?? automaticRange?.rangeX ?? Math.min(MAX_EYE_FOLLOW_RANGE, Math.max(MIN_TOUCH_FOLLOW_X, bundle.bounds.width * TOUCH_FOLLOW_SCENE_RATIO));
+        const rangeY = control.action.rangeY ?? automaticRange?.rangeY ?? Math.min(MAX_EYE_FOLLOW_RANGE, Math.max(MIN_TOUCH_FOLLOW_Y, bundle.bounds.height * TOUCH_FOLLOW_SCENE_RATIO));
+        const desired = lookFollowTarget(base, pointer, rangeX, rangeY, control.action.allowX, control.action.allowY);
+        const smoothed = smoothLookFollowPoint({ x: control.currentWorldX, y: control.currentWorldY }, desired, delta, control.action.smoothing);
+        control.currentWorldX = smoothed.x;
+        control.currentWorldY = smoothed.y;
+        const local = bone.parent
+          ? bone.parent.worldToLocal(new Vector2(smoothed.x, smoothed.y))
+          : new Vector2(smoothed.x - bundle.skeleton.x, smoothed.y - bundle.skeleton.y);
+        bone.x = local.x;
+        bone.y = local.y;
+      } else if (control.originLocal) {
+        const localPointer = this.behaviorPointerToParentLocal(bundle, bone, pointer);
+        if (control.action.type === "drag-bone") {
+          const dx = (localPointer.x - control.originLocal.x) * control.action.sensitivity;
+          const dy = (localPointer.y - control.originLocal.y) * control.action.sensitivity;
+          const desiredX = control.baseX + (control.action.allowX ? Math.max(-control.action.limitX, Math.min(control.action.limitX, dx)) : 0);
+          const desiredY = control.baseY + (control.action.allowY ? Math.max(-control.action.limitY, Math.min(control.action.limitY, dy)) : 0);
+          const factor = 1 - Math.exp(-delta * control.action.smoothing);
+          bone.x = control.baseX + ((bone.x - control.baseX) + (desiredX - bone.x)) * factor;
+          bone.y = control.baseY + ((bone.y - control.baseY) + (desiredY - bone.y)) * factor;
+        } else {
+          const distance = control.action.axis === "x" ? localPointer.x - control.originLocal.x : localPointer.y - control.originLocal.y;
+          const offset = Math.max(control.action.minimum, Math.min(control.action.maximum, distance * 0.15));
+          const desired = control.baseRotation + offset;
+          const factor = 1 - Math.exp(-delta * 10);
+          bone.rotation += (desired - bone.rotation) * factor;
+        }
+      }
+    }
+  }
+
+  private releaseBehaviorMachineResources(bundle: LoadedBundle, machine: SpineBehaviorMachine, state: SpineBehaviorState) {
+    for (const control of this.behaviorControls.values()) {
+      if (control.machineId === machine.id) this.returnBehaviorBoneControl(control.key, control.action.type === "drag-bone" || control.action.type === "rotate-bone" ? control.action.returnDuration : 0.35);
+    }
+    for (const resource of [...machine.resourceClaims, ...state.resourceClaims]) {
+      if (!resource.startsWith("track:")) continue;
+      const track = Number(resource.slice("track:".length));
+      if (Number.isInteger(track) && track > 0 && track <= 32) clearInteractionTrack(bundle.state, track, true);
+    }
+    for (const [key, entry] of this.behaviorActionCleanups) if (entry.machineId === machine.id) this.cleanupBehaviorAction(key);
+  }
+
+  private restoreBehaviorResource(bundle: LoadedBundle, machine: SpineBehaviorMachine, resource: string) {
+    if (resource === "all" || resource === "controlled-bones" || resource === "interaction-motion") {
+      for (const control of this.behaviorControls.values()) if (control.machineId === machine.id) this.returnBehaviorBoneControl(control.key, 0.35);
+      if (resource === "interaction-motion") resetInteractionMotion(this.motionState());
+    }
+    if (resource === "all" || resource === "animation-tracks") {
+      for (const claim of [...machine.resourceClaims, ...machine.states.flatMap((state) => state.resourceClaims)]) {
+        if (!claim.startsWith("track:")) continue;
+        const track = Number(claim.slice("track:".length));
+        if (Number.isInteger(track) && track > 0 && track <= 32) clearInteractionTrack(bundle.state, track, true);
+      }
+    }
+    if (resource === "all" || resource === "audio" || resource === "subtitle") {
+      for (const [key, entry] of this.behaviorActionCleanups) {
+        if (entry.machineId === machine.id) this.cleanupBehaviorAction(key);
+      }
+    }
+  }
+
+  private cleanupBehaviorAction(key: string) {
+    const entry = this.behaviorActionCleanups.get(key);
+    if (!entry) return;
+    this.behaviorActionCleanups.delete(key);
+    try { entry.cleanup(); } catch (error) { this.callbacks.onError(errorFrom(error)); }
+  }
+
+  private clearBehaviorSideEffects() {
+    for (const entry of this.behaviorActionCleanups.values()) {
+      try { entry.cleanup(); } catch (error) { this.callbacks.onError(errorFrom(error)); }
+    }
+    this.behaviorActionCleanups.clear();
+    for (const control of this.behaviorControls.values()) {
+      control.bone.x = control.baseX;
+      control.bone.y = control.baseY;
+      control.bone.rotation = control.baseRotation;
+    }
+    this.behaviorControls.clear();
+    this.behaviorTestContext = null;
+  }
+
+  private updateBehaviorAnimationCompletions(bundle: LoadedBundle) {
+    for (const completion of bundle.behaviorRuntime.getAnimationCompletions()) {
+      const complete = completion.tracks.every(({ track, channel, animation, fallbackProfile }) => {
+        const fallback = fallbackProfile === "look-start" ? bundle.interaction.look?.start
+          : fallbackProfile === "look-end" ? bundle.interaction.look?.end
+            : null;
+        const name = animation || (channel === "body" ? fallback?.main : fallback?.face) || null;
+        if (!name) return true;
+        if (!bundle.meta.animations.includes(name)) return true;
+        const entry = bundle.state.getCurrent(track);
+        if (!entry) return true;
+        if (entry.animation?.name !== name) return false;
+        return !entry.loop && entry.trackTime >= (entry.animation?.duration ?? 0);
+      });
+      if (complete) bundle.behaviorRuntime.notifyAnimationComplete(completion.machineId, this.behaviorRuntimeContext());
+    }
+  }
+
+  /** Enables a pointer-driven look preview without activating hit-region gestures. */
+  setLookFollowPreview(enabled: boolean) {
+    this.lookFollowPreview = enabled;
+    this.interactionPointer = null;
+    this.eyeFollowHold = 0;
+    if (!enabled) this.endLook();
+  }
+
+  setLookFollowPreviewPointer(clientX: number | null, clientY: number | null) {
+    if (!this.lookFollowPreview || clientX === null || clientY === null) {
+      this.interactionPointer = null;
+      this.eyeFollowHold = 0;
+      this.endLook();
+      return;
+    }
+    const rect = this.canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    this.interactionPointer = x >= 0 && y >= 0 && x <= rect.width && y <= rect.height ? { x, y } : null;
+    if (!this.interactionPointer) {
+      this.eyeFollowHold = 0;
+      this.endLook();
+    }
+  }
+
   setLoop(loop: boolean) {
     this.loop = loop;
     const entry = this.bundle?.state.getCurrent(0);
@@ -923,11 +1429,16 @@ export class SpineRenderer {
     }
 
     this.interactionMode = mode;
+    if (mode !== "interaction") this.bundle?.behaviorRuntime?.cancelAll("cancel");
+    this.lookFollowPreview = false;
     this.resetInteractionTargets();
     this.interactionPointer = null;
     this.interactionPointerId = null;
     this.interactionPointerHeld = false;
+    this.behaviorPointerHeldSeconds = 0;
     this.interactionPressedTarget = null;
+    this.interactionPressedBehaviorRegionId = null;
+    this.behaviorPressDispatched = false;
     this.interactionPressedTrigger = "hold";
     this.interactionPressOrigin = null;
     this.activeGestureInteractionId = null;
@@ -1192,7 +1703,8 @@ export class SpineRenderer {
 
   private beginLook() {
     const bundle = this.bundle;
-    if (!bundle?.eyeTarget || this.interactionState !== "idle") return;
+    if (!bundle?.lookFollow.enabled || !bundle.eyeTarget || this.interactionState !== "idle"
+      || !this.compatibilityMachineCanExecute("$legacy-look-follow")) return;
     const profile = bundle.interaction.look;
     this.interactionState = "look";
     this.interactionTrackName = profile?.start.main ?? null;
@@ -1202,6 +1714,10 @@ export class SpineRenderer {
   private endLook() {
     const bundle = this.bundle;
     if (!bundle || this.interactionState !== "look") return;
+    if (!this.compatibilityMachineCanExecute("$legacy-look-follow")) {
+      this.abandonLegacyInteraction();
+      return;
+    }
     this.resetInteractionTargets();
     const end = bundle.interaction.look?.end;
     if (end) {
@@ -1241,6 +1757,10 @@ export class SpineRenderer {
   private playGestureRelease(kind: GestureKind) {
     const bundle = this.bundle;
     if (!bundle) return;
+    if (this.activeGestureInteractionId && !this.compatibilityMachineCanExecute(this.activeGestureInteractionId)) {
+      this.abandonLegacyInteraction();
+      return;
+    }
     beginInteractionMotionReturn(this.motionState());
     const release = this.gestureAction(kind)?.release;
     if (release) {
@@ -1258,6 +1778,7 @@ export class SpineRenderer {
 
   private beginGesture(target: InteractionHitTarget): boolean {
     const state = target.kind as GestureKind;
+    if (target.interactionId && !this.compatibilityMachineCanExecute(target.interactionId)) return false;
     const authored = this.gestureInteraction(state, target.interactionId);
     const action = authored
       ? authoredInteractionAction(this.bundle?.meta.animations ?? [], authored)
@@ -1300,7 +1821,28 @@ export class SpineRenderer {
     const bundle = this.bundle;
     const kind = this.gestureKind();
     if (!bundle || !kind || this.interactionState === `${kind}Release`) return;
+    if (this.activeGestureInteractionId && !this.compatibilityMachineCanExecute(this.activeGestureInteractionId)) {
+      this.abandonLegacyInteraction();
+      return;
+    }
     this.playGestureRelease(kind);
+  }
+
+  private compatibilityMachineCanExecute(legacyId: string): boolean {
+    const bundle = this.bundle;
+    if (!bundle?.behaviorRuntime) return true;
+    const mirror = bundle.behaviorRuntime.getActiveStates()
+      .find(({ machine }) => machine.sourceLegacyInteractionId === legacyId);
+    return !mirror || bundle.behaviorRuntime.canExecuteMachine(mirror.machine.id);
+  }
+
+  /** Stop legacy visual updates without clearing tracks that may now have a new owner. */
+  private abandonLegacyInteraction() {
+    this.resetInteractionTargets(false);
+    this.interactionState = "idle";
+    this.interactionTrackName = null;
+    this.activeGestureInteractionId = null;
+    this.eyeFollowHold = 0;
   }
 
   private interactionAnimationFinished(track: number): boolean {
@@ -1317,6 +1859,7 @@ export class SpineRenderer {
     if (gestureRelease) {
       if (this.interactionTrackName && !this.interactionAnimationFinished(3)) return;
       if (!interactionMotionReturnComplete(this.motionState())) return;
+      this.dispatchBehaviorEvent("animation-complete");
       this.interactionState = "idle";
       this.interactionTrackName = null;
       this.activeGestureInteractionId = null;
@@ -1330,6 +1873,7 @@ export class SpineRenderer {
     if (!this.interactionTrackName) return;
     if (kind && this.interactionState === `${kind}Start`) {
       if (!this.interactionAnimationFinished(3)) return;
+      this.dispatchBehaviorEvent("animation-complete");
       if (interactionPhaseAfterStart(this.interactionPressedTrigger, this.interactionPointerHeld) === "releasing") {
         this.playGestureRelease(kind);
       } else if (this.interactionPointerHeld
@@ -1355,6 +1899,7 @@ export class SpineRenderer {
     if (track < 0) return;
     if (this.interactionState === "talk" && this.talkAudioPending) return;
     if (!this.interactionAnimationFinished(track)) return;
+    this.dispatchBehaviorEvent("animation-complete");
     if (this.interactionState === "talk" && this.talkFadeQueued
       && (bundle.state.getCurrent(5) || bundle.state.getCurrent(6))) return;
     this.interactionState = "idle";
@@ -1508,12 +2053,16 @@ export class SpineRenderer {
 
   private resetTimelineInteractionState() {
     const state = this.bundle?.state;
+    this.bundle?.behaviorRuntime?.cancelAll("cancel");
     this.resetInteractionTargets();
     for (const track of [1, 2, 3, 4, 5, 6]) state?.clearTrack(track);
     this.interactionPointer = null;
     this.interactionPointerId = null;
     this.interactionPointerHeld = false;
+    this.behaviorPointerHeldSeconds = 0;
     this.interactionPressedTarget = null;
+    this.interactionPressedBehaviorRegionId = null;
+    this.behaviorPressDispatched = false;
     this.interactionPressedTrigger = "hold";
     this.interactionPressOrigin = null;
     this.activeGestureInteractionId = null;
@@ -1576,6 +2125,24 @@ export class SpineRenderer {
     const originScreen = screen(0, 0);
     const unitXScreen = screen(1, 0);
     const unitYScreen = screen(0, 1);
+    const eyeTarget = bundle.eyeTarget;
+    const lookBaseWorld = eyeTarget
+      ? eyeTarget.bone.parent
+        ? eyeTarget.bone.parent.localToWorld(new Vector2(eyeTarget.baseX, eyeTarget.baseY))
+        : new Vector2(eyeTarget.baseX + bundle.skeleton.x, eyeTarget.baseY + bundle.skeleton.y)
+      : null;
+    const lookFollow = eyeTarget && lookBaseWorld
+      ? {
+        targetBonePath: bonePath(eyeTarget.bone),
+        centerScreenX: screen(lookBaseWorld.x, lookBaseWorld.y).x,
+        centerScreenY: screen(lookBaseWorld.x, lookBaseWorld.y).y,
+        currentScreenX: screen(eyeTarget.bone.worldX, eyeTarget.bone.worldY).x,
+        currentScreenY: screen(eyeTarget.bone.worldX, eyeTarget.bone.worldY).y,
+        rangeX: eyeTarget.rangeX,
+        rangeY: eyeTarget.rangeY,
+        active: this.interactionState === "look",
+      }
+      : null;
     const bones = bundle.skeleton.bones.map((bone) => {
       const path = bonePath(bone);
       const end = bone.localToWorld(new Vector2(bone.data.length, 0));
@@ -1651,6 +2218,7 @@ export class SpineRenderer {
       screenUnitYEndY: unitYScreen.y,
       bones,
       constraints,
+      lookFollow,
     };
   }
 
@@ -1817,6 +2385,8 @@ export class SpineRenderer {
   private disposeBundle() {
     if (!this.bundle) return;
     resetInteractionMotion(this.motionState());
+    this.bundle.behaviorRuntime.dispose();
+    this.clearBehaviorSideEffects();
     disposeBundle(this.bundle);
     this.bundle = null;
   }
@@ -1928,25 +2498,46 @@ export class SpineRenderer {
       this.resize();
       const bundle = this.bundle;
       if (bundle) {
+        if (this.interactionPointerHeld) this.behaviorPointerHeldSeconds += delta;
+        if (this.behaviorTestContext?.pointerHeld) this.behaviorTestContext.heldSeconds += delta;
+        const behaviorContext = this.behaviorRuntimeContext();
+        if (this.behaviorTestContext) {
+          behaviorContext.pointerHeld = this.behaviorTestContext.pointerHeld;
+          behaviorContext.regionId = this.behaviorTestContext.regionId;
+          behaviorContext.heldSeconds = this.behaviorTestContext.heldSeconds;
+          behaviorContext.dragDistance = this.behaviorTestContext.dragDistance;
+        }
+        bundle.behaviorRuntime.update(delta, behaviorContext);
+        if (this.activeGestureInteractionId && !this.compatibilityMachineCanExecute(this.activeGestureInteractionId)) this.abandonLegacyInteraction();
+        if ((this.interactionState === "look" || this.interactionState === "lookRelease")
+          && !this.compatibilityMachineCanExecute("$legacy-look-follow")) this.abandonLegacyInteraction();
+        this.emitBehaviorDebug(bundle);
         this.callbacks.onBeforeEditorUpdate?.(bundle.skeleton);
         this.restoreInteractionPose();
         if (this.playing) bundle.state.update(delta * this.speed);
         bundle.state.apply(bundle.skeleton);
         bundle.skeleton.updateWorldTransform(Physics.update);
         this.callbacks.onEditorUpdate?.(this.playing ? delta * this.speed : 0, bundle.skeleton, bundle.state);
+        this.applyBehaviorBoneControls(bundle, delta);
+        bundle.skeleton.updateWorldTransform(Physics.update);
+        this.updateBehaviorAnimationCompletions(bundle);
         if (this.interactionMode === "interaction") {
           const wasInteractionReady = this.interactionReady;
           const entry = bundle.state.getCurrent(0);
           if (!(bundle.meta.introAnimation && bundle.meta.idleAnimation) || entry?.animation?.name !== bundle.meta.introAnimation) this.interactionReady = true;
           if (!wasInteractionReady && this.interactionReady) {
             this.eyeFollowHold = 0;
-            if (this.interactionPointerHeld) this.beginPressedGesture();
+            if (this.interactionPointerHeld) {
+              this.dispatchBehaviorEvent("pointer-press", this.interactionPressedBehaviorRegionId);
+              this.beginPressedGesture();
+            }
           }
           this.finishInteractionState();
           if (this.interactionReady) {
             if (this.interactionState === "idle" && this.interactionPointer) {
-              this.eyeFollowHold = Math.min(EYE_FOLLOW_DELAY, this.eyeFollowHold + delta);
-              if (this.eyeFollowHold >= EYE_FOLLOW_DELAY) {
+              const delay = bundle.lookFollow.delay;
+              this.eyeFollowHold = Math.min(delay, this.eyeFollowHold + delta);
+              if (bundle.lookFollow.enabled && this.eyeFollowHold >= delay) {
                 this.beginLook();
               }
             } else if (this.interactionState === "look") {
@@ -1958,6 +2549,17 @@ export class SpineRenderer {
             } else if (this.interactionState === "idle") {
               this.eyeFollowHold = 0;
             }
+          }
+        } else if (this.lookFollowPreview) {
+          this.finishInteractionState();
+          if (this.interactionState === "idle" && this.interactionPointer && bundle.lookFollow.enabled) {
+            const delay = bundle.lookFollow.delay;
+            this.eyeFollowHold = Math.min(delay, this.eyeFollowHold + delta);
+            if (this.eyeFollowHold >= delay) this.beginLook();
+          } else if (this.interactionState === "look") {
+            this.applyEyeFollow(delta);
+          } else if (!this.interactionPointer) {
+            this.eyeFollowHold = 0;
           }
         }
         this.emitEditorFrame();
@@ -2028,13 +2630,19 @@ export class SpineRenderer {
       if (this.interactionPointerHeld) return;
       this.interactionPointerId = event.pointerId;
       this.interactionPointerHeld = true;
+      this.behaviorPointerHeldSeconds = 0;
       this.pointerInside = true;
       this.updateInteractionPointer(event);
       this.interactionPressOrigin = this.interactionPointer ? { ...this.interactionPointer } : null;
       this.interactionPressedTarget = this.interactionTargetAtEvent(event);
+      this.interactionPressedBehaviorRegionId = this.behaviorRegionAtEvent(event)?.regionId ?? this.interactionPressedTarget?.regionId ?? null;
+      this.behaviorPressDispatched = false;
       this.interactionPressedTrigger = this.interactionPressedTarget
         ? this.gestureInteraction(this.interactionPressedTarget.kind, this.interactionPressedTarget.interactionId)?.trigger ?? "hold"
         : "hold";
+      if (this.interactionReady && !this.sampledEditorTalkSequence) {
+        this.dispatchBehaviorEvent("pointer-press", this.interactionPressedBehaviorRegionId);
+      }
       this.canvas.setPointerCapture(event.pointerId);
       if (this.interactionReady) this.beginPressedGesture();
       return;
@@ -2050,6 +2658,11 @@ export class SpineRenderer {
     if (this.interactionMode === "interaction") {
       if (!this.interactionPointerHeld || this.interactionPointerId !== event.pointerId) return;
       this.updateInteractionPointer(event);
+      const origin = this.interactionPressOrigin;
+      const pointer = this.interactionPointer;
+      const dragDistance = origin && pointer ? Math.hypot(pointer.x - origin.x, pointer.y - origin.y) : 0;
+      this.dispatchBehaviorEvent("pointer-drag", this.interactionPressedBehaviorRegionId, undefined, dragDistance);
+      this.beginPressedBehavior(dragDistance);
       if (this.interactionReady) this.beginPressedGesture();
       return;
     }
@@ -2074,10 +2687,15 @@ export class SpineRenderer {
       if (this.interactionPointerId !== null && this.interactionPointerId !== event.pointerId) return;
       const rect = this.canvas.getBoundingClientRect();
       this.pointerInside = event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+      const regionId = this.interactionPressedBehaviorRegionId ?? this.interactionPressedTarget?.regionId ?? null;
       this.interactionPointer = null;
       this.interactionPointerHeld = false;
+      this.dispatchBehaviorEvent(event.type === "pointercancel" ? "pointer-cancel" : "pointer-release", regionId);
+      this.behaviorPointerHeldSeconds = 0;
       this.interactionPointerId = null;
       this.interactionPressedTarget = null;
+      this.interactionPressedBehaviorRegionId = null;
+      this.behaviorPressDispatched = false;
       this.interactionPressedTrigger = "hold";
       this.interactionPressOrigin = null;
       this.endGesture();
@@ -2100,6 +2718,7 @@ export class SpineRenderer {
     if (this.interactionMode !== "interaction" || !this.interactionPointerHeld || this.interactionPointerId !== event.pointerId) return;
     this.pointerInside = false;
     this.interactionPointer = null;
+    this.dispatchBehaviorEvent("pointer-leave", this.interactionPressedBehaviorRegionId);
     this.eyeFollowHold = 0;
     this.endLook();
     if (!this.canvas.hasPointerCapture(event.pointerId)) this.endGesture();
@@ -2136,6 +2755,13 @@ export class SpineRenderer {
     return interactionTargetAtPoint(bundle.skeleton, point.x, point.y, kinds, bundle.authoredRegions);
   }
 
+  private behaviorRegionAtEvent(event: PointerEvent) {
+    const bundle = this.bundle;
+    if (!bundle) return null;
+    const point = this.pointerWorldFromEvent(event);
+    return point ? behaviorRegionAtPoint(bundle.skeleton, point.x, point.y, bundle.behaviorHitRegions) : null;
+  }
+
   private beginPressedGesture() {
     if (this.interactionState !== "idle" || !this.interactionReady || this.sampledEditorTalkSequence) return;
     const target = this.interactionPressedTarget;
@@ -2144,7 +2770,57 @@ export class SpineRenderer {
     const pointer = this.interactionPointer;
     const distance = origin && pointer ? Math.hypot(pointer.x - origin.x, pointer.y - origin.y) : 0;
     if (!interactionPressReady(this.interactionPressedTrigger, this.interactionPointerHeld, distance)) return;
+    if (this.interactionPressedTrigger === "drag") this.beginPressedBehavior(distance);
     this.beginGesture(target);
+  }
+
+  private beginPressedBehavior(dragDistance: number) {
+    if (this.behaviorPressDispatched || !this.interactionPointerHeld || !this.interactionReady || this.sampledEditorTalkSequence) return;
+    const bundle = this.bundle;
+    if (!bundle) return;
+    const ids = bundle.behaviorRuntime.getActivationMachineIds("drag", this.interactionPressedBehaviorRegionId, dragDistance);
+    if (ids.length === 0) return;
+    this.dispatchBehaviorEvent("pointer-press", this.interactionPressedBehaviorRegionId, ids, dragDistance);
+    this.behaviorPressDispatched = true;
+  }
+
+  private behaviorRuntimeContext(regionId = this.interactionPressedBehaviorRegionId ?? this.interactionPressedTarget?.regionId ?? null, dragDistance?: number): SpineBehaviorRuntimeContext {
+    const origin = this.interactionPressOrigin;
+    const pointer = this.interactionPointer;
+    const distance = dragDistance ?? (origin && pointer ? Math.hypot(pointer.x - origin.x, pointer.y - origin.y) : 0);
+    return {
+      pointerHeld: this.interactionPointerHeld,
+      regionId,
+      heldSeconds: this.behaviorPointerHeldSeconds,
+      dragDistance: distance,
+      variables: {},
+    };
+  }
+
+  private dispatchBehaviorEvent(event: "pointer-press" | "pointer-release" | "pointer-drag" | "pointer-cancel" | "pointer-leave" | "timer-elapsed" | "animation-complete" | "state-entered" | "manual", regionId = this.interactionPressedBehaviorRegionId ?? this.interactionPressedTarget?.regionId ?? null, machineIds?: readonly string[], dragDistance?: number) {
+    const bundle = this.bundle;
+    const runtime = bundle?.behaviorRuntime;
+    if (!bundle || !runtime) return;
+    let targetMachineIds = machineIds;
+    if (event === "animation-complete" && !targetMachineIds) {
+      targetMachineIds = runtime.getActiveStates()
+        .filter(({ machine }) => machine.sourceLegacyInteractionId !== null)
+        .map(({ machine }) => machine.id);
+    }
+    if (!targetMachineIds || targetMachineIds.length > 0) {
+      runtime.dispatch(event, this.behaviorRuntimeContext(regionId, dragDistance), targetMachineIds);
+    }
+    this.emitBehaviorDebug(bundle);
+  }
+
+  private emitBehaviorDebug(bundle: LoadedBundle) {
+    const onBehaviorDebug = this.callbacks.onBehaviorDebug;
+    if (!onBehaviorDebug) return;
+    const snapshot = bundle.behaviorRuntime.getDebugSnapshot();
+    const signature = JSON.stringify(snapshot);
+    if (signature === this.behaviorDebugSignature) return;
+    this.behaviorDebugSignature = signature;
+    onBehaviorDebug(snapshot);
   }
 
   private pointerWorld(): Vector3 | null {
@@ -2176,20 +2852,13 @@ export class SpineRenderer {
       ? eyeTarget.bone.parent.localToWorld(new Vector2(eyeTarget.baseX, eyeTarget.baseY))
       : new Vector2(eyeTarget.baseX + bundle.skeleton.x, eyeTarget.baseY + bundle.skeleton.y);
     const pointer = this.pointerWorld();
-    const desired = pointer
-      ? {
-        x: base.x + Math.max(-eyeTarget.rangeX, Math.min(eyeTarget.rangeX, pointer.x - base.x)),
-        y: base.y + Math.max(-eyeTarget.rangeY, Math.min(eyeTarget.rangeY, pointer.y - base.y)),
-      }
-      : base;
+    const desired = lookFollowTarget(base, pointer, eyeTarget.rangeX, eyeTarget.rangeY, bundle.lookFollow.allowX, bundle.lookFollow.allowY);
     const current = this.interactionFollowWorld ?? { x: eyeTarget.bone.worldX, y: eyeTarget.bone.worldY };
-    const amount = Math.min(1, Math.max(0.08, delta * (pointer ? 14 : 10)));
-    current.x += (desired.x - current.x) * amount;
-    current.y += (desired.y - current.y) * amount;
-    this.interactionFollowWorld = current;
+    const smoothed = smoothLookFollowPoint(current, desired, delta, bundle.lookFollow.smoothing);
+    this.interactionFollowWorld = smoothed;
     const local = eyeTarget.bone.parent
-      ? eyeTarget.bone.parent.worldToLocal(new Vector2(current.x, current.y))
-      : new Vector2(current.x - bundle.skeleton.x, current.y - bundle.skeleton.y);
+      ? eyeTarget.bone.parent.worldToLocal(new Vector2(smoothed.x, smoothed.y))
+      : new Vector2(smoothed.x - bundle.skeleton.x, smoothed.y - bundle.skeleton.y);
     eyeTarget.bone.x = local.x;
     eyeTarget.bone.y = local.y;
     // The authored Touch_Eye constraints consume the target bone during the

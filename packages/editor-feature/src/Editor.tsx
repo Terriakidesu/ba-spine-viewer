@@ -8,6 +8,10 @@ import {
   type SpineProgress,
 } from "@ba-spine/spine-runtime/spine/spineRuntime";
 import { DEFAULT_EFFECTS_STRENGTH } from "@ba-spine/spine-runtime/spine/spineEffects";
+import type { SpineLookFollowSettings } from "@ba-spine/spine-runtime/spine/spineInteraction";
+import type { SpineBehaviorDebugMachine } from "@ba-spine/spine-runtime/spine/spineBehaviorRuntime";
+import { synchronizeLegacyBehaviorMachines, type SpineBehaviorEvent } from "@ba-spine/spine-runtime/spine/spineBehavior";
+import { spineAudioPathCandidates } from "@ba-spine/spine-runtime/spine/spineAudio";
 import { hasLegacySquareCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import {
   blankInteraction,
@@ -43,6 +47,7 @@ import { AnimationPicker } from "./AnimationPicker";
 import { AnimationPhaseEditor } from "./components/AnimationPhaseEditor";
 import { BoundedSliderField } from "./components/BoundedSliderField";
 import { InteractionSummary } from "./components/InteractionSummary";
+import { BehaviorEditor } from "./components/BehaviorEditor";
 import { NumberField } from "./components/NumberField";
 import { SaveStatus } from "./components/SaveStatus";
 import { WorkspacePresetMenu } from "./components/WorkspacePresetMenu";
@@ -110,9 +115,12 @@ interface BoneOverlayProps {
   project: EditorProject | null;
   viewSettings: EditorViewSettings;
   motionLimits: MotionLimitOverlay | null;
+  lookFollowVisible: boolean;
   onSelectBone: (path: string) => void;
   onSelectRegion: (interactionId: string, regionId: string) => void;
   onBeginRegionDrag: () => void;
+  onBeginLookFollowEdit: () => void;
+  onChangeLookFollowRange: (axis: "x" | "y", value: number) => void;
   onDragRegion: (interactionId: string, regionId: string, x: number, y: number) => void;
   tool: "select" | "pan" | "draw";
   onChangeRegion: (interactionId: string, regionId: string, patch: Partial<EditorRegion>) => void;
@@ -201,6 +209,32 @@ function motionLimitGeometry(frame: SpineEditorFrame, overlay: MotionLimitOverla
   };
 }
 
+function lookFollowGeometry(frame: SpineEditorFrame) {
+  const look = frame.lookFollow;
+  if (!look) return null;
+  const ux = { x: frame.screenUnitXEndX - frame.screenOriginX, y: frame.screenUnitXEndY - frame.screenOriginY };
+  const uy = { x: frame.screenUnitYEndX - frame.screenOriginX, y: frame.screenUnitYEndY - frame.screenOriginY };
+  const point = (angle: number) => ({
+    x: look.centerScreenX + ux.x * look.rangeX * Math.cos(angle) + uy.x * look.rangeY * Math.sin(angle),
+    y: look.centerScreenY + ux.y * look.rangeX * Math.cos(angle) + uy.y * look.rangeY * Math.sin(angle),
+  });
+  const outline = Array.from({ length: 49 }, (_, index) => point(index * Math.PI * 2 / 48));
+  const path = outline.map((item, index) => `${index === 0 ? "M" : "L"} ${item.x} ${item.y}`).join(" ") + " Z";
+  return {
+    path,
+    centerX: look.centerScreenX,
+    centerY: look.centerScreenY,
+    currentX: look.currentScreenX,
+    currentY: look.currentScreenY,
+    xHandleX: look.centerScreenX + ux.x * look.rangeX,
+    xHandleY: look.centerScreenY + ux.y * look.rangeX,
+    yHandleX: look.centerScreenX + uy.x * look.rangeY,
+    yHandleY: look.centerScreenY + uy.y * look.rangeY,
+    ux,
+    uy,
+  };
+}
+
 function arcPath(cx: number, cy: number, radius: number, startDegrees: number, endDegrees: number): string {
   const point = (degrees: number) => {
     const radians = degrees * Math.PI / 180;
@@ -213,16 +247,33 @@ function arcPath(cx: number, cy: number, radius: number, startDegrees: number, e
   return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArc} ${sweep} ${end.x} ${end.y}`;
 }
 
-function BoneOverlay({ frame, project, viewSettings, motionLimits, tool, onSelectBone, onSelectRegion, onBeginRegionDrag, onDragRegion, onChangeRegion }: BoneOverlayProps) {
+function BoneOverlay({ frame, project, viewSettings, motionLimits, lookFollowVisible, tool, onSelectBone, onSelectRegion, onBeginRegionDrag, onBeginLookFollowEdit, onChangeLookFollowRange, onDragRegion, onChangeRegion }: BoneOverlayProps) {
   const drag = useRef<{ interactionId: string; regionId: string; startX: number; startY: number; offsetX: number; offsetY: number; frame: SpineEditorFrame } | null>(null);
   const handleDrag = useRef<{ interactionId: string; region: EditorRegion; frame: SpineEditorFrame; kind: "resize" | "rotate" } | null>(null);
+  const lookRangeDrag = useRef<"x" | "y" | null>(null);
   if (!frame || !project) return null;
   const bones = frame.bones.filter((bone) => viewSettings.showInactiveBones || bone.active);
   const selectedBone = project.selectedBonePath;
   const regions = project.interactions.flatMap((interaction) => interaction.regions.map((region) => ({ interaction, region })));
   const motion = motionLimits ? motionLimitGeometry(frame, motionLimits) : null;
+  const look = lookFollowVisible ? lookFollowGeometry(frame) : null;
 
   const move = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const lookAxis = lookRangeDrag.current;
+    const lookFrame = frame.lookFollow;
+    if (lookAxis && look && lookFrame) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const x = (event.clientX - rect.left) * frame.canvasWidth / rect.width - look.centerX;
+      const y = (event.clientY - rect.top) * frame.canvasHeight / rect.height - look.centerY;
+      const determinant = look.ux.x * look.uy.y - look.uy.x * look.ux.y;
+      if (Math.abs(determinant) < 0.0001) return;
+      const local = lookAxis === "x"
+        ? (x * look.uy.y - look.uy.x * y) / determinant
+        : (look.ux.x * y - x * look.ux.y) / determinant;
+      onChangeLookFollowRange(lookAxis, Math.min(512, Math.max(0, Math.abs(local))));
+      return;
+    }
     const handle = handleDrag.current;
     if (handle) {
       const rect = event.currentTarget.getBoundingClientRect();
@@ -260,8 +311,8 @@ function BoneOverlay({ frame, project, viewSettings, motionLimits, tool, onSelec
       viewBox={`0 0 ${frame.canvasWidth} ${frame.canvasHeight}`}
       preserveAspectRatio="none"
       onPointerMove={move}
-      onPointerUp={() => { drag.current = null; handleDrag.current = null; }}
-      onPointerCancel={() => { drag.current = null; handleDrag.current = null; }}
+      onPointerUp={() => { drag.current = null; handleDrag.current = null; lookRangeDrag.current = null; }}
+      onPointerCancel={() => { drag.current = null; handleDrag.current = null; lookRangeDrag.current = null; }}
       aria-label="Spine editing overlay"
     >
       <defs>
@@ -286,6 +337,40 @@ function BoneOverlay({ frame, project, viewSettings, motionLimits, tool, onSelec
         {motionLimits?.rotationEnabled && <path className="editor-motion-rotation" d={arcPath(motion.centerX, motion.centerY, motion.rotationRadius, motion.boneRotation - motionLimits.rotationMax, motion.boneRotation - motionLimits.rotationMin)} />}
         <circle className={motionLimits?.rotationEnabled ? "editor-motion-rotation-handle is-enabled" : "editor-motion-rotation-handle is-locked"} cx={motion.centerX} cy={motion.centerY} r={6} />
         <text className="editor-motion-label rotation" x={motion.centerX + motion.rotationRadius + 5} y={motion.centerY - 5}>R</text>
+      </g>}
+      {look && <g className={`editor-look-follow-gizmo${frame.lookFollow?.active ? " is-active" : ""}${project.lookFollow.enabled ? "" : " is-disabled"}`} aria-label="Look-follow range gizmo">
+        <path className="editor-look-follow-range" d={look.path} />
+        <line className="editor-look-follow-vector" x1={look.centerX} y1={look.centerY} x2={look.currentX} y2={look.currentY} />
+        <circle className="editor-look-follow-origin" cx={look.centerX} cy={look.centerY} r={5} />
+        <circle className="editor-look-follow-current" cx={look.currentX} cy={look.currentY} r={5} />
+        <circle
+          className="editor-look-follow-handle axis-x"
+          cx={look.xHandleX}
+          cy={look.xHandleY}
+          r={7}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            (event.currentTarget as SVGCircleElement & { setPointerCapture: (pointerId: number) => void }).setPointerCapture(event.pointerId);
+            onBeginLookFollowEdit();
+            lookRangeDrag.current = "x";
+          }}
+        />
+        <circle
+          className="editor-look-follow-handle axis-y"
+          cx={look.yHandleX}
+          cy={look.yHandleY}
+          r={7}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            (event.currentTarget as SVGCircleElement & { setPointerCapture: (pointerId: number) => void }).setPointerCapture(event.pointerId);
+            onBeginLookFollowEdit();
+            lookRangeDrag.current = "y";
+          }}
+        />
+        <text className="editor-look-follow-label" x={look.xHandleX + 8} y={look.xHandleY}>X</text>
+        <text className="editor-look-follow-label" x={look.yHandleX + 8} y={look.yHandleY}>Y</text>
       </g>}
       {viewSettings.showBones && bones.map((bone) => (
         <g key={bone.path} className={`editor-bone${bone.path === selectedBone ? " is-selected" : ""}`}>
@@ -392,6 +477,7 @@ export function Editor() {
   const previewRef = useRef(new InteractionPreview());
   const stageRef = useRef<HTMLDivElement>(null);
   const testPointerRef = useRef<number | null>(null);
+  const lookTestingRef = useRef(false);
   const headRegionRef = useRef<HeadRegion | null>(null);
   const headDetectionDone = useRef(false);
   const drawRef = useRef<{ x: number; y: number } | null>(null);
@@ -403,10 +489,15 @@ export function Editor() {
   const [rightWidth, setRightWidth] = useState(storedLayoutPreferences.rightWidth);
   const [layoutPreset, setLayoutPreset] = useState<WorkspaceLayoutPreset>(storedLayoutPreferences.preset);
   const [testing, setTesting] = useState(false);
+  const [lookTesting, setLookTesting] = useState(false);
+  const [behaviorMode, setBehaviorMode] = useState(false);
   const [tool, setTool] = useState<"select" | "pan" | "draw">("select");
-  const [inspectorTab, setInspectorTab] = useState<"region" | "animation" | "movement">("region");
+  const [inspectorTab, setInspectorTab] = useState<"region" | "animation" | "movement" | "look">("region");
+  lookTestingRef.current = lookTesting;
   const [showTestRegions, setShowTestRegions] = useState(true);
   const [previewDebug, setPreviewDebug] = useState<InteractionPreviewDebug>(() => previewRef.current.debug);
+  const [behaviorDebug, setBehaviorDebug] = useState<SpineBehaviorDebugMachine[]>([]);
+  const [behaviorActionFeedback, setBehaviorActionFeedback] = useState<Record<string, string>>({});
   const [leftHidden, setLeftHidden] = useState(storedLayoutPreferences.leftHidden);
   const [rightHidden, setRightHidden] = useState(storedLayoutPreferences.rightHidden);
   const [help, setHelp] = useState(false);
@@ -779,13 +870,13 @@ export function Editor() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const renderer = new SpineRenderer(canvas, {
-      onBeforeEditorUpdate: () => { if (workspaceRef.current === "interaction") previewRef.current.beforeUpdate(); },
+      onBeforeEditorUpdate: () => { if (workspaceRef.current === "interaction" && !lookTestingRef.current) previewRef.current.beforeUpdate(); },
       onEditorUpdate: (delta, skeleton, state) => {
         if (!headDetectionDone.current) {
           headRegionRef.current = detectHeadRegion(skeleton);
           headDetectionDone.current = true;
         }
-        if (workspaceRef.current !== "interaction") return;
+        if (workspaceRef.current !== "interaction" || lookTestingRef.current) return;
         previewRef.current.update(delta, skeleton, state);
         const preview = previewRef.current;
         const debug = preview.debug;
@@ -804,6 +895,83 @@ export function Editor() {
         setError(value?.message ?? null);
       },
       onEditorFrame: (value) => callbacksRef.current.onFrame(value),
+      onBehaviorDebug: (value) => setBehaviorDebug(value),
+      onBehaviorAudio: (machineId, audioId, volume, loop) => {
+        const key = `${machineId}:audio:${audioId}`;
+        const activeSource = sourceRef.current;
+        let live = true;
+        let audio: HTMLAudioElement | null = null;
+        let objectUrl: string | null = null;
+        const cleanup = () => {
+          live = false;
+          if (audio) {
+            audio.onended = null;
+            audio.onerror = null;
+            audio.pause();
+            audio.removeAttribute("src");
+            audio.load();
+            audio = null;
+          }
+          if (objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+            objectUrl = null;
+          }
+          setBehaviorActionFeedback((current) => {
+            if (!(key in current)) return current;
+            const next = { ...current };
+            delete next[key];
+            return next;
+          });
+        };
+        setBehaviorActionFeedback((current) => ({ ...current, [key]: `Audio: ${audioId}` }));
+        const currentProject = projectRef.current;
+        const timelines = [
+          ...(currentProject ? [currentProject.timeline] : []),
+          ...Object.values(currentProject?.sequences ?? {}),
+        ];
+        const clip = timelines.flatMap((timeline) => timeline.audio).find((item) => item.id === audioId || item.path === audioId || item.name === audioId);
+        const candidates = spineAudioPathCandidates(clip?.path ?? audioId);
+        void (async () => {
+          if (!activeSource) return;
+          let file: File | null = null;
+          for (const path of candidates) {
+            try {
+              file = await activeSource.getFile(path);
+              if (file) break;
+            } catch {
+              // Try the remaining path spellings for this authored audio resource.
+            }
+          }
+          if (!live || !file) return;
+          objectUrl = URL.createObjectURL(file);
+          audio = new Audio(objectUrl);
+          audio.volume = Math.max(0, Math.min(1, Number.isFinite(volume) ? volume : 1));
+          audio.loop = loop;
+          audio.onended = () => { if (!loop) cleanup(); };
+          audio.onerror = cleanup;
+          try { await audio.play(); } catch { cleanup(); }
+        })().catch(cleanup);
+        return cleanup;
+      },
+      onBehaviorSubtitle: (machineId, cueId, visible) => {
+        const key = `${machineId}:subtitle:${cueId}`;
+        if (!visible) {
+          setBehaviorActionFeedback((current) => {
+            if (!(key in current)) return current;
+            const next = { ...current };
+            delete next[key];
+            return next;
+          });
+          return;
+        }
+        const currentProject = projectRef.current;
+        const timelines = [
+          ...(currentProject ? [currentProject.timeline] : []),
+          ...Object.values(currentProject?.sequences ?? {}),
+        ];
+        const cue = timelines.flatMap((timeline) => timeline.subtitles).find((item) => item.id === cueId);
+        setBehaviorActionFeedback((current) => ({ ...current, [key]: `Subtitle: ${cue?.text.en || cueId}` }));
+      },
     });
     rendererRef.current = renderer;
     return () => {
@@ -817,12 +985,34 @@ export function Editor() {
   }, [workspace]);
 
   useEffect(() => {
+    if (workspace !== "interaction") stopLookFollowTest();
+  }, [workspace]);
+
+  useEffect(() => {
+    rendererRef.current?.setLookFollowSettings(project?.lookFollow);
+  }, [project?.lookFollow]);
+
+  useEffect(() => {
+    if (!project) return;
+    rendererRef.current?.setBehaviorMachines(synchronizeLegacyBehaviorMachines(project.interactions, project.lookFollow, project.behaviorMachines));
+  }, [project?.behaviorMachines, project?.interactions, project?.lookFollow]);
+
+  useEffect(() => {
+    if (!behaviorMode) rendererRef.current?.cancelBehaviorTest();
+  }, [behaviorMode]);
+
+  useEffect(() => {
+    if (!project?.lookFollow.enabled && lookTestingRef.current) stopLookFollowTest();
+  }, [project?.lookFollow.enabled]);
+
+  useEffect(() => {
     loadedAssetRef.current = { source: null, directory: "" };
     initializedAssetRef.current = "";
     metaRef.current = null;
     if (!source || !directory) return;
     let cancelled = false;
     setTesting(false);
+    stopLookFollowTest();
     previewRef.current.reset();
     rendererRef.current?.clear();
     setAssetLoading(true);
@@ -920,14 +1110,14 @@ export function Editor() {
     else if (modifier && key === "y") { event.preventDefault(); redoProject(); }
     else if (modifier && key === "s") { event.preventDefault(); void saveProject(); }
     else if (modifier && key === "d") { event.preventDefault(); duplicateRegion(); }
-    else if (key === "escape") { resetPreview(); setTesting(false); setTool("select"); setHelp(false); }
+    else if (key === "escape") { resetPreview(); setTesting(false); stopLookFollowTest(); setTool("select"); setHelp(false); }
     else if (key === "t") toggleTest();
-    else if (key === "v") { setTesting(false); setTool("select"); }
-    else if (key === "h") { setTesting(false); setTool("pan"); }
-    else if (key === "r") { setTesting(false); setTool("draw"); }
+    else if (key === "v") { setTesting(false); stopLookFollowTest(); setTool("select"); }
+    else if (key === "h") { setTesting(false); stopLookFollowTest(); setTool("pan"); }
+    else if (key === "r") { setTesting(false); stopLookFollowTest(); setTool("draw"); }
     else if (key === "f") rendererRef.current?.resetCamera();
     else if (key === "b") updateViewSetting("showBones", !(viewSettingsRef.current ?? DEFAULT_EDITOR_VIEW_SETTINGS).showBones);
-    else if (key === " ") { event.preventDefault(); if (!testing) setPlaying((value) => !value); }
+    else if (key === " ") { event.preventDefault(); if (!testing && !lookTesting) setPlaying((value) => !value); }
     else if (key === "?") setHelp((value) => !value);
     else if ((key === "delete" || key === "backspace") && !testing && projectRef.current?.selectedRegionId) { event.preventDefault(); deleteRegion(); }
   };
@@ -939,14 +1129,25 @@ export function Editor() {
   }, []);
 
   useEffect(() => {
-    const release = () => { previewRef.current.release(); testPointerRef.current = null; drawRef.current = null; setDrawBox(null); };
+    const release = () => {
+      previewRef.current.release();
+      rendererRef.current?.setLookFollowPreviewPointer(null, null);
+      testPointerRef.current = null;
+      drawRef.current = null;
+      setDrawBox(null);
+    };
     window.addEventListener("blur", release);
     return () => window.removeEventListener("blur", release);
   }, []);
 
   useEffect(() => {
     const move = (event: PointerEvent) => {
-      if (!testing || testPointerRef.current !== event.pointerId || !frame) return;
+      if (testPointerRef.current !== event.pointerId) return;
+      if (lookTesting) {
+        rendererRef.current?.setLookFollowPreviewPointer(event.clientX, event.clientY);
+        return;
+      }
+      if (!testing || !frame) return;
       const rect = stageRef.current?.getBoundingClientRect();
       if (!rect?.width || !rect.height) return;
       const point = { x: (event.clientX - rect.left) * frame.canvasWidth / rect.width, y: (event.clientY - rect.top) * frame.canvasHeight / rect.height };
@@ -956,7 +1157,8 @@ export function Editor() {
     const finish = (event: PointerEvent) => {
       if (testPointerRef.current !== event.pointerId) return;
       testPointerRef.current = null;
-      previewRef.current.release();
+      if (lookTesting) rendererRef.current?.setLookFollowPreviewPointer(null, null);
+      else previewRef.current.release();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
@@ -966,7 +1168,7 @@ export function Editor() {
       window.removeEventListener("pointerup", finish);
       window.removeEventListener("pointercancel", finish);
     };
-  }, [frame, testing]);
+  }, [frame, lookTesting, testing]);
 
   function recordRecentFile(item: Omit<RecentFile, "lastOpened"> & { lastOpened?: number }) {
     const next = rememberRecentFile(recentFilesRef.current, item);
@@ -1549,6 +1751,7 @@ export function Editor() {
       }
       case "set_workspace":
         if (command.workspace !== "interaction" && (!projectRef.current || !metaRef.current || !directoryRef.current)) throw new Error("Load a Spine asset before opening the timeline or camera workspace.");
+        if (command.workspace !== "interaction") setBehaviorMode(false);
         setWorkspace(command.workspace);
         return { workspace: command.workspace };
       case "save": {
@@ -1602,6 +1805,23 @@ export function Editor() {
     mutate((current) => ({
       ...current,
       interactions: current.interactions.map((item) => item.id === selectedInteraction.id ? { ...item, [field]: value } : item),
+    }));
+  }
+
+  function updateLookFollow<K extends keyof SpineLookFollowSettings>(field: K, value: SpineLookFollowSettings[K]) {
+    mutate((current) => ({ ...current, lookFollow: { ...current.lookFollow, [field]: value } }));
+  }
+
+  function beginLookFollowEdit() {
+    if (!projectRef.current) return;
+    setUndo((items) => [...items.slice(-49), projectRef.current!]);
+    setRedo([]);
+  }
+
+  function changeLookFollowRange(axis: "x" | "y", value: number) {
+    live((current) => ({
+      ...current,
+      lookFollow: { ...current.lookFollow, [axis === "x" ? "rangeX" : "rangeY"]: value },
     }));
   }
 
@@ -1684,8 +1904,38 @@ export function Editor() {
     setPlaying(true);
   }
 
+  function stopLookFollowTest() {
+    testPointerRef.current = null;
+    rendererRef.current?.setLookFollowPreview(false);
+    setLookTesting(false);
+  }
+
+  function toggleLookFollowTest() {
+    if (lookTesting) {
+      stopLookFollowTest();
+      resetPreview();
+      setStatus("Look-follow preview stopped.");
+      return;
+    }
+    if (!project?.lookFollow.enabled || !frame?.lookFollow) return;
+    testPointerRef.current = null;
+    previewRef.current.reset();
+    setPreviewDebug(previewRef.current.debug);
+    const idle = metaRef.current?.idleAnimation ?? metaRef.current?.defaultAnimation;
+    if (idle) { rendererRef.current?.setAnimation(idle, true); setSelectedAnimation(idle); setAnimationSelectionOrigin("automatic"); }
+    rendererRef.current?.setLookFollowSettings(project.lookFollow);
+    rendererRef.current?.setLookFollowPreview(true);
+    setTesting(false);
+    setLookTesting(true);
+    setTool("select");
+    setInspectorTab("look");
+    setPlaying(true);
+    setStatus("Look-follow test is ready. Press and hold the canvas, then move the pointer to preview gaze and limits.");
+  }
+
   function startSelectedTest() {
     if (!selectedInteraction || !frame) return;
+    if (lookTesting) stopLookFollowTest();
     const testRegion = selectedRegion?.enabled && selectedInteraction.regions.some((region) => region.id === selectedRegion.id)
       ? selectedRegion
       : selectedInteraction.regions.find((region) => region.enabled) ?? null;
@@ -1720,6 +1970,10 @@ export function Editor() {
   }
 
   function toggleTest() {
+    if (lookTesting) {
+      stopLookFollowTest();
+      return;
+    }
     if (testing) {
       testPointerRef.current = null;
       previewRef.current.release();
@@ -1798,11 +2052,17 @@ export function Editor() {
 
   function stagePress(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0 || !frame || !project) return;
-    if (testing && (testPointerRef.current !== null || previewRef.current.held)) return;
+    if ((testing || lookTesting) && (testPointerRef.current !== null || previewRef.current.held)) return;
     const point = stagePoint(event);
     if (!point) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (lookTesting) {
+      testPointerRef.current = event.pointerId;
+      rendererRef.current?.setLookFollowPreviewPointer(event.clientX, event.clientY);
+      setStatus("Following pointer. Move it to preview the authored look range; release to return.");
+      return;
+    }
     const world = screenToWorld(frame, point.x, point.y);
     if (!world) return;
     if (testing) {
@@ -1817,6 +2077,10 @@ export function Editor() {
 
   function stageMove(event: ReactPointerEvent<HTMLDivElement>) {
     if (!frame) return;
+    if (lookTesting) {
+      if (testPointerRef.current === event.pointerId) rendererRef.current?.setLookFollowPreviewPointer(event.clientX, event.clientY);
+      return;
+    }
     const point = stagePoint(event);
     const world = point && screenToWorld(frame, point.x, point.y);
     const rect = event.currentTarget.getBoundingClientRect();
@@ -1834,6 +2098,10 @@ export function Editor() {
   }
 
   function stageRelease(event: ReactPointerEvent<HTMLDivElement>) {
+    if (lookTesting && testPointerRef.current === event.pointerId) {
+      testPointerRef.current = null;
+      rendererRef.current?.setLookFollowPreviewPointer(null, null);
+    }
     if (testing && testPointerRef.current === event.pointerId) {
       testPointerRef.current = null;
       previewRef.current.release();
@@ -1841,7 +2109,7 @@ export function Editor() {
     const start = drawRef.current;
     drawRef.current = null;
     setDrawBox(null);
-    if (!testing && start && frame && selectedInteraction) {
+    if (!testing && !lookTesting && start && frame && selectedInteraction) {
       const point = stagePoint(event);
       const end = point && screenToWorld(frame, point.x, point.y);
       if (end && Math.hypot(end.x - start.x, end.y - start.y) > 5) {
@@ -1949,11 +2217,12 @@ export function Editor() {
       <header className="editor-header">
         <div className="editor-brand">
           <span className="editor-kicker">BA SPINE SUITE · SPINE 4.2</span>
-          <h1>{workspace === "timeline" ? "Timeline Composer" : workspace === "camera" ? "Camera Studio" : "Interaction Studio"}</h1>
+          <h1>{workspace === "timeline" ? "Timeline Composer" : workspace === "camera" ? "Camera Studio" : behaviorMode ? "Behavior Studio" : "Interaction Studio"}</h1>
         </div>
         <div className="editor-header-context">
           <div className="editor-workspace-tabs suite-tabs" role="tablist" aria-label="Editor workspace">
-            <button className={`editor-button suite-tab${workspace === "interaction" ? " active" : ""}`} role="tab" aria-selected={workspace === "interaction"} onClick={() => setWorkspace("interaction")}>Interactions</button>
+            <button className={`editor-button suite-tab${workspace === "interaction" && !behaviorMode ? " active" : ""}`} role="tab" aria-selected={workspace === "interaction" && !behaviorMode} onClick={() => { rendererRef.current?.cancelBehaviorTest(); setWorkspace("interaction"); setBehaviorMode(false); }}>Interactions</button>
+            <button className={`editor-button suite-tab${workspace === "interaction" && behaviorMode ? " active" : ""}`} role="tab" aria-selected={workspace === "interaction" && behaviorMode} onClick={() => { setWorkspace("interaction"); setBehaviorMode(true); }} disabled={!assetLoaded}>Behaviors</button>
             <button className={`editor-button suite-tab${workspace === "timeline" ? " active" : ""}`} role="tab" aria-selected={workspace === "timeline"} onClick={() => setWorkspace("timeline")} disabled={!assetLoaded}>Timeline</button>
             <button className={`editor-button suite-tab${workspace === "camera" ? " active" : ""}`} role="tab" aria-selected={workspace === "camera"} onClick={() => setWorkspace("camera")} disabled={!assetLoaded}>Camera</button>
           </div>
@@ -2024,7 +2293,7 @@ export function Editor() {
       <CommandPalette open={commandPaletteOpen} commands={commandPaletteCommands} onClose={() => setCommandPaletteOpen(false)} />
 
         {help && <div className="editor-help" role="region" aria-label="Editor help"><strong>Shortcuts</strong>{workspace === "camera" ? <><span>Camera: use Select, Pan, or Draw tools on the full-scene canvas. Edit selected boundaries and shots in the right inspector.</span><span>Ctrl/⌘ K Commands · Space Play/pause · Use the shared playhead to sync with Timeline · Ctrl/⌘ S Save</span></> : workspace === "timeline" ? <span>Ctrl/⌘ K Commands · Space Play/pause · Left/right Frame · Shift+Left/right 10 frames · Home/End · S Split subtitle · Ctrl/⌘ C/V Copy/paste · Ctrl/⌘ D Duplicate · Ctrl/⌘ Z Undo · Ctrl/⌘ Shift+Z or Y Redo · Delete Remove · F Fit timeline · Select a camera key, then Edit in Camera · Ctrl/⌘ S Save</span> : <><span>Draw a hit region, choose animations, then test it with press, hold, drag, and release.</span><span>Ctrl/⌘ K Commands · V Select · H Pan · R Draw · T Test · F Fit canvas · B Bones · Space Play/pause · Esc Idle/Edit</span><span>Ctrl/⌘ Z Undo · Ctrl/⌘ Shift+Z or Y Redo · Ctrl/⌘ D Duplicate · Delete Remove region · Ctrl/⌘ S Save</span></>}<button className="editor-button" onClick={() => setHelp(false)}><IconClose /> Close</button></div>}
-        <main className={`editor-layout${leftHidden ? " hide-left" : ""}${rightHidden ? " hide-right" : ""}${!assetLoaded ? " is-loading" : ""}`} style={{ position: workspace !== "interaction" ? "absolute" : undefined, visibility: workspace !== "interaction" ? "hidden" : undefined, inset: workspace !== "interaction" ? "100px 0 40px" : undefined, pointerEvents: workspace !== "interaction" ? "none" : undefined, gridTemplateColumns: `${leftHidden ? "" : `${leftWidth}px `}minmax(180px, 1fr)${rightHidden ? "" : ` ${rightWidth}px`}` }}>
+        <main className={`editor-layout${leftHidden ? " hide-left" : ""}${rightHidden ? " hide-right" : ""}${!assetLoaded ? " is-loading" : ""}`} style={{ display: workspace !== "interaction" || behaviorMode ? "none" : undefined, position: workspace !== "interaction" ? "absolute" : undefined, visibility: workspace !== "interaction" ? "hidden" : undefined, inset: workspace !== "interaction" ? "100px 0 40px" : undefined, pointerEvents: workspace !== "interaction" ? "none" : undefined, gridTemplateColumns: `${leftHidden ? "" : `${leftWidth}px `}minmax(180px, 1fr)${rightHidden ? "" : ` ${rightWidth}px`}` }}>
         {assetLoaded && (["left", "right"] as const).filter((side) => side === "left" ? !leftHidden : !rightHidden).map((side) => <div key={side} className={`editor-panel-resizer ${side}`} role="separator" aria-label={`Resize ${side} panel`} aria-orientation="vertical" tabIndex={0} style={side === "left" ? { left: leftWidth + 7 } : { right: rightWidth + 7 }} onDoubleClick={() => { setLayoutPreset("custom"); side === "left" ? setLeftWidth(220) : setRightWidth(320); }} onKeyDown={(event) => {
            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
            event.preventDefault(); setLayoutPreset("custom"); const delta = event.key === "ArrowRight" ? 10 : -10;
@@ -2075,10 +2344,11 @@ export function Editor() {
           </div>}
           <div className="editor-toolbar" role="toolbar" aria-label="Canvas tools">
               <button className="editor-button" onClick={() => { setLayoutPreset("custom"); setLeftHidden((value) => !value); }} title="Toggle bone panel"><IconMenu /> Bones</button>
-             <button className={`editor-button${!testing && tool === "select" ? " active" : ""}`} onClick={() => { setTesting(false); setTool("select"); }} title="Select and transform regions (V)"><IconTarget /> Select</button>
-             <button className={`editor-button${!testing && tool === "pan" ? " active" : ""}`} onClick={() => { setTesting(false); setTool("pan"); }} title="Drag canvas to pan; wheel to zoom (H)"><IconHand /> Pan</button>
-             <button className={`editor-button${!testing && tool === "draw" ? " active" : ""}`} disabled={!selectedInteraction} onClick={() => { setTesting(false); setTool("draw"); setStatus("Click and drag on the canvas to draw a hit region."); }} title="Draw a hit region (R)"><IconPlus /> Draw region</button>
-             <button className={`editor-button${testing ? " active test" : ""}`} onClick={toggleTest} disabled={!project} title="Run the full authored interaction (T)">{testing ? <><IconPause /> Test</> : <><IconPlay /> Test</>}</button>
+              <button className={`editor-button${!testing && !lookTesting && tool === "select" ? " active" : ""}`} onClick={() => { setTesting(false); stopLookFollowTest(); setTool("select"); }} title="Select and transform regions (V)"><IconTarget /> Select</button>
+              <button className={`editor-button${!testing && !lookTesting && tool === "pan" ? " active" : ""}`} onClick={() => { setTesting(false); stopLookFollowTest(); setTool("pan"); }} title="Drag canvas to pan; wheel to zoom (H)"><IconHand /> Pan</button>
+              <button className={`editor-button${!testing && !lookTesting && tool === "draw" ? " active" : ""}`} disabled={!selectedInteraction} onClick={() => { setTesting(false); stopLookFollowTest(); setTool("draw"); setStatus("Click and drag on the canvas to draw a hit region."); }} title="Draw a hit region (R)"><IconPlus /> Draw region</button>
+              <button className={`editor-button${testing ? " active test" : ""}`} onClick={toggleTest} disabled={!project} title="Run the full authored interaction (T)">{testing ? <><IconPause /> Test</> : <><IconPlay /> Test</>}</button>
+              <button className={`editor-button${lookTesting ? " active test" : ""}`} onClick={toggleLookFollowTest} disabled={lookTesting ? false : !project?.lookFollow.enabled || !frame?.lookFollow} title="Preview look-follow behavior"><IconEye /> Look</button>
               <button className="editor-button" onClick={() => rendererRef.current?.resetCamera()} title="Fit artwork to the canvas (F)"><IconExpand /> Fit canvas</button>
              <details className="editor-overlay-menu">
                <summary className="editor-button"><IconSliders /> Overlays <IconChevronDown /></summary>
@@ -2092,12 +2362,13 @@ export function Editor() {
             <button className="editor-button" onClick={resetPreview} disabled={!meta}>Reset idle</button>
               <button className="editor-button" onClick={() => { setLayoutPreset("custom"); setRightHidden((value) => !value); }} title="Toggle inspector">Inspector <IconMenu /></button>
           </div>
-          <div className="editor-stage" ref={stageRef} onDoubleClick={(event) => { if (!testing && event.target === canvasRef.current) rendererRef.current?.resetCamera(); }}>
+          <div className="editor-stage" ref={stageRef} onDoubleClick={(event) => { if (!testing && !lookTesting && event.target === canvasRef.current) rendererRef.current?.resetCamera(); }}>
             <canvas ref={canvasRef} aria-label="Spine editor canvas" />
             <BoneOverlay
                 frame={frame}
                 project={testing && project ? { ...project, selectedRegionId: null, ...(showTestRegions ? {} : { interactions: project.interactions.map((interaction) => ({ ...interaction, regions: [] })) }) } : project}
                 viewSettings={renderedViewSettings}
+                lookFollowVisible={inspectorTab === "look" || lookTesting}
                 motionLimits={(testing || inspectorTab === "movement") && selectedInteraction ? {
                   targetBonePath: testing ? previewDebug.targetBonePath ?? selectedInteraction.followTargetBone : selectedInteraction.followTargetBone,
                   limitX: selectedInteraction.limitX,
@@ -2110,10 +2381,12 @@ export function Editor() {
                   rotationMin: selectedInteraction.rotationMin,
                   rotationMax: selectedInteraction.rotationMax,
                 } : null}
-                tool={testing ? "pan" : tool}
-              onSelectBone={(path) => live((current) => ({ ...current, selectedBonePath: path }))}
-              onSelectRegion={(interactionId, regionId) => live((current) => ({ ...current, selectedInteractionId: interactionId, selectedRegionId: regionId }))}
-              onBeginRegionDrag={() => { if (projectRef.current) setUndo((items) => [...items.slice(-49), projectRef.current!]); setRedo([]); }}
+                tool={testing || lookTesting ? "pan" : tool}
+               onSelectBone={(path) => live((current) => ({ ...current, selectedBonePath: path }))}
+               onSelectRegion={(interactionId, regionId) => live((current) => ({ ...current, selectedInteractionId: interactionId, selectedRegionId: regionId }))}
+               onBeginRegionDrag={() => { if (projectRef.current) setUndo((items) => [...items.slice(-49), projectRef.current!]); setRedo([]); }}
+               onBeginLookFollowEdit={beginLookFollowEdit}
+               onChangeLookFollowRange={changeLookFollowRange}
               onChangeRegion={(interactionId, regionId, patch) => live((current) => ({ ...current, interactions: current.interactions.map((item) => item.id === interactionId ? { ...item, regions: item.regions.map((region) => region.id === regionId ? { ...region, ...patch, placement: "manual" } : region) } : item) }))}
               onDragRegion={(interactionId, regionId, x, y) => live((current) => ({
                 ...current,
@@ -2123,11 +2396,18 @@ export function Editor() {
                 }),
               }))}
              />
-            {(testing || tool === "draw") && <div className={`editor-input-surface${testing ? " testing" : " drawing"}`} aria-label={testing ? "Interaction test surface" : "Draw region surface"} onPointerDown={stagePress} onPointerMove={stageMove} onPointerLeave={(event) => { if (testing && testPointerRef.current === event.pointerId) previewRef.current.leave(); }} onPointerUp={stageRelease} onPointerCancel={(event) => { if (testing && testPointerRef.current === event.pointerId) { testPointerRef.current = null; previewRef.current.release(); } drawRef.current = null; setDrawBox(null); }} />}
+            {(testing || lookTesting || tool === "draw") && <div className={`editor-input-surface${testing || lookTesting ? " testing" : " drawing"}`} aria-label={lookTesting ? "Look-follow test surface" : testing ? "Interaction test surface" : "Draw region surface"} onPointerDown={stagePress} onPointerMove={stageMove} onPointerLeave={(event) => {
+              if (lookTesting && testPointerRef.current === event.pointerId) rendererRef.current?.setLookFollowPreviewPointer(null, null);
+              if (testing && testPointerRef.current === event.pointerId) previewRef.current.leave();
+            }} onPointerUp={stageRelease} onPointerCancel={(event) => {
+              if (lookTesting && testPointerRef.current === event.pointerId) { testPointerRef.current = null; rendererRef.current?.setLookFollowPreviewPointer(null, null); }
+              if (testing && testPointerRef.current === event.pointerId) { testPointerRef.current = null; previewRef.current.release(); }
+              drawRef.current = null; setDrawBox(null);
+            }} />}
             {drawBox && frame && <svg className="editor-draw-ghost" viewBox={`0 0 ${frame.canvasWidth} ${frame.canvasHeight}`} preserveAspectRatio="none"><ellipse cx={drawBox.x + drawBox.width / 2} cy={drawBox.y + drawBox.height / 2} rx={drawBox.width / 2} ry={drawBox.height / 2} /></svg>}
             {!frame && <div className="editor-empty"><strong>Open a Spine asset folder</strong><span>The desktop editor reads .atlas, .skel, and local texture files from the selected root.</span></div>}
             {frame && <div className="editor-canvas-badge">{frame.animation ?? "No animation"} · {frame.bones.length} bones</div>}
-             {(testing || tool !== "select") && <div className="editor-stage-hint">{testing ? `${previewStatus} · Press a region, hold/drag, release` : tool === "draw" ? "Drag to draw a new region" : "Drag to pan · Wheel to zoom · F to fit"}</div>}
+              {(testing || lookTesting || tool !== "select") && <div className="editor-stage-hint">{lookTesting ? "Press and hold, then move to preview gaze · Release to return" : testing ? `${previewStatus} · Press a region, hold/drag, release` : tool === "draw" ? "Drag to draw a new region" : "Drag to pan · Wheel to zoom · F to fit"}</div>}
           </div>
            {testing && <div className="editor-testbar">
               <div className="editor-debug-status"><strong aria-live="polite" title={previewStatus}>{previewStatus}</strong><span>{previewDebug.held ? "Held" : previewDebug.phase === "idle" ? "Ready" : "Released"}</span></div>
@@ -2150,18 +2430,18 @@ export function Editor() {
            </div>}
           <div className="editor-timeline">
             <div className="editor-timeline-top">
-               <button className="editor-icon-button" title="Play/pause (Space)" onClick={() => { const next = !playing; setPlaying(next); rendererRef.current?.setPlaying(next); }} disabled={!frame || testing}>{playing ? <IconPause /> : <IconPlay />}</button>
-               <AnimationPicker ariaLabel="Preview animation" placeholder={meta && !meta.idleAnimation ? "No idle detected · choose animation" : "Choose animation…"} value={selectedAnimation} options={(meta?.animations ?? []).map((animation) => ({ value: animation, label: animation }))} onChange={(animation) => { setSelectedAnimation(animation); setAnimationSelectionOrigin("explicit"); rendererRef.current?.setAnimation(animation, true); }} disabled={!meta || testing} />
+                <button className="editor-icon-button" title="Play/pause (Space)" onClick={() => { const next = !playing; setPlaying(next); rendererRef.current?.setPlaying(next); }} disabled={!frame || testing || lookTesting}>{playing ? <IconPause /> : <IconPlay />}</button>
+                <AnimationPicker ariaLabel="Preview animation" placeholder={meta && !meta.idleAnimation ? "No idle detected · choose animation" : "Choose animation…"} value={selectedAnimation} options={(meta?.animations ?? []).map((animation) => ({ value: animation, label: animation }))} onChange={(animation) => { setSelectedAnimation(animation); setAnimationSelectionOrigin("explicit"); rendererRef.current?.setAnimation(animation, true); }} disabled={!meta || testing || lookTesting} />
                 {animationSelectionOrigin === "automatic" && meta?.idleAnimation && <small className="editor-field-hint">{selectedAnimation === "__intro__" ? `Automatically playing the detected intro, then ${meta.idleAnimation}.` : selectedAnimation === meta.idleAnimation ? `Automatically selected ${meta.idleAnimation} as the detected idle.` : `Detected idle: ${meta.idleAnimation}. Choose an animation explicitly.`}</small>}
               <NumberField label="Speed" value={speed} min={0.1} max={3} step={0.1} precision={1} unit="×" scrub={false} compact onCommit={setSpeed} />
               <span className="editor-time">{progress.time.toFixed(2)} / {progress.duration.toFixed(2)}s</span>
             </div>
-            <input aria-label="Animation position" className="editor-range" type="range" min="0" max={Math.max(0.001, progress.duration)} step="0.001" value={Math.min(progress.time, progress.duration)} onChange={(event) => { setPlaying(false); rendererRef.current?.seek(Number(event.target.value)); }} disabled={!frame || testing} />
+              <input aria-label="Animation position" className="editor-range" type="range" min="0" max={Math.max(0.001, progress.duration)} step="0.001" value={Math.min(progress.time, progress.duration)} onChange={(event) => { setPlaying(false); rendererRef.current?.seek(Number(event.target.value)); }} disabled={!frame || testing || lookTesting} />
           </div>
         </section>
 
         <aside className={`editor-panel editor-right-panel tab-${inspectorTab}`} hidden={!assetLoaded || rightHidden}>
-           <nav className="editor-tabs" aria-label="Inspector sections">{(["region", "animation", "movement"] as const).map((tab) => <button key={tab} aria-pressed={inspectorTab === tab} onClick={(event) => { setInspectorTab(tab); event.currentTarget.closest("aside")?.scrollTo({ top: 0 }); }}>{tab === "region" ? "Region" : tab === "animation" ? "Animation" : "Movement"}</button>)}</nav>
+            <nav className="editor-tabs" aria-label="Inspector sections">{(["region", "animation", "movement", "look"] as const).map((tab) => <button key={tab} aria-pressed={inspectorTab === tab} onClick={(event) => { setInspectorTab(tab); event.currentTarget.closest("aside")?.scrollTo({ top: 0 }); }}>{tab === "region" ? "Region" : tab === "animation" ? "Animation" : tab === "movement" ? "Movement" : "Look"}</button>)}</nav>
           <section className="editor-section editor-interactions-section">
              <div className="editor-section-title"><strong>Interactions</strong><button onClick={addInteraction} disabled={!project || !frame}><IconPlus /> Add</button></div>
             <input className="editor-search" value={interactionSearch} onChange={(event) => setInteractionSearch(event.target.value)} placeholder="Filter interactions…" />
@@ -2251,8 +2531,63 @@ export function Editor() {
               {!selectedInteraction.regions.length && <p className="editor-muted">No hit regions. Add one to make this interaction clickable.</p>}
              </div>
               </div>
-           </section>}
-           {inspectorTab === "region" && selectedRegion && selectedInteraction && <section className="editor-section editor-inspector">
+            </section>}
+            {inspectorTab === "look" && project && <section className="editor-section editor-look-inspector">
+              <div className="editor-section-title">
+                <strong>Look-follow</strong>
+                <label className="timeline-inline-check"><input type="checkbox" checked={project.lookFollow.enabled} onChange={(event) => updateLookFollow("enabled", event.target.checked)} /> Enabled</label>
+              </div>
+              <p className="editor-muted">When the pointer is held, the selected rig controller follows within its range. Null ranges use the runtime’s rig-scaled defaults.</p>
+              <BonePicker
+                label="Look target"
+                bones={frame?.bones ?? []}
+                value={project.lookFollow.targetBonePath}
+                noneLabel="Automatic Touch_Eye target"
+                selectedPath={project.selectedBonePath}
+                onChange={(path) => updateLookFollow("targetBonePath", path)}
+                onReveal={revealBonePath}
+              />
+              {!frame?.lookFollow && <p className="editor-field-hint">No look controller is currently resolved. Choose a target bone above, or use a rig with a Touch_Eye bone.</p>}
+              <div className="editor-subheading">Pointer response</div>
+              <div className="editor-two-fields">
+                <BoundedSliderField label="Hold delay" value={project.lookFollow.delay} defaultValue={0.3} min={0} max={2} step={0.05} precision={2} unit="s" onCommit={(value) => updateLookFollow("delay", value)} />
+                <BoundedSliderField label="Smoothing" value={project.lookFollow.smoothing} defaultValue={14} min={1} max={30} step={0.5} precision={1} onCommit={(value) => updateLookFollow("smoothing", value)} />
+              </div>
+              <small className="editor-field-hint">Higher smoothing values follow the pointer faster.</small>
+              <div className="editor-axis-checks" aria-label="Look-follow axes">
+                <span>Follow axes</span>
+                <label><input type="checkbox" checked={project.lookFollow.allowX} onChange={(event) => updateLookFollow("allowX", event.target.checked)} /> X</label>
+                <label><input type="checkbox" checked={project.lookFollow.allowY} onChange={(event) => updateLookFollow("allowY", event.target.checked)} /> Y</label>
+              </div>
+              <div className="editor-subheading">Movement range</div>
+              <p className="editor-field-hint">Drag the gizmo handles on the canvas or enter explicit limits. Reset a limit to return to automatic scaling.</p>
+              <div className="editor-look-range-row">
+                <NumberField label={`Range X${project.lookFollow.rangeX === null ? " · auto" : ""}`} value={project.lookFollow.rangeX ?? frame?.lookFollow?.rangeX ?? 0} min={0} max={512} step={1} precision={1} unit="units" onCommit={(value) => updateLookFollow("rangeX", value)} />
+                <button type="button" className="editor-preview-button" disabled={project.lookFollow.rangeX === null} onClick={() => updateLookFollow("rangeX", null)}>Use auto</button>
+              </div>
+              <div className="editor-look-range-row">
+                <NumberField label={`Range Y${project.lookFollow.rangeY === null ? " · auto" : ""}`} value={project.lookFollow.rangeY ?? frame?.lookFollow?.rangeY ?? 0} min={0} max={512} step={1} precision={1} unit="units" onCommit={(value) => updateLookFollow("rangeY", value)} />
+                <button type="button" className="editor-preview-button" disabled={project.lookFollow.rangeY === null} onClick={() => updateLookFollow("rangeY", null)}>Use auto</button>
+              </div>
+              <div className="editor-subheading">Animation overrides</div>
+              <p className="editor-field-hint">Leave these on automatic to detect Look and LookEnd animation names from the Spine asset.</p>
+              {([
+                ["startAnimation", "Look main"],
+                ["faceStartAnimation", "Look face"],
+                ["endAnimation", "Look-end main"],
+                ["faceEndAnimation", "Look-end face"],
+              ] as const).map(([field, label]) => <label key={field}>{label}
+                <select value={project.lookFollow[field]} onChange={(event) => updateLookFollow(field, event.target.value)}>
+                  <option value="">Automatic</option>
+                  {project.lookFollow[field] && !meta?.animations.includes(project.lookFollow[field]) && <option value={project.lookFollow[field]}>Missing: {project.lookFollow[field]}</option>}
+                  {(meta?.animations ?? []).map((animation) => <option key={animation} value={animation}>{animation}</option>)}
+                </select>
+              </label>)}
+              <button type="button" className="editor-preview-button" disabled={lookTesting ? false : !project.lookFollow.enabled || !frame?.lookFollow} onClick={toggleLookFollowTest}>
+                <IconEye /> {lookTesting ? "Stop look preview" : "Preview look-follow"}
+              </button>
+            </section>}
+            {inspectorTab === "region" && selectedRegion && selectedInteraction && <section className="editor-section editor-inspector">
              <div className="editor-section-title"><strong>Region</strong><span><button onClick={duplicateRegion}>Duplicate</button> <button className="danger" onClick={deleteRegion}>Delete</button></span></div>
             <label>Name<input value={selectedRegion.name} onChange={(event) => updateRegion("name", event.target.value)} /></label>
              <div className="editor-two-fields">
@@ -2278,10 +2613,19 @@ export function Editor() {
           </section>}
         </aside>
       </main>
+      {workspace === "interaction" && behaviorMode && assetLoaded && project && <BehaviorEditor
+        machines={project.behaviorMachines ?? []}
+        animations={meta?.animations ?? []}
+        debug={behaviorDebug}
+        testFeedback={Object.values(behaviorActionFeedback)}
+        onChange={(behaviorMachines) => mutate((current) => ({ ...current, behaviorMachines }))}
+        onTestEvent={(machineId, event, regionId) => rendererRef.current?.testBehaviorEvent(machineId, event, regionId)}
+        onCancelTest={() => rendererRef.current?.cancelBehaviorTest()}
+      />}
       {workspace !== "interaction" && assetLoaded && <TimelineWorkspace mode={workspace} onWorkspaceChange={setWorkspace} source={source} directory={directory} directories={directories} directoryLabels={directoryLabels} directoryInfo={directoryInfo} project={project} initialHandoff={initialTimelineHandoff} initialSubtitlePath={pendingSubtitlePath} onSubtitleOpened={() => setPendingSubtitlePath(null)} initialAudioPaths={pendingAudioPaths} onAudioOpened={() => setPendingAudioPaths(null)} onRecentFile={recordRecentFile} onMutate={mutate} onLive={live} onBeginEdit={beginTimelineEdit} onBeginCameraEdit={beginCameraEdit} onEndCameraEdit={endCameraEdit} onCancelCameraEdit={cancelCameraEdit} onSave={() => saveProject()} onRegisterSave={(callback) => { timelineSaveRef.current = callback; }} onStatus={setStatus} onError={setError} onRegisterMcp={registerMcpTimeline} onMcpSnapshot={publishTimelineMcpSnapshot} onAudioWaveformProfile={__EDITOR_WAVEFORM_PROFILE__ ? (clipId: string, measurement: AudioWaveformMeasurement) => waveformProfileRef.current?.recordStage(clipId, measurement) : undefined} />}
       <footer className="editor-statusbar">
         <span className={error ? "editor-error" : legacyAspectRatioNotice ? "editor-compatibility-warning" : ""} role={legacyAspectRatioNotice && !error ? "status" : undefined}>{error ?? (legacyAspectRatioNotice ? "Legacy 1:1 camera framing is shown as 16:9. Save to update the project." : status)}</span>
-        <span>{directory ? `${displayName(directory)} · ${files?.size ?? 0} files` : "No asset loaded"} · {testing ? "TEST MODE" : workspace === "camera" ? "CAMERA" : workspace === "timeline" ? "TIMELINE" : "EDIT MODE"}</span>
+         <span>{directory ? `${displayName(directory)} · ${files?.size ?? 0} files` : "No asset loaded"} · {testing ? "TEST MODE" : workspace === "camera" ? "CAMERA" : workspace === "timeline" ? "TIMELINE" : behaviorMode ? "BEHAVIOR GRAPH" : "EDIT MODE"}</span>
         <button className={`editor-version${releaseUpdates.state.status === "available" ? " is-update-available" : ""}`} type="button" aria-label={`About BA Spine Editor, version ${__APP_VERSION__}${releaseUpdates.state.status === "available" ? ", update available" : ""}`} title="About BA Spine Editor" onClick={() => setAboutPage(true)}>
           v{__APP_VERSION__}{releaseUpdates.state.status === "available" && <i aria-hidden="true" />}
         </button>

@@ -71,9 +71,11 @@ interface SpineCompositionViewportProps {
   onTalkClip: (index: number, clipIndex: number) => void;
   onIntro: (animation: string, eventCount: number) => boolean;
   onIntroClip: (clipIndex: number) => void;
+  onBehaviorAudio?: (machineId: string, audioId: string, volume: number, loop: boolean) => void | (() => void);
+  onBehaviorSubtitle?: (machineId: string, cueId: string, visible: boolean) => void;
 }
 
-export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandle, SpineCompositionViewportProps>(function SpineCompositionViewport({ source, timeline, preloadTimelines = [], interactionMode, interactionProject, showInteractionPoints, currentTime, playing, speed, effectsStrength, cameraMode = "fit", aspectRatio = "16:9", idleMode = "none", recordingIdleOverride = false, recordingClock = false, recordingCameraTrack, recordingCameraTime, recordingIdleOffset, recordingCueTimelines, recordingCueAudioEnabled = true, recordingCueSubtitlesEnabled = true, preserveDrawingBuffer = false, onMeta, onProgress, onLoading, onLoadProgress, onError, onFinished, onTalk, onTalkClip, onIntro, onIntroClip }, ref) {
+export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandle, SpineCompositionViewportProps>(function SpineCompositionViewport({ source, timeline, preloadTimelines = [], interactionMode, interactionProject, showInteractionPoints, currentTime, playing, speed, effectsStrength, cameraMode = "fit", aspectRatio = "16:9", idleMode = "none", recordingIdleOverride = false, recordingClock = false, recordingCameraTrack, recordingCameraTime, recordingIdleOffset, recordingCueTimelines, recordingCueAudioEnabled = true, recordingCueSubtitlesEnabled = true, preserveDrawingBuffer = false, onMeta, onProgress, onLoading, onLoadProgress, onError, onFinished, onTalk, onTalkClip, onIntro, onIntroClip, onBehaviorAudio, onBehaviorSubtitle }, ref) {
   const stageRef = useRef<HTMLDivElement>(null);
   const currentTimeRef = useRef(currentTime);
   const idleAnimationTimeRef = useRef(0);
@@ -675,9 +677,11 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
               onCameraPose={(pose) => setSharedCameraPose((current) => current && current.x === pose.x && current.y === pose.y && current.zoom === pose.zoom ? current : pose)}
               onTalk={onTalk}
               onTalkClip={onTalkClip}
-              onIntro={onIntro}
-              onIntroClip={onIntroClip}
-              onError={(value) => onError(value ? new Error(value) : null)} />
+               onIntro={onIntro}
+               onIntroClip={onIntroClip}
+               onBehaviorAudio={onBehaviorAudio}
+               onBehaviorSubtitle={onBehaviorSubtitle}
+               onError={(value) => onError(value ? new Error(value) : null)} />
          : <SpineColorLayer key={`color-${entry.layer.id}`} layer={entry.layer} time={effectiveCurrentTime} />)}
      </div>
     {showInteractionPoints && interactionOverlay.points.length > 0 && interactionOverlay.canvasWidth > 0 && interactionOverlay.canvasHeight > 0 && <svg className="spine-interaction-overlay" style={interactionOverlayStyle} viewBox={`0 0 ${interactionOverlay.canvasWidth} ${interactionOverlay.canvasHeight}`} preserveAspectRatio="none" aria-hidden="true">

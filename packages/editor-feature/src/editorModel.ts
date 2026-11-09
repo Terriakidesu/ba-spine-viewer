@@ -1,11 +1,12 @@
 import { normalizeSpineColorLayers, type SpineTimelineAnimationClip, type SpineTimelineColorLayer } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import type { SpineEditorBone } from "@ba-spine/spine-runtime/spine/spineRuntime";
-import { DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_INTERACTION_RETURN_DURATION, DEFAULT_INTERACTION_RETURN_EASING, DEFAULT_TALK_MIX_DURATION, findInteractionProfile, type SpineInteractionReturnEasing } from "@ba-spine/spine-runtime/spine/spineInteraction";
+import { DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_INTERACTION_RETURN_DURATION, DEFAULT_INTERACTION_RETURN_EASING, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, DEFAULT_TALK_MIX_DURATION, findInteractionProfile, normalizeSpineLookFollowSettings, type SpineInteractionReturnEasing, type SpineLookFollowSettings } from "@ba-spine/spine-runtime/spine/spineInteraction";
 import { cheekControlNames } from "@ba-spine/spine-runtime/spine/spinePinch";
 import { normalizeSpineCameraTrack, type SpineCameraTrack } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import { DEFAULT_EFFECTS_STRENGTH } from "@ba-spine/spine-runtime/spine/spineEffects";
+import { migrateLegacyInteractionsToBehaviors, normalizeSpineBehaviorMachines, type SpineBehaviorMachine } from "@ba-spine/spine-runtime/spine/spineBehavior";
 
-export const EDITOR_SCHEMA_VERSION = 6;
+export const EDITOR_SCHEMA_VERSION = 7;
 export const LEGACY_EDITOR_SCHEMA_VERSION = 1;
 
 export type EditorTrigger = "press" | "hold" | "drag";
@@ -149,7 +150,10 @@ export interface EditorProject {
   assetDirectory: string;
   /** Explicit authored entry sequence; null means the runtime intro is used. */
   entrySequence?: string | null;
+  lookFollow: SpineLookFollowSettings;
   interactions: EditorInteraction[];
+  /** Canonical behavior-machine model; generated legacy machines remain linked until edited. */
+  behaviorMachines?: SpineBehaviorMachine[];
   selectedInteractionId: string | null;
   selectedRegionId: string | null;
   selectedBonePath: string | null;
@@ -447,7 +451,9 @@ export function createProject(directory: string, animations: string[], bones: Sp
     effectsStrength: DEFAULT_EFFECTS_STRENGTH,
     name: `${directory} interactions`,
     assetDirectory: directory,
+    lookFollow: { ...DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS },
     interactions,
+    behaviorMachines: migrateLegacyInteractionsToBehaviors(interactions, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS),
     selectedInteractionId: interactions[0]?.id ?? null,
     selectedRegionId: interactions[0]?.regions[0]?.id ?? null,
     selectedBonePath: bones[0]?.path ?? null,
@@ -676,6 +682,10 @@ export function normalizeProject(value: unknown, directory: string): EditorProje
     .filter((item) => Boolean(item && typeof item === "object"))
     .map((item, index) => normalizeInteraction(item as Partial<EditorInteraction>, index))
     .filter((item): item is EditorInteraction => item !== null);
+  const lookFollow = normalizeSpineLookFollowSettings(project.lookFollow);
+  const behaviorMachines = Array.isArray(project.behaviorMachines)
+    ? normalizeSpineBehaviorMachines(project.behaviorMachines)
+    : migrateLegacyInteractionsToBehaviors(interactions, lookFollow);
   const requestedInteraction = typeof project.selectedInteractionId === "string" ? project.selectedInteractionId : "";
   const selectedInteractionId = interactions.some((item) => item.id === requestedInteraction) ? requestedInteraction : interactions[0]?.id ?? null;
   const selectedInteraction = interactions.find((item) => item.id === selectedInteractionId);
@@ -690,7 +700,9 @@ export function normalizeProject(value: unknown, directory: string): EditorProje
     talkMixDuration: Math.min(2, finiteNumber(project.talkMixDuration, DEFAULT_TALK_MIX_DURATION, 0)),
     effectsStrength: Math.max(0, Math.min(1, finiteNumber(project.effectsStrength, DEFAULT_EFFECTS_STRENGTH))),
     ...(project.entrySequence === null || typeof project.entrySequence === "string" ? { entrySequence: project.entrySequence } : {}),
+    lookFollow,
     interactions,
+    behaviorMachines,
     ...(Array.isArray(project.sequenceOrder)
       ? { sequenceOrder: ["opening", ...new Set(project.sequenceOrder.filter((id): id is string => typeof id === "string" && id !== "opening" && id !== "legacy"))] }
       : {}),

@@ -1,5 +1,6 @@
 import { normalizeSpineTimeline, type SpineTimeline } from "./spineTimeline";
 import { DEFAULT_EFFECTS_STRENGTH } from "./spineEffects";
+import { migrateLegacyInteractionsToBehaviors, normalizeSpineBehaviorMachines, type SpineBehaviorMachine } from "./spineBehavior";
 
 export type SpineInteractionReturnEasing = "linear" | "ease-out" | "ease-in-out";
 export const DEFAULT_INTERACTION_RETURN_DURATION = 0.35;
@@ -18,6 +19,76 @@ export interface SpineInteractionAction {
 
 export type SpineInteractionKind = "pat" | "pinch" | "touch";
 export type SpineInteractionTrigger = "press" | "hold" | "drag";
+
+export interface SpineLookFollowSettings {
+  enabled: boolean;
+  /** Null lets the runtime choose the conventional Touch_Eye controller. */
+  targetBonePath: string | null;
+  /** Seconds the pointer must remain held before the look pose starts. */
+  delay: number;
+  /** Null keeps the rig-scaled automatic range. */
+  rangeX: number | null;
+  rangeY: number | null;
+  smoothing: number;
+  allowX: boolean;
+  allowY: boolean;
+  /** Empty animation names retain animation-name auto detection. */
+  startAnimation: string;
+  faceStartAnimation: string;
+  endAnimation: string;
+  faceEndAnimation: string;
+}
+
+export const DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS: SpineLookFollowSettings = {
+  enabled: true,
+  targetBonePath: null,
+  delay: 0.3,
+  rangeX: null,
+  rangeY: null,
+  smoothing: 14,
+  allowX: true,
+  allowY: true,
+  startAnimation: "",
+  faceStartAnimation: "",
+  endAnimation: "",
+  faceEndAnimation: "",
+};
+
+export interface SpineLookFollowPoint {
+  x: number;
+  y: number;
+}
+
+/** Clamp a pointer to the authored world-space range, respecting disabled axes. */
+export function lookFollowTarget(
+  base: SpineLookFollowPoint,
+  pointer: SpineLookFollowPoint | null,
+  rangeX: number,
+  rangeY: number,
+  allowX: boolean,
+  allowY: boolean,
+): SpineLookFollowPoint {
+  if (!pointer) return { ...base };
+  const clamp = (distance: number, range: number) => Math.max(-Math.max(0, range), Math.min(Math.max(0, range), distance));
+  return {
+    x: base.x + (allowX ? clamp(pointer.x - base.x, rangeX) : 0),
+    y: base.y + (allowY ? clamp(pointer.y - base.y, rangeY) : 0),
+  };
+}
+
+/** Frame-rate independent exponential smoothing for the shared runtime and preview. */
+export function smoothLookFollowPoint(
+  current: SpineLookFollowPoint,
+  desired: SpineLookFollowPoint,
+  delta: number,
+  smoothing: number,
+): SpineLookFollowPoint {
+  const amount = 1 - Math.exp(-Math.max(0, delta) * Math.max(0, smoothing));
+  return {
+    x: current.x + (desired.x - current.x) * amount,
+    y: current.y + (desired.y - current.y) * amount,
+  };
+}
 
 /** Shared trigger gate used by the native preview and the published renderer. */
 export function interactionPressReady(trigger: SpineInteractionTrigger, held: boolean, distance: number, threshold = 4): boolean {
@@ -88,6 +159,10 @@ export interface SpineInteractionProject {
   talkMixDuration?: number;
   /** Additive and screen light contribution used by Viewer and Editor previews. */
   effectsStrength?: number;
+  /** Authored eye-look response. Missing settings preserve runtime auto defaults. */
+  lookFollow?: SpineLookFollowSettings;
+  /** Canonical declarative behaviors; legacy interactions remain during migration compatibility. */
+  behaviorMachines?: SpineBehaviorMachine[];
   interactions: SpineAuthoredInteraction[];
   timeline?: SpineTimeline;
   sequences?: Record<string, SpineTimeline>;
@@ -115,6 +190,27 @@ function finiteNumber(value: unknown, fallback: number): number {
 function positiveNumber(value: unknown, fallback: number): number {
   const result = finiteNumber(value, fallback);
   return result > 0 ? result : fallback;
+}
+
+export function normalizeSpineLookFollowSettings(value: unknown): SpineLookFollowSettings {
+  const settings = value && typeof value === "object" ? value as Partial<SpineLookFollowSettings> : {};
+  const optionalRange = (range: unknown): number | null => typeof range === "number" && Number.isFinite(range)
+    ? Math.max(0, Math.min(512, range))
+    : null;
+  return {
+    enabled: settings.enabled !== false,
+    targetBonePath: nullableString(settings.targetBonePath),
+    delay: Math.max(0, Math.min(2, finiteNumber(settings.delay, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS.delay))),
+    rangeX: optionalRange(settings.rangeX),
+    rangeY: optionalRange(settings.rangeY),
+    smoothing: Math.max(1, Math.min(30, finiteNumber(settings.smoothing, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS.smoothing))),
+    allowX: settings.allowX !== false,
+    allowY: settings.allowY !== false,
+    startAnimation: stringValue(settings.startAnimation),
+    faceStartAnimation: stringValue(settings.faceStartAnimation),
+    endAnimation: stringValue(settings.endAnimation),
+    faceEndAnimation: stringValue(settings.faceEndAnimation),
+  };
 }
 
 function normalizeInteractionRegion(value: unknown, index: number): SpineInteractionRegion | null {
@@ -187,6 +283,13 @@ export function normalizeSpineInteractionProject(value: unknown, directory?: str
       .map(([id, value]) => [id, normalizeSpineTimeline(value)] as const)
       .filter((entry): entry is [string, SpineTimeline] => entry[1] !== null))
     : {};
+  const interactions = project.interactions
+    .map((interaction, index) => normalizeAuthoredInteraction(interaction, index))
+    .filter((interaction): interaction is SpineAuthoredInteraction => interaction !== null);
+  const lookFollow = normalizeSpineLookFollowSettings(project.lookFollow);
+  const behaviorMachines = Array.isArray(project.behaviorMachines)
+    ? normalizeSpineBehaviorMachines(project.behaviorMachines)
+    : migrateLegacyInteractionsToBehaviors(interactions, lookFollow);
   return {
     schemaVersion: Math.max(1, Math.trunc(finiteNumber(project.schemaVersion, 1))),
     ...(typeof project.name === "string" ? { name: project.name } : {}),
@@ -194,9 +297,9 @@ export function normalizeSpineInteractionProject(value: unknown, directory?: str
     ...(project.entrySequence === null || typeof project.entrySequence === "string" ? { entrySequence: project.entrySequence } : {}),
     talkMixDuration: normalizeAnimationMixDuration(project.talkMixDuration, DEFAULT_TALK_MIX_DURATION),
     effectsStrength: Math.max(0, Math.min(1, finiteNumber(project.effectsStrength, DEFAULT_EFFECTS_STRENGTH))),
-    interactions: project.interactions
-      .map((interaction, index) => normalizeAuthoredInteraction(interaction, index))
-      .filter((interaction): interaction is SpineAuthoredInteraction => interaction !== null),
+    lookFollow,
+    behaviorMachines,
+    interactions,
     ...(timeline ? { timeline } : {}),
     ...(Object.keys(sequences).length > 0 ? { sequences } : {}),
     ...(Array.isArray(project.sequenceOrder)
@@ -480,11 +583,24 @@ export function profileFromProject(animations: string[], project?: SpineInteract
       .find((action): action is SpineInteractionAction => action !== null);
     overrides.set(kind, authored ?? detected[kind]);
   }
+  const lookFollow = normalizeSpineLookFollowSettings(project.lookFollow);
+  const lookMain = (lookFollow.startAnimation ? exactAnimation(animations, lookFollow.startAnimation) : null) ?? detected.look?.start.main ?? null;
+  const lookFace = lookFollow.faceStartAnimation ? exactAnimation(animations, lookFollow.faceStartAnimation) : detected.look?.start.face ?? null;
+  const lookEndMain = (lookFollow.endAnimation ? exactAnimation(animations, lookFollow.endAnimation) : null) ?? detected.look?.end?.main ?? null;
+  const lookEndFace = lookFollow.faceEndAnimation ? exactAnimation(animations, lookFollow.faceEndAnimation) : detected.look?.end?.face ?? null;
+  const lookStart = lookMain ? { main: lookMain, face: lookFace } : null;
+  const lookEnd = lookEndMain ? { main: lookEndMain, face: lookEndFace } : null;
   return {
     ...detected,
     pat: overrides.has("pat") ? overrides.get("pat")! : detected.pat,
     pinch: overrides.has("pinch") ? overrides.get("pinch")! : detected.pinch,
     touch: overrides.has("touch") ? overrides.get("touch")! : detected.touch,
+    look: lookFollow.enabled && (lookStart || detected.look)
+      ? {
+        start: lookStart ?? detected.look!.start,
+        end: lookEnd ?? detected.look?.end ?? null,
+      }
+      : null,
   };
 }
 

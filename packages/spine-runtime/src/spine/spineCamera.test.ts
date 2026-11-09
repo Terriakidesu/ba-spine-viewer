@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BlendMode, BoneData, Physics, RegionAttachment, Skeleton, SkeletonData, SlotData, Vector2 } from "@esotericsoftware/spine-core";
-import { authoredViewport, cameraPositionForZoomAnchor, fitScene, interactionBounds, interactionHit, interactionKindAtPoint, interactionTargetAtPoint, sceneBounds } from "./spineCamera";
+import { authoredViewport, behaviorRegionAtPoint, cameraPositionForZoomAnchor, fitScene, interactionBounds, interactionHit, interactionKindAtPoint, interactionTargetAtPoint, sceneBounds } from "./spineCamera";
 import { SpineRenderer } from "./spineRuntime";
 
 function scene() {
@@ -426,8 +426,26 @@ describe("Spine scene framing", () => {
     }];
     const center = skeleton.findBone("cheek_01")!.localToWorld(new Vector2(20, 10));
     expect(interactionKindAtPoint(skeleton, center.x, center.y, ["pinch"], regions)).toBe("pinch");
-    expect(interactionTargetAtPoint(skeleton, center.x, center.y, ["pinch"], regions)).toEqual({ kind: "pinch", interactionId: "pinch-second" });
+    expect(interactionTargetAtPoint(skeleton, center.x, center.y, ["pinch"], regions)).toEqual({ kind: "pinch", interactionId: "pinch-second", regionId: "saved-cheek-overlap" });
     expect(interactionKindAtPoint(skeleton, -150, 300, ["pinch"], regions)).toBeNull();
+  });
+
+  test("hits declarative behavior regions independently of gesture names", () => {
+    const data = new SkeletonData();
+    const root = new BoneData(0, "root", null);
+    const controller = new BoneData(1, "CustomController", root);
+    controller.x = 45;
+    controller.y = 30;
+    data.bones.push(root, controller);
+    const skeleton = new Skeleton(data);
+    skeleton.updateWorldTransform(Physics.update);
+    const center = skeleton.bones[1]!.localToWorld(new Vector2(5, 8));
+    const regions = [{ machineId: "hand-wave", region: {
+      id: "custom-zone", name: "Wave zone", enabled: true, shape: "rectangle" as const,
+      anchorBone: "root/CustomController", offsetX: 5, offsetY: 8, radiusX: 24, radiusY: 18, rotation: 17,
+    } }];
+    expect(behaviorRegionAtPoint(skeleton, center.x, center.y, regions)).toEqual({ machineId: "hand-wave", regionId: "custom-zone" });
+    expect(behaviorRegionAtPoint(skeleton, center.x + 200, center.y, regions)).toBeNull();
   });
 
   test("renderer refits on fullscreen resize while preserving manual zoom", () => {

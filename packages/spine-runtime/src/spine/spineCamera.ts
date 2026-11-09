@@ -1,5 +1,5 @@
 import { BlendMode, MeshAttachment, RegionAttachment, Vector2, type Bone, type Skeleton, type Slot } from "@esotericsoftware/spine-core";
-import type { SpineAuthoredRegion } from "./spineInteraction";
+import type { SpineAuthoredRegion, SpineInteractionRegion } from "./spineInteraction";
 
 export interface SceneBounds {
   x: number;
@@ -381,6 +381,8 @@ export interface InteractionHitTarget {
   kind: InteractionHitKind;
   /** Present when the point was resolved to a particular saved Editor region. */
   interactionId?: string;
+  /** Present for authored regions and used by declarative behavior activation. */
+  regionId?: string;
 }
 
 export interface InteractionZone {
@@ -389,6 +391,16 @@ export interface InteractionZone {
   axisX: { x: number; y: number };
   axisY: { x: number; y: number };
   shape: "ellipse" | "rectangle";
+}
+
+export interface SpineBehaviorHitRegion {
+  machineId: string;
+  region: SpineInteractionRegion;
+}
+
+export interface SpineBehaviorHitTarget {
+  machineId: string;
+  regionId: string;
 }
 
 function interactionBone(skeleton: Skeleton, pattern: RegExp): Bone | null {
@@ -440,6 +452,48 @@ function authoredZone(skeleton: Skeleton, region: SpineAuthoredRegion): Interact
     axisY: { x: yEnd.x - center.x, y: yEnd.y - center.y },
     shape: region.shape,
   };
+}
+
+function behaviorZone(skeleton: Skeleton, region: SpineInteractionRegion): InteractionZone | null {
+  const angle = region.rotation * Math.PI / 180;
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  if (!region.anchorBone) {
+    return {
+      x: skeleton.x + region.offsetX,
+      y: skeleton.y + region.offsetY,
+      axisX: { x: cos * region.radiusX, y: sin * region.radiusX },
+      axisY: { x: -sin * region.radiusY, y: cos * region.radiusY },
+      shape: region.shape,
+    };
+  }
+  const bone = skeleton.bones.find((candidate) => fullBonePath(candidate) === region.anchorBone);
+  if (!bone) return null;
+  const center = bone.localToWorld(new Vector2(region.offsetX, region.offsetY));
+  const xEnd = bone.localToWorld(new Vector2(region.offsetX + cos * region.radiusX, region.offsetY + sin * region.radiusX));
+  const yEnd = bone.localToWorld(new Vector2(region.offsetX - sin * region.radiusY, region.offsetY + cos * region.radiusY));
+  return {
+    x: center.x,
+    y: center.y,
+    axisX: { x: xEnd.x - center.x, y: xEnd.y - center.y },
+    axisY: { x: yEnd.x - center.x, y: yEnd.y - center.y },
+    shape: region.shape,
+  };
+}
+
+/** Hit-test all declarative machine regions without depending on Pat/Touch/Pinch labels. */
+export function behaviorRegionAtPoint(
+  skeleton: Skeleton,
+  x: number,
+  y: number,
+  regions: readonly SpineBehaviorHitRegion[],
+): SpineBehaviorHitTarget | null {
+  for (let index = regions.length - 1; index >= 0; index -= 1) {
+    const item = regions[index]!;
+    if (!item.region.enabled) continue;
+    const zone = behaviorZone(skeleton, item.region);
+    if (zone && inZone(zone, x, y)) return { machineId: item.machineId, regionId: item.region.id };
+  }
+  return null;
 }
 
 function cheekZones(skeleton: Skeleton, face: SceneBounds | null, all: SceneBounds | null): InteractionZone[] {
@@ -549,7 +603,7 @@ export function interactionKindAtPoint(skeleton: Skeleton, x: number, y: number,
 /** Resolve an authored region to its individual interaction, falling back to legacy hit zones. */
 export function interactionTargetAtPoint(skeleton: Skeleton, x: number, y: number, kinds: InteractionHitKind[], regions: SpineAuthoredRegion[] = []): InteractionHitTarget | null {
   const authored = authoredRegionAtPoint(skeleton, x, y, kinds, regions);
-  if (authored) return { kind: authored.kind, interactionId: authored.interactionId };
+  if (authored) return { kind: authored.kind, interactionId: authored.interactionId, regionId: authored.id };
   const kind = interactionKindAtPoint(skeleton, x, y, kinds, regions);
   return kind ? { kind } : null;
 }

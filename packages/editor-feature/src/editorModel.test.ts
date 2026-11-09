@@ -72,6 +72,34 @@ test("project Light FX strength defaults, clamps, and survives normalization", (
   expect(normalizeProject({ ...project, effectsStrength: -2 }, "Airi_home")?.effectsStrength).toBe(0);
 });
 
+test("look-follow settings migrate from legacy projects and survive normalization", () => {
+  const defaults = createProject("Airi_home", [], []);
+  expect(defaults.lookFollow).toMatchObject({ enabled: true, targetBonePath: null, delay: 0.3, rangeX: null, rangeY: null, smoothing: 14, allowX: true, allowY: true });
+
+  const legacy = normalizeProject({ schemaVersion: 6, assetDirectory: "Airi_home", interactions: [] }, "Airi_home")!;
+  expect(legacy.lookFollow).toEqual(defaults.lookFollow);
+
+  const authored = normalizeProject({
+    ...defaults,
+    lookFollow: {
+      enabled: false,
+      targetBonePath: "root/Touch_Eye",
+      delay: 4,
+      rangeX: 88,
+      rangeY: null,
+      smoothing: 0,
+      allowX: false,
+      allowY: true,
+      startAnimation: "Look_Custom_M",
+      faceStartAnimation: "",
+      endAnimation: "Look_Custom_End_M",
+      faceEndAnimation: "Look_Custom_End_A",
+    },
+  }, "Airi_home")!;
+  expect(authored.lookFollow).toMatchObject({ enabled: false, targetBonePath: "root/Touch_Eye", delay: 2, rangeX: 88, rangeY: null, smoothing: 1, allowX: false, allowY: true, startAnimation: "Look_Custom_M", endAnimation: "Look_Custom_End_M" });
+  expect(normalizeProject(JSON.parse(JSON.stringify(authored)), "Airi_home")?.lookFollow).toEqual(authored.lookFollow);
+});
+
 test("legacy Talk timelines migrate to auto duration without resetting current manual overrides", () => {
   const legacy = normalizeProject({
     schemaVersion: 2,
@@ -121,7 +149,7 @@ test("color compositor settings and clips survive project save and reopen", () =
   expect(reopened.timeline.durationMode).toBe("auto");
 });
 
-test("v4 projects migrate without camera data and camera tracks remain intact in schema 6", () => {
+test("v4 projects migrate without camera data and camera tracks remain intact through schema 7", () => {
   const legacy = normalizeProject({
     schemaVersion: 4,
     assetDirectory: "Airi_home",

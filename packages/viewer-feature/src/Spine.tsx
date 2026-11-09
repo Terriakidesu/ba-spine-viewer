@@ -54,7 +54,7 @@ import {
   type SpineVoiceLine,
 } from "@ba-spine/spine-runtime/spine/spineVoicelines";
 import { SpineCompositionViewport, type SpineCompositionViewportHandle } from "@ba-spine/spine-runtime/ui/SpineCompositionViewport";
-import { timelineAuthoredCueEnd, timelineForSequence, timelineLastDefinedCameraTrack, timelinePlaybackDuration, timelineSequenceIds, timelineTalkInProgress, timelineTalkSequenceIds, type SpineTimeline } from "@ba-spine/spine-runtime/spine/spineTimeline";
+import { timelineAuthoredCueEnd, timelineForSequence, timelineLastDefinedCameraTrack, timelinePlaybackDuration, timelineSequenceIds, timelineSubtitleText, timelineTalkInProgress, timelineTalkSequenceIds, type SpineTimeline } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import { hasLegacySquareCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import { hasLegacyViewerAspectRatio, readViewerAspectRatio, writeViewerAspectRatio, type ViewerAspectRatio } from "./viewerPresentation";
 import { createCanvasFrameCapture, createCanvasRecordingCapture, createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, readVideoRecordingQuality, videoFilenameStem, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingTimelineOffsets, writeVideoRecordingQuality, type AudioRecordingCapture, type CanvasFrameCapture, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
@@ -347,6 +347,8 @@ interface SpineViewportProps {
   onTalkClip: (index: number, clipIndex: number) => void;
   onIntro: (animation: string, eventCount: number) => boolean;
   onIntroClip: (clipIndex: number) => void;
+  onBehaviorAudio: (machineId: string, audioId: string, volume: number, loop: boolean) => void | (() => void);
+  onBehaviorSubtitle: (machineId: string, cueId: string, visible: boolean) => void;
 }
 
 const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(function SpineViewport({
@@ -374,14 +376,16 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
   onTalkClip,
   onIntro,
   onIntroClip,
+  onBehaviorAudio,
+  onBehaviorSubtitle,
 }, ref) {
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<SpineRenderer | null>(null);
   const resolutionScaleRef = useRef(1);
   const [interactionOverlay, setInteractionOverlay] = useState<SpineInteractionOverlay>({ canvasWidth: 0, canvasHeight: 0, points: [] });
-  const callbacks = useRef({ onMeta, onProgress, onLoading, onLoadProgress, onError, onCameraMode, onTalk, onTalkClip, onIntro, onIntroClip });
-  callbacks.current = { onMeta, onProgress, onLoading, onLoadProgress, onError, onCameraMode, onTalk, onTalkClip, onIntro, onIntroClip };
+  const callbacks = useRef({ onMeta, onProgress, onLoading, onLoadProgress, onError, onCameraMode, onTalk, onTalkClip, onIntro, onIntroClip, onBehaviorAudio, onBehaviorSubtitle });
+  callbacks.current = { onMeta, onProgress, onLoading, onLoadProgress, onError, onCameraMode, onTalk, onTalkClip, onIntro, onIntroClip, onBehaviorAudio, onBehaviorSubtitle };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -400,6 +404,8 @@ const SpineViewport = forwardRef<SpineViewportHandle, SpineViewportProps>(functi
         onTalkClip: (index, clipIndex) => callbacks.current.onTalkClip(index, clipIndex),
         onIntro: (animation, eventCount) => callbacks.current.onIntro(animation, eventCount),
         onIntroClip: (clipIndex) => callbacks.current.onIntroClip(clipIndex),
+        onBehaviorAudio: (machineId, audioId, volume, loop) => callbacks.current.onBehaviorAudio(machineId, audioId, volume, loop),
+        onBehaviorSubtitle: (machineId, cueId, visible) => callbacks.current.onBehaviorSubtitle(machineId, cueId, visible),
         onInteractionPoints: (overlay) => setInteractionOverlay(overlay),
       }, { preserveDrawingBuffer });
       renderer.setCameraMode(cameraMode);
@@ -664,6 +670,7 @@ export function Spine() {
   const [voiceCharacter, setVoiceCharacter] = useState<SpineVoiceCharacter | null>(null);
   const [voiceLineIndex, setVoiceLineIndex] = useState<number | null>(null);
   const [voiceClipIndex, setVoiceClipIndex] = useState(0);
+  const [behaviorSubtitleLines, setBehaviorSubtitleLines] = useState<Record<string, string>>({});
   const [selectedVoiceLineIndex, setSelectedVoiceLineIndex] = useState<number | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [voiceVolume, setVoiceVolume] = useState(readViewerVoiceVolume);
@@ -1518,6 +1525,87 @@ export function Spine() {
     }
   };
 
+  const playBehaviorAudio = (_machineId: string, audioId: string, volume: number, loop: boolean): (() => void) => {
+    const activeSource = source;
+    let live = true;
+    let audio: HTMLAudioElement | null = null;
+    let objectUrl: string | null = null;
+    const cleanup = () => {
+      live = false;
+      if (audio) {
+        audio.onended = null;
+        audio.onerror = null;
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+        audio = null;
+      }
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+        objectUrl = null;
+      }
+    };
+    if (!activeSource) return cleanup;
+    const timelines = [
+      ...(compositionTimeline ? [compositionTimeline] : []),
+      ...(selectedInteractionProject?.timeline ? [selectedInteractionProject.timeline] : []),
+      ...Object.values(selectedInteractionProject?.sequences ?? {}),
+    ];
+    const audioClip = timelines.flatMap((timeline) => timeline.audio).find((clip) =>
+      clip.id === audioId || clip.path === audioId || clip.name === audioId,
+    );
+    const path = audioClip?.path ?? audioId;
+    void loadRecordingAudioFile(activeSource, path).then(async (file) => {
+      if (!live || !file) return;
+      objectUrl = URL.createObjectURL(file);
+      audio = new Audio(objectUrl);
+      audio.volume = Math.max(0, Math.min(1, Number.isFinite(volume) ? volume : 1));
+      audio.loop = loop;
+      const recording = videoRecordingRunRef.current;
+      const capture = recording?.audioCapture ?? recording?.capture;
+      if (recording?.settings.includeAudio && !capture) {
+        stopVideoRecording(false, "This WebView cannot mix behavior audio into the recording.");
+        cleanup();
+        return;
+      }
+      if (capture && recording?.settings.includeAudio) {
+        try {
+          capture.addAudioElement(audio);
+        } catch (error) {
+          stopVideoRecording(false, errorMessage(error));
+          cleanup();
+          return;
+        }
+      }
+      audio.onended = () => { if (!loop) cleanup(); };
+      audio.onerror = cleanup;
+      try { await audio.play(); } catch { cleanup(); }
+    }).catch(() => cleanup());
+    return cleanup;
+  };
+
+  const setBehaviorSubtitle = (machineId: string, cueId: string, visible: boolean) => {
+    const key = `${machineId}:${cueId}`;
+    if (!visible) {
+      setBehaviorSubtitleLines((current) => {
+        if (!(key in current)) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      return;
+    }
+    const timelines = [
+      ...(compositionTimeline ? [compositionTimeline] : []),
+      ...(selectedInteractionProject?.timeline ? [selectedInteractionProject.timeline] : []),
+      ...Object.values(selectedInteractionProject?.sequences ?? {}),
+    ];
+    const found = timelines.flatMap((timeline) => timeline.subtitles.map((cue) => ({ cue, language: timeline.language })))
+      .find(({ cue }) => cue.id === cueId);
+    const text = found ? timelineSubtitleText(found.cue, found.language) : cueId;
+    setBehaviorSubtitleLines((current) => ({ ...current, [key]: text }));
+  };
+
   const resetAssetPlayback = () => {
     pendingHandoffRestoreRef.current = null;
     setDraftPreview(null);
@@ -1531,6 +1619,7 @@ export function Spine() {
     setAnimation("");
     setAnimationSelectionOrigin("automatic");
     setSetFiles(null);
+    setBehaviorSubtitleLines({});
     setProgress({ time: 0, duration: 0, animation: null });
     setMeta(null);
     setError(null);
@@ -3804,9 +3893,11 @@ export function Spine() {
                 onError={handleViewportError}
                 onFinished={handleCompositionFinished}
                onTalk={(index, talkAnimation, eventCount) => beginVoiceSession(index, talkAnimation, eventCount)}
-               onTalkClip={playVoiceEvent}
-               onIntro={(intro, eventCount) => beginIntroVoiceSession(intro, eventCount)}
-               onIntroClip={playIntroVoiceEvent}
+                onTalkClip={playVoiceEvent}
+                onIntro={(intro, eventCount) => beginIntroVoiceSession(intro, eventCount)}
+                onIntroClip={playIntroVoiceEvent}
+                onBehaviorAudio={playBehaviorAudio}
+                onBehaviorSubtitle={setBehaviorSubtitle}
              />
              : <SpineViewport
                key={selectedDirectoryName}
@@ -3832,11 +3923,14 @@ export function Spine() {
                 onError={handleViewportError}
                onCameraMode={setCameraMode}
               onTalk={(index, animation, eventCount) => beginVoiceSession(index, animation, eventCount)}
-              onTalkClip={playVoiceEvent}
-              onIntro={(intro, eventCount) => beginIntroVoiceSession(intro, eventCount)}
-              onIntroClip={playIntroVoiceEvent}
-            />}
-          {showDialogue && activeVoiceLine && activeDialogue && <div className="spine-dialogue" aria-live="polite">{activeDialogue}</div>}
+               onTalkClip={playVoiceEvent}
+               onIntro={(intro, eventCount) => beginIntroVoiceSession(intro, eventCount)}
+               onIntroClip={playIntroVoiceEvent}
+               onBehaviorAudio={playBehaviorAudio}
+               onBehaviorSubtitle={setBehaviorSubtitle}
+             />}
+           {showDialogue && activeVoiceLine && activeDialogue && <div className="spine-dialogue" aria-live="polite">{activeDialogue}</div>}
+           {Object.values(behaviorSubtitleLines).filter(Boolean).length > 0 && <div className="spine-behavior-subtitle" aria-live="polite">{Object.values(behaviorSubtitleLines).filter(Boolean).join("\n")}</div>}
           {!source && <div className="spine-stage-empty"><strong>{t("spine.empty.heading")}</strong><span>{t("spine.empty.body")}</span></div>}
           {source && !setFiles && !error && !isLoading && <div className="spine-stage-empty"><strong>{t("spine.empty.set")}</strong><span>{selectedDirectoryName}</span></div>}
           <div className="spine-stage-hint">{t(interactionMode === "interaction" ? "spine.interactionHint" : "spine.stageHint")}</div>

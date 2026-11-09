@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Animation, AnimationState, AnimationStateData, BoneData, Skeleton, SkeletonData } from "@esotericsoftware/spine-core";
-import { authoredInteractionAction, authoredRegions, DEFAULT_TALK_MIX_DURATION, findInteractionProfile, interactionPhaseAfterStart, interactionPressReady, INTERACTION_PHASE_MIX, normalizeSpineInteractionProject, profileFromProject, setInteractionTrack } from "./spineInteraction";
+import { authoredInteractionAction, authoredRegions, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, DEFAULT_TALK_MIX_DURATION, findInteractionProfile, interactionPhaseAfterStart, interactionPressReady, INTERACTION_PHASE_MIX, lookFollowTarget, normalizeSpineInteractionProject, normalizeSpineLookFollowSettings, profileFromProject, setInteractionTrack, smoothLookFollowPoint } from "./spineInteraction";
 
 describe("Spine lobby interaction data", () => {
   test("pairs the game start, follow and release tracks", () => {
@@ -165,6 +165,89 @@ describe("Spine lobby interaction data", () => {
     expect(configured).toMatchObject({ talkMixDuration: 0.8, effectsStrength: 0.85 });
     expect(normalizeSpineInteractionProject({ schemaVersion: 2, assetDirectory: "Airi_home", effectsStrength: 2, interactions: [] })?.effectsStrength).toBe(1);
     expect(configured?.interactions[0]).toMatchObject({ startMixDuration: 0.25, followMixDuration: 0, releaseMixDuration: 2 });
+  });
+
+  test("normalizes saved look-follow settings while preserving automatic ranges", () => {
+    const legacy = normalizeSpineInteractionProject({ schemaVersion: 2, assetDirectory: "Airi_home", interactions: [] });
+    expect(legacy?.lookFollow).toEqual(DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS);
+
+    const configured = normalizeSpineLookFollowSettings({
+      enabled: false,
+      targetBonePath: "root/Touch_Eye",
+      delay: 9,
+      rangeX: 84,
+      rangeY: -12,
+      smoothing: 40,
+      allowX: false,
+      allowY: true,
+      startAnimation: "Look_Custom_M",
+      faceStartAnimation: "Look_Custom_A",
+      endAnimation: "Look_Custom_End_M",
+      faceEndAnimation: "Look_Custom_End_A",
+    });
+    expect(configured).toEqual({
+      enabled: false,
+      targetBonePath: "root/Touch_Eye",
+      delay: 2,
+      rangeX: 84,
+      rangeY: 0,
+      smoothing: 30,
+      allowX: false,
+      allowY: true,
+      startAnimation: "Look_Custom_M",
+      faceStartAnimation: "Look_Custom_A",
+      endAnimation: "Look_Custom_End_M",
+      faceEndAnimation: "Look_Custom_End_A",
+    });
+    expect(normalizeSpineLookFollowSettings({ rangeX: null, rangeY: Number.NaN }).rangeX).toBeNull();
+    expect(normalizeSpineLookFollowSettings({ rangeX: null, rangeY: Number.NaN }).rangeY).toBeNull();
+  });
+
+  test("uses automatic look phases by default and supports authored look overrides", () => {
+    const animations = ["Look_01_M", "Look_01_A", "LookEnd_01_M", "LookEnd_01_A", "CustomLook_M", "CustomLook_A", "CustomLookEnd_M"];
+    const automatic = normalizeSpineInteractionProject({ schemaVersion: 1, assetDirectory: "Airi_home", interactions: [] })!;
+    expect(profileFromProject(animations, automatic).look).toEqual({
+      start: { main: "Look_01_M", face: "Look_01_A" },
+      end: { main: "LookEnd_01_M", face: "LookEnd_01_A" },
+    });
+
+    const authored = normalizeSpineInteractionProject({
+      schemaVersion: 1,
+      assetDirectory: "Airi_home",
+      lookFollow: { startAnimation: "CustomLook_M", faceStartAnimation: "CustomLook_A", endAnimation: "CustomLookEnd_M" },
+      interactions: [],
+    })!;
+    expect(profileFromProject(animations, authored).look).toEqual({
+      start: { main: "CustomLook_M", face: "CustomLook_A" },
+      end: { main: "CustomLookEnd_M", face: "LookEnd_01_A" },
+    });
+    const faceOnlyOverride = normalizeSpineInteractionProject({
+      schemaVersion: 1,
+      assetDirectory: "Airi_home",
+      lookFollow: { faceStartAnimation: "CustomLook_A" },
+      interactions: [],
+    })!;
+    expect(profileFromProject(animations, faceOnlyOverride).look?.start).toEqual({ main: "Look_01_M", face: "CustomLook_A" });
+    const missingOverride = normalizeSpineInteractionProject({
+      schemaVersion: 1,
+      assetDirectory: "Airi_home",
+      lookFollow: { startAnimation: "Missing_Look" },
+      interactions: [],
+    })!;
+    expect(profileFromProject(animations, missingOverride).look?.start.main).toBe("Look_01_M");
+    expect(profileFromProject(["Idle_01"], automatic).look).toBeNull();
+    const disabled = normalizeSpineInteractionProject({ schemaVersion: 1, assetDirectory: "Airi_home", lookFollow: { enabled: false }, interactions: [] })!;
+    expect(profileFromProject(animations, disabled).look).toBeNull();
+  });
+
+  test("clamps look-follow target and applies smoothing without moving on a paused frame", () => {
+    expect(lookFollowTarget({ x: 10, y: 20 }, { x: 100, y: -100 }, 25, 12, true, true)).toEqual({ x: 35, y: 8 });
+    expect(lookFollowTarget({ x: 10, y: 20 }, { x: 100, y: -100 }, 25, 12, false, true)).toEqual({ x: 10, y: 8 });
+    expect(lookFollowTarget({ x: 10, y: 20 }, null, 25, 12, true, true)).toEqual({ x: 10, y: 20 });
+    expect(smoothLookFollowPoint({ x: 0, y: 0 }, { x: 100, y: -50 }, 0, 14)).toEqual({ x: 0, y: 0 });
+    const halfSecond = smoothLookFollowPoint({ x: 0, y: 0 }, { x: 100, y: -50 }, 0.5, 14);
+    expect(halfSecond.x).toBeCloseTo(99.9086, 3);
+    expect(halfSecond.y).toBeCloseTo(-49.9543, 3);
   });
 
   test("uses authored trigger gates and phase transitions for both previews", () => {

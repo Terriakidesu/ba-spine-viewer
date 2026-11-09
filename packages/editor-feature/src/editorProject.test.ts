@@ -39,6 +39,7 @@ test("draft preview converts the live project to a Viewer snapshot without invok
   const project = createProject("Airi_home", [], []);
   project.name = "Live unsaved draft";
   project.effectsStrength = 0.85;
+  project.lookFollow = { ...project.lookFollow, delay: 0.65, rangeX: 82, allowY: false };
   project.timeline.sequenceId = "opening";
   project.timeline.duration = 12;
   project.timeline.camera = { enabled: true, aspectRatio: "1:1", constraint: { mode: "none" }, safeBounds: [], keyframes: [{ id: "draft-key", time: 3, centerX: 10, centerY: 20, frameHeight: 300 }] } as unknown as NonNullable<typeof project.timeline.camera>;
@@ -49,14 +50,19 @@ test("draft preview converts the live project to a Viewer snapshot without invok
     entrySequence: null,
     name: "Live unsaved draft",
     effectsStrength: 0.85,
+    lookFollow: { delay: 0.65, rangeX: 82, allowY: false },
     interactions: [{ id: project.interactions[0]!.id }],
     timeline: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "1:1" } },
     sequences: { opening: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "1:1" } } },
   });
+  const draftMachines = snapshot.behaviorMachines as Array<{ sourceLegacyInteractionId: string | null; name: string; activation: { holdDelay: number } }>;
+  expect(draftMachines.some((machine) => machine.sourceLegacyInteractionId === project.interactions[0]!.id)).toBe(true);
+  expect(draftMachines.find((machine) => machine.name === "Look-follow")?.activation.holdDelay).toBe(0.65);
   expect(JSON.parse(JSON.stringify(snapshot))).toEqual(snapshot);
   expect(normalizeSpineInteractionProject(snapshot, "Airi_home")).toMatchObject({
     assetDirectory: "Airi_home",
     effectsStrength: 0.85,
+    lookFollow: { delay: 0.65, rangeX: 82, allowY: false },
     interactions: [{ id: project.interactions[0]!.id }],
     sequences: { opening: { sequenceId: "opening", duration: 12, camera: { aspectRatio: "16:9" } } },
   });
@@ -188,6 +194,7 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
   };
   const project = createProject("Airi_home", [], []);
   project.effectsStrength = 0.9;
+  project.lookFollow = { ...project.lookFollow, enabled: false, delay: 0.7, targetBonePath: "root/Touch_Eye" };
   project.timeline.sequenceId = "talk-1";
   project.timeline.durationMode = "manual";
   project.timeline.duration = 8;
@@ -208,6 +215,11 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
   const saved = await saveManifestEditorProject(source, project);
   expect(JSON.parse(writes[".editor/Airi_home.workspace.json"]!).projectSchemaVersion).toBe(EDITOR_SCHEMA_VERSION);
   expect(JSON.parse(writes["lobbies/Airi_home/interactions.json"]!).effectsStrength).toBe(0.9);
+  expect(JSON.parse(writes["lobbies/Airi_home/interactions.json"]!).lookFollow).toEqual(project.lookFollow);
+  expect(JSON.parse(writes["lobbies/Airi_home/interactions.json"]!).behaviorMachines).toEqual(expect.arrayContaining([
+    expect.objectContaining({ sourceLegacyInteractionId: project.interactions[0]!.id }),
+    expect.objectContaining({ name: "Look-follow", activation: expect.objectContaining({ holdDelay: 0.7 }) }),
+  ]));
   expect(JSON.parse(writes["lobbies/Airi_home/sequences/talk-1.json"]!).camera).toMatchObject({ aspectRatio: "4:3", constraint: { mode: "manual", boundId: "room" } });
 
   const reopened = await readSavedEditorProject({
@@ -216,6 +228,8 @@ test("manifest workspace schema marker persists and preserves a manual Talk over
   }, "Airi_home", () => {});
   expect(reopened?.timeline).toMatchObject({ sequenceId: "talk-1", duration: 8, durationMode: "manual" });
   expect(reopened?.effectsStrength).toBe(0.9);
+  expect(reopened?.lookFollow).toEqual(project.lookFollow);
+  expect(reopened?.behaviorMachines?.map((machine) => machine.id)).toEqual(project.behaviorMachines?.map((machine) => machine.id));
   expect(reopened?.timeline.colorLayers[0]).toMatchObject({ id: "wash", opacity: 0.65, order: 2, blendMode: "screen" });
   expect(reopened?.timeline.colorLayers[0]?.clips[0]).toMatchObject({ id: "fade", color: "#244466", start: 1, end: 7, fadeIn: 2, fadeOut: 1 });
   expect(reopened?.timeline).toMatchObject({ selectedColorLayerId: "wash", selectedColorClipId: "fade" });

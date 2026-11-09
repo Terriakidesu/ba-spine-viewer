@@ -42,6 +42,8 @@ export interface SpineTimelineLayerCanvasProps {
   onTalkClip?: (index: number, clipIndex: number) => void;
   onIntro?: (animation: string, eventCount: number) => boolean;
   onIntroClip?: (clipIndex: number) => void;
+  onBehaviorAudio?: (machineId: string, audioId: string, volume: number, loop: boolean) => void | (() => void);
+  onBehaviorSubtitle?: (machineId: string, cueId: string, visible: boolean) => void;
   onRendererLoading?: (layerId: string, loading: boolean) => void;
   onLoadProgress?: (layerId: string, progress: SpineLoadProgress) => void;
   onError: (value: string | null) => void;
@@ -54,7 +56,7 @@ export interface SpineTimelineLayerCanvasProps {
  * interaction preservation, and visibility in this component. The two UIs
  * should provide state and callbacks, not fork playback rules.
  */
-export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimation, mainAnimationTime, mainAnimationLoop, idleAnimationTime, recordingIdleOverride = false, openingMode = "direct", sequenceId = "legacy", idleMode = "none", talkMixDuration = DEFAULT_TALK_MIX_DURATION, talkBlendOutStart, characterHidden = false, preserveDrawingBuffer = false, interactionEnabled = false, cameraControlsEnabled = false, interactionProject = null, showInteractionPoints = false, effectsStrength, resolutionScale = 1, resetCameraSignal = 0, cameraMode, sharedCameraFrame, sharedCameraPose, referenceCamera, onMeta, onCameraPose, onAnimationDuration, onMarkers, onInteractionPoints, onRenderer, onTalk, onTalkClip, onIntro, onIntroClip, onRendererLoading, onLoadProgress, onError }: SpineTimelineLayerCanvasProps) {
+export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimation, mainAnimationTime, mainAnimationLoop, idleAnimationTime, recordingIdleOverride = false, openingMode = "direct", sequenceId = "legacy", idleMode = "none", talkMixDuration = DEFAULT_TALK_MIX_DURATION, talkBlendOutStart, characterHidden = false, preserveDrawingBuffer = false, interactionEnabled = false, cameraControlsEnabled = false, interactionProject = null, showInteractionPoints = false, effectsStrength, resolutionScale = 1, resetCameraSignal = 0, cameraMode, sharedCameraFrame, sharedCameraPose, referenceCamera, onMeta, onCameraPose, onAnimationDuration, onMarkers, onInteractionPoints, onRenderer, onTalk, onTalkClip, onIntro, onIntroClip, onBehaviorAudio, onBehaviorSubtitle, onRendererLoading, onLoadProgress, onError }: SpineTimelineLayerCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<SpineRenderer | null>(null);
   const [meta, setMeta] = useState<SpineMeta | null>(null);
@@ -70,6 +72,8 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
   const onTalkClipRef = useRef(onTalkClip);
   const onIntroRef = useRef(onIntro);
   const onIntroClipRef = useRef(onIntroClip);
+  const onBehaviorAudioRef = useRef(onBehaviorAudio);
+  const onBehaviorSubtitleRef = useRef(onBehaviorSubtitle);
   const onRendererLoadingRef = useRef(onRendererLoading);
   const onLoadProgressRef = useRef(onLoadProgress);
   const onErrorRef = useRef(onError);
@@ -85,6 +89,8 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
   onTalkClipRef.current = onTalkClip;
   onIntroRef.current = onIntro;
   onIntroClipRef.current = onIntroClip;
+  onBehaviorAudioRef.current = onBehaviorAudio;
+  onBehaviorSubtitleRef.current = onBehaviorSubtitle;
   onRendererLoadingRef.current = onRendererLoading;
   onLoadProgressRef.current = onLoadProgress;
   onErrorRef.current = onError;
@@ -119,6 +125,8 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
         onTalkClip: (index, clipIndex) => onTalkClipRef.current?.(index, clipIndex),
         onIntro: (animation, eventCount) => onIntroRef.current?.(animation, eventCount) ?? false,
         onIntroClip: (clipIndex) => onIntroClipRef.current?.(clipIndex),
+        onBehaviorAudio: (machineId, audioId, volume, loop) => onBehaviorAudioRef.current?.(machineId, audioId, volume, loop),
+        onBehaviorSubtitle: (machineId, cueId, visible) => onBehaviorSubtitleRef.current?.(machineId, cueId, visible),
       }, { preserveDrawingBuffer });
     } catch (value) {
       onErrorRef.current(value instanceof Error ? value.message : String(value));

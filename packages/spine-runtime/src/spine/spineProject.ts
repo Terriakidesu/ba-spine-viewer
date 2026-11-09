@@ -100,12 +100,16 @@ export function manifestProjectValue(data: SpineManifestProjectData, directory: 
     assetDirectory: directory,
     entrySequence: data.record.manifest.entrySequence,
     interactions: Array.isArray(rawInteractions.interactions) ? rawInteractions.interactions : [],
+    ...(Array.isArray(rawInteractions.behaviorMachines) ? { behaviorMachines: rawInteractions.behaviorMachines } : {}),
     ...(Array.isArray(rawInteractions.sequenceOrder) ? { sequenceOrder: rawInteractions.sequenceOrder } : {}),
     ...(Array.isArray(rawInteractions.deletedSequenceIds) ? { deletedSequenceIds: rawInteractions.deletedSequenceIds } : {}),
     ...(active !== undefined ? { timeline: active } : {}),
     sequences,
     ...(typeof rawInteractions.talkMixDuration === "number" ? { talkMixDuration: rawInteractions.talkMixDuration } : {}),
     ...(typeof rawInteractions.effectsStrength === "number" ? { effectsStrength: rawInteractions.effectsStrength } : {}),
+    ...(rawInteractions.lookFollow && typeof rawInteractions.lookFollow === "object" && !Array.isArray(rawInteractions.lookFollow)
+      ? { lookFollow: rawInteractions.lookFollow }
+      : {}),
     ...workspaceState,
   };
 }

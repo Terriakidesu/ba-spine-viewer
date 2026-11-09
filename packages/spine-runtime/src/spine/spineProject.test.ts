@@ -17,6 +17,7 @@ function editorProject() {
     name: "Local project",
     assetDirectory: "Airi_home",
     effectsStrength: 0.85,
+    lookFollow: { enabled: false, targetBonePath: "root/Touch_Eye", delay: 0.6, rangeX: 72, rangeY: null, smoothing: 11, allowX: true, allowY: false, startAnimation: "CustomLook_M", faceStartAnimation: "", endAnimation: "", faceEndAnimation: "" },
     interactions: [{
       id: "pat",
       name: "Patting",
@@ -61,8 +62,13 @@ test("normalizes editor projects into the viewer playback contract", () => {
 
   expect(normalized?.assetDirectory).toBe("Airi_home");
   expect(normalized?.effectsStrength).toBe(0.85);
+  expect(normalized?.lookFollow).toMatchObject({ enabled: false, targetBonePath: "root/Touch_Eye", delay: 0.6, rangeX: 72, allowY: false, startAnimation: "CustomLook_M" });
   expect(normalized?.interactions[0]).toMatchObject({ allowX: false, rotationEnabled: true, rotationAxis: "y" });
   expect(normalized?.interactions[0]?.regions[0]).toMatchObject({ offsetX: 2, offsetY: 3, rotation: 4 });
+  expect(normalized?.behaviorMachines).toEqual(expect.arrayContaining([
+    expect.objectContaining({ sourceLegacyInteractionId: "pat", activation: expect.objectContaining({ kind: "pointer-region" }) }),
+    expect.objectContaining({ name: "Look-follow", sourceLegacyInteractionId: "$legacy-look-follow" }),
+  ]));
 });
 
 test("viewer local project loading prefers .editor and falls back to the legacy path", async () => {
@@ -143,7 +149,7 @@ test("manifest projects restore authored sequences but never promote workspace s
   const opening = { sequenceId: "opening", duration: 12, loop: false, layers: [], subtitles: [], audio: [] };
   const talk = { sequenceId: "talk-5", duration: 5, loop: false, layers: [], subtitles: [], audio: [] };
   const files: Record<string, string> = {
-    "lobbies/Airi_home/interactions.json": JSON.stringify({ interactions: [] }),
+    "lobbies/Airi_home/interactions.json": JSON.stringify({ interactions: [], lookFollow: { enabled: false, delay: 0.75, rangeX: 90 } }),
     "lobbies/Airi_home/sequences/opening.json": JSON.stringify(opening),
     "lobbies/Airi_home/sequences/talk-5.json": JSON.stringify(talk),
     ".editor/Airi_home.workspace.json": JSON.stringify({ selectedSequenceId: "talk-5", name: "Airi workspace" }),
@@ -170,6 +176,7 @@ test("manifest projects restore authored sequences but never promote workspace s
   expect(project?.entrySequence).toBe("opening");
   expect(project?.timeline?.sequenceId).toBe("talk-5");
   expect(project?.sequences?.opening?.sequenceId).toBe("opening");
+  expect(project?.lookFollow).toMatchObject({ enabled: false, delay: 0.75, rangeX: 90 });
 });
 
 test("normalizes per-sequence layers, timing, subtitles, and audio", () => {
