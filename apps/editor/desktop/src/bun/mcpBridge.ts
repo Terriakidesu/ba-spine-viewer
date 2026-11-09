@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readBoundedBody } from "@ba-spine/desktop-host/companion";
-import { EDITOR_MCP_REVISION_REQUIRED_COMMANDS, normalizeEditorMcpCommand, type EditorMcpCommand, type EditorMcpConnectionInfo, type EditorMcpState } from "@ba-spine/editor-feature/editorMcp";
+import { classifyEditorMcpError, createEditorMcpErrorEnvelope, createEditorMcpResultEnvelope, EDITOR_MCP_OPERATION_REGISTRY, type EditorMcpCommand, type EditorMcpCommandName, type EditorMcpConnectionInfo, type EditorMcpErrorCode, type EditorMcpProjectIdentity, type EditorMcpState } from "@ba-spine/editor-feature/editorMcp";
 
 const MAX_STATE_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_BODY_BYTES = 2 * 1024 * 1024;
@@ -15,6 +15,9 @@ interface PendingCommand {
   resolve: (response: Response) => void;
   timer: ReturnType<typeof setTimeout>;
   started: boolean;
+  command: EditorMcpCommand;
+  identityBefore: EditorMcpProjectIdentity;
+  documentRevisionBefore: number | null;
 }
 
 interface QueuedCommand {
@@ -33,6 +36,47 @@ function json(value: unknown, status = 200): Response {
 
 function errorResponse(value: unknown, status = 400): Response {
   return json({ error: value instanceof Error ? value.message : String(value) }, status);
+}
+
+function projectIdentity(state: EditorMcpState | null, hostPid: number): EditorMcpProjectIdentity {
+  return {
+    hostPid,
+    assetRoot: state?.assetRoot ?? null,
+    directory: state?.directory ?? null,
+    projectName: state?.projectName ?? null,
+  };
+}
+
+function collectEntityIds(value: unknown): string[] {
+  const ids: string[] = [];
+  const visit = (item: unknown) => {
+    if (Array.isArray(item)) { for (const entry of item) visit(entry); return; }
+    if (!record(item)) return;
+    for (const [key, child] of Object.entries(item)) {
+      if ((key === "id" || /Id$/.test(key)) && typeof child === "string" && child) ids.push(child);
+      else if (/Ids$/.test(key) && Array.isArray(child)) ids.push(...child.filter((entry): entry is string => typeof entry === "string" && Boolean(entry)));
+      else visit(child);
+    }
+  };
+  visit(value);
+  return [...new Set(ids)];
+}
+
+function successResponse(envelope: ReturnType<typeof createEditorMcpResultEnvelope>): Response {
+  const legacyFields = record(envelope.result) ? envelope.result : { value: envelope.result };
+  return json({ ...legacyFields, ...envelope });
+}
+
+function statusForMcpError(code: EditorMcpErrorCode): number {
+  switch (code) {
+    case "stale_document_revision":
+    case "external_conflict": return 409;
+    case "renderer_unavailable":
+    case "bridge_unavailable": return 503;
+    case "unsupported_capability": return 501;
+    case "command_timeout": return 504;
+    default: return 400;
+  }
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -78,7 +122,7 @@ export class SpineEditorMcpBridge {
     this.connectionFile = null;
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);
-      pending.resolve(errorResponse("The desktop editor closed before responding to the MCP command.", 503));
+      pending.resolve(this.commandErrorResponse("The desktop editor closed before responding to the MCP command.", { requestId: id, status: 503, identityBefore: pending.identityBefore, documentRevisionBefore: pending.documentRevisionBefore }));
       this.pending.delete(id);
     }
     this.queue.length = 0;
@@ -130,6 +174,23 @@ export class SpineEditorMcpBridge {
     return !origin || origin === url.origin;
   }
 
+  private commandErrorResponse(
+    value: unknown,
+    options: { requestId?: string | null; status?: number; identityBefore?: EditorMcpProjectIdentity; documentRevisionBefore?: number | null } = {},
+  ): Response {
+    const classified = classifyEditorMcpError(value);
+    const envelope = createEditorMcpErrorEnvelope({
+      requestId: options.requestId,
+      projectIdentityBefore: options.identityBefore ?? projectIdentity(this.state, process.pid),
+      projectIdentityAfter: projectIdentity(this.state, process.pid),
+      documentRevisionBefore: options.documentRevisionBefore ?? this.state?.documentRevision ?? null,
+      documentRevisionAfter: this.state?.documentRevision ?? null,
+      error: classified,
+      saveState: this.state?.saveState ?? null,
+    });
+    return json({ ...envelope, message: classified.message, code: classified.code }, options.status ?? statusForMcpError(classified.code));
+  }
+
   private async receiveState(request: Request): Promise<Response> {
     try {
       const body = await readBoundedBody(request, MAX_STATE_BODY_BYTES);
@@ -154,7 +215,7 @@ export class SpineEditorMcpBridge {
         if (pending && id) {
           clearTimeout(pending.timer);
           this.pending.delete(id);
-          pending.resolve(errorResponse("Editor command result exceeded the 1 MiB response limit.", 502));
+          pending.resolve(this.commandErrorResponse("Editor command result exceeded the 1 MiB response limit.", { requestId: id, status: 502, identityBefore: pending.identityBefore, documentRevisionBefore: pending.documentRevisionBefore }));
         }
         return errorResponse("Editor command result exceeds the 2 MiB transport limit.", 413);
       }
@@ -166,15 +227,44 @@ export class SpineEditorMcpBridge {
       if (resultBytes > MAX_COMMAND_RESULT_BYTES) {
         clearTimeout(pending.timer);
         this.pending.delete(value.id);
-        pending.resolve(errorResponse("Editor command result exceeded the 1 MiB response limit.", 502));
+        pending.resolve(this.commandErrorResponse("Editor command result exceeded the 1 MiB response limit.", { requestId: value.id, status: 502, identityBefore: pending.identityBefore, documentRevisionBefore: pending.documentRevisionBefore }));
         return errorResponse("Editor command result exceeds the 1 MiB response limit.", 413);
       }
       clearTimeout(pending.timer);
       this.pending.delete(value.id);
       if (typeof value.error === "string" && value.error) {
-        const staleRevision = value.error.startsWith("MCP_STALE_DOCUMENT_REVISION:");
-        pending.resolve(json({ error: value.error, ...(staleRevision ? { code: "stale_document_revision" } : {}) }, staleRevision ? 409 : 400));
-      } else pending.resolve(json({ result: value.result ?? null }));
+        const classified = classifyEditorMcpError(value.error);
+        pending.resolve(this.commandErrorResponse(classified, { requestId: value.id, status: statusForMcpError(classified.code), identityBefore: pending.identityBefore, documentRevisionBefore: pending.documentRevisionBefore }));
+      } else {
+        const rawResult = value.result ?? null;
+        const resultRecord = record(rawResult) ? rawResult : {};
+        const resultIds = collectEntityIds(rawResult);
+        const createdFieldsByCommand: Partial<Record<EditorMcpCommandName, string[]>> = {
+          add_interaction: ["interactionId", "regionIds"], duplicate_interaction: ["interactionId"], add_region: ["regionId"], duplicate_region: ["regionId"],
+          create_talk_sequence: ["sequenceId"], add_audio_clip: ["audioId"], duplicate_audio_clip: ["audioId"], create_spine_layer: ["layerId"],
+          add_animation_clip: ["clipId"], duplicate_animation_clip: ["clipId"], add_subtitle_cue: ["cueId"], duplicate_subtitle_cue: ["cueId"], split_subtitle_cue: ["secondCueId"],
+          add_color_layer: ["layerId"], add_color_clip: ["clipId"], duplicate_color_clip: ["clipId"],
+        };
+        const createdEntityIds = (createdFieldsByCommand[pending.command.name] ?? []).flatMap((field) => {
+          const fieldValue = resultRecord[field];
+          return typeof fieldValue === "string" ? [fieldValue] : Array.isArray(fieldValue) ? fieldValue.filter((item): item is string => typeof item === "string") : [];
+        });
+        const warnings = Array.isArray(resultRecord.warnings) ? resultRecord.warnings.filter((item): item is string => typeof item === "string") : [];
+        const envelope = createEditorMcpResultEnvelope({
+          requestId: value.id,
+          projectIdentityBefore: pending.identityBefore,
+          projectIdentityAfter: projectIdentity(this.state, process.pid),
+          documentRevisionBefore: pending.documentRevisionBefore,
+          documentRevisionAfter: this.state?.documentRevision ?? null,
+          result: rawResult,
+          affectedEntityIds: [...collectEntityIds(pending.command), ...resultIds],
+          createdEntityIds,
+          warnings,
+          normalization: resultRecord.normalization ?? null,
+          saveState: this.state?.saveState ?? null,
+        });
+        pending.resolve(successResponse(envelope));
+      }
       return json({ ok: true });
     } catch (value) {
       return errorResponse(value);
@@ -182,23 +272,30 @@ export class SpineEditorMcpBridge {
   }
 
   private async dispatchCommand(request: Request): Promise<Response> {
+    const requestId = crypto.randomUUID();
+    let identityBefore = projectIdentity(this.state, process.pid);
+    let documentRevisionBefore = this.state?.documentRevision ?? null;
     try {
       const body = await readBoundedBody(request, MAX_COMMAND_BODY_BYTES);
-      if (body.tooLarge) return errorResponse("MCP command exceeds the 2 MiB request limit.", 413);
+      if (body.tooLarge) return this.commandErrorResponse("MCP command exceeds the 2 MiB request limit.", { requestId, status: 413, identityBefore, documentRevisionBefore });
       const value = JSON.parse(body.text) as unknown;
-      if (!record(value) || !record(value.command) || typeof value.command.name !== "string") return errorResponse("A named editor command is required.");
-      const command = normalizeEditorMcpCommand(value.command);
+      if (!record(value) || !record(value.command) || typeof value.command.name !== "string") return this.commandErrorResponse("A named editor command is required.", { requestId, identityBefore, documentRevisionBefore });
+      const operation = EDITOR_MCP_OPERATION_REGISTRY[value.command.name as EditorMcpCommandName];
+      if (!operation) return this.commandErrorResponse(`Unsupported Editor MCP command: ${value.command.name}.`, { requestId, identityBefore, documentRevisionBefore });
+      const command = operation.inputSchema(value.command);
       const expectedDocumentRevision = value.expectedDocumentRevision;
-      if (expectedDocumentRevision !== undefined && (typeof expectedDocumentRevision !== "number" || !Number.isSafeInteger(expectedDocumentRevision) || expectedDocumentRevision < 0)) return errorResponse("expectedDocumentRevision must be a non-negative safe integer.");
-      if (EDITOR_MCP_REVISION_REQUIRED_COMMANDS.has(command.name) && expectedDocumentRevision === undefined) return errorResponse("expectedDocumentRevision is required for this authored project operation.");
-      if (command.name === "open_asset_root" && !isAbsolute(command.rootPath)) return errorResponse("Asset root paths must be absolute.");
-      if (this.queue.length >= 32) return errorResponse("The editor command queue is full.", 429);
-      if (!this.state || Date.now() - this.stateUpdatedAt >= 5000) return errorResponse("The editor UI is not connected yet.", 503);
+      if (expectedDocumentRevision !== undefined && (typeof expectedDocumentRevision !== "number" || !Number.isSafeInteger(expectedDocumentRevision) || expectedDocumentRevision < 0)) return this.commandErrorResponse("expectedDocumentRevision must be a non-negative safe integer.", { requestId, identityBefore, documentRevisionBefore });
+      if (operation.revisionRequired && expectedDocumentRevision === undefined) return this.commandErrorResponse("expectedDocumentRevision is required for this authored project operation.", { requestId, identityBefore, documentRevisionBefore });
+      if (command.name === "open_asset_root" && !isAbsolute(command.rootPath)) return this.commandErrorResponse("Asset root paths must be absolute.", { requestId, identityBefore, documentRevisionBefore });
+      if (this.queue.length >= 32) return this.commandErrorResponse("The editor command queue is full.", { requestId, status: 429, identityBefore, documentRevisionBefore });
+      if (!this.state || Date.now() - this.stateUpdatedAt >= 5000) return this.commandErrorResponse("The editor UI is not connected yet.", { requestId, status: 503, identityBefore, documentRevisionBefore });
+      identityBefore = projectIdentity(this.state, process.pid);
+      documentRevisionBefore = this.state.documentRevision ?? null;
       if (expectedDocumentRevision !== undefined && this.state.documentRevision !== expectedDocumentRevision) {
-        return json({ error: `The project changed after this operation was prepared (expected revision ${expectedDocumentRevision}, current revision ${this.state.documentRevision ?? "unknown"}). Re-read editor_state and review the change.`, code: "stale_document_revision", expectedDocumentRevision, actualDocumentRevision: this.state.documentRevision ?? null }, 409);
+        return this.commandErrorResponse({ code: "stale_document_revision", message: `The project changed after this operation was prepared (expected revision ${expectedDocumentRevision}, current revision ${this.state.documentRevision ?? "unknown"}). Re-read editor_state and review the change.`, details: { expectedDocumentRevision, actualDocumentRevision: this.state.documentRevision ?? null } }, { requestId, status: 409, identityBefore, documentRevisionBefore });
       }
 
-      const id = crypto.randomUUID();
+      const id = requestId;
       const expiresAt = Date.now() + this.commandTimeoutMs;
       return await new Promise<Response>((resolve) => {
         const timer = setTimeout(() => {
@@ -206,15 +303,15 @@ export class SpineEditorMcpBridge {
           const started = pending?.started === true;
           this.pending.delete(id);
           if (!started) this.removeQueuedCommand(id);
-          resolve(errorResponse(started
+          resolve(this.commandErrorResponse(started
             ? `The editor started “${command.name}” but did not return within ${Math.round(this.commandTimeoutMs / 1000)} seconds. Its outcome may be unknown; inspect editor_state before retrying.`
-            : `The editor did not start “${command.name}” within ${Math.round(this.commandTimeoutMs / 1000)} seconds. The queued command was canceled and will not execute later.`, 504));
+            : `The editor did not start “${command.name}” within ${Math.round(this.commandTimeoutMs / 1000)} seconds. The queued command was canceled and will not execute later.`, { requestId: id, status: 504, identityBefore, documentRevisionBefore }));
         }, this.commandTimeoutMs);
-        this.pending.set(id, { resolve, timer, started: false });
+        this.pending.set(id, { resolve, timer, started: false, command, identityBefore, documentRevisionBefore });
         this.queue.push({ id, command, expiresAt, ...(expectedDocumentRevision === undefined ? {} : { expectedDocumentRevision }) });
       });
     } catch (value) {
-      return errorResponse(value);
+      return this.commandErrorResponse(value, { requestId, identityBefore, documentRevisionBefore });
     }
   }
 

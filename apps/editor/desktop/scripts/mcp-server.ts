@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { mcpConnectionFiles, removeMcpConnectionFile } from "../src/bun/mcpBridge";
-import { EDITOR_MCP_REVISION_REQUIRED_COMMANDS, type EditorMcpCommand, type EditorMcpConnectionInfo, type EditorMcpState } from "@ba-spine/editor-feature/editorMcp";
+import { classifyEditorMcpError, createEditorMcpErrorEnvelope, createEditorMcpResultEnvelope, EDITOR_MCP_OPERATION_REGISTRY, EDITOR_MCP_REVISION_REQUIRED_COMMANDS, type EditorMcpCommand, type EditorMcpConnectionInfo, type EditorMcpErrorEnvelope, type EditorMcpProjectIdentity, type EditorMcpResultEnvelope, type EditorMcpState } from "@ba-spine/editor-feature/editorMcp";
 
 interface HostConnection extends EditorMcpConnectionInfo {
   baseUrl: string;
@@ -14,6 +14,7 @@ interface HostConnection extends EditorMcpConnectionInfo {
 }
 
 let activeConnection: HostConnection | null = null;
+let lastKnownEditorState: EditorMcpState | null = null;
 const subtitleImportRevisions = new Map<string, number>();
 const registeredToolNames: string[] = [];
 const idempotentRequests = new Map<string, { fingerprint: string; promise: Promise<unknown> }>();
@@ -92,12 +93,19 @@ async function requestHost<T>(connection: HostConnection, path: string, init?: R
   } catch (value) {
     throw new HostUnavailableError(`Could not reach editor PID ${connection.pid} on port ${connection.port}: ${value instanceof Error ? value.message : String(value)}`);
   }
-  const payload = await response.json().catch(() => ({})) as { error?: string; code?: string; result?: T; state?: T };
+  const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok) {
-    const error = new Error(payload.error ?? `Editor MCP request failed (${response.status}).`);
-    if (payload.code) Object.assign(error, { code: payload.code });
+    const errorValue = payload.error;
+    const message = errorValue && typeof errorValue === "object" && "message" in errorValue && typeof errorValue.message === "string"
+      ? errorValue.message
+      : typeof payload.message === "string" ? payload.message : typeof errorValue === "string" ? errorValue : `Editor MCP request failed (${response.status}).`;
+    const error = new Error(message);
+    const code = errorValue && typeof errorValue === "object" && "code" in errorValue ? errorValue.code : payload.code;
+    if (typeof code === "string") Object.assign(error, { code });
+    if (payload.envelopeVersion === 1) Object.assign(error, { envelope: payload });
     throw error;
   }
+  if (payload.envelopeVersion === 1) return payload as T;
   return ("state" in payload ? payload.state : "result" in payload ? payload.result : payload) as T;
 }
 
@@ -109,6 +117,7 @@ async function hostRequest<T>(path: string, init?: RequestInit): Promise<T> {
     if (hosts.length > 1) throw new Error("More than one Editor is running. Call editor_list_hosts, then editor_select_host with the intended PID and port before issuing commands.");
     connection = hosts[0]!;
     activeConnection = connection;
+    lastKnownEditorState = null;
   }
   try {
     return await requestHost<T>(connection, path, init);
@@ -149,7 +158,9 @@ async function dispatchCommand<T>(command: EditorMcpCommand, expectedDocumentRev
 }
 
 async function editorState(): Promise<EditorMcpState> {
-  return hostRequest<EditorMcpState>("/__spine/mcp/state");
+  const state = await hostRequest<EditorMcpState>("/__spine/mcp/state");
+  lastKnownEditorState = state;
+  return state;
 }
 
 async function editorProjectDocument() {
@@ -281,28 +292,69 @@ async function waitForState(predicate: (state: EditorMcpState) => boolean, descr
   throw new Error(`Timed out waiting for ${description}.${lastError ? ` Last state error: ${lastError}` : ""}`);
 }
 
-function result(value: unknown) {
-  const structured = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : { value };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function projectIdentity(state: EditorMcpState | null): EditorMcpProjectIdentity {
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    hostPid: activeConnection?.pid ?? null,
+    assetRoot: state?.assetRoot ?? null,
+    directory: state?.directory ?? null,
+    projectName: state?.projectName ?? null,
+  };
+}
+
+function flattenEnvelope<T>(envelope: EditorMcpResultEnvelope<T>): Record<string, unknown> {
+  const legacyFields = isRecord(envelope.result) ? envelope.result : { value: envelope.result };
+  return { ...legacyFields, ...envelope };
+}
+
+function result(value: unknown) {
+  let envelope: EditorMcpResultEnvelope<unknown>;
+  if (isRecord(value) && value.envelopeVersion === 1 && value.ok === true) envelope = value as unknown as EditorMcpResultEnvelope<unknown>;
+  else {
+    const state = lastKnownEditorState;
+    const identity = projectIdentity(state);
+    const documentRevision = state?.documentRevision ?? null;
+    envelope = createEditorMcpResultEnvelope({
+      requestId: crypto.randomUUID(),
+      projectIdentityBefore: identity,
+      projectIdentityAfter: identity,
+      documentRevisionBefore: documentRevision,
+      documentRevisionAfter: documentRevision,
+      result: value,
+      saveState: state?.saveState ?? null,
+    });
+  }
+  const structured = flattenEnvelope(envelope);
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(structured, null, 2) }],
     structuredContent: structured,
   };
 }
 
 function failed(value: unknown) {
   const message = value instanceof Error ? value.message : String(value);
-  const explicitCode = value && typeof value === "object" && "code" in value && typeof value.code === "string" ? value.code : undefined;
-  const normalized = message.toLocaleLowerCase();
-  const code = explicitCode
-    ?? (normalized.includes("stale") && normalized.includes("revision") ? "stale_document_revision"
-      : normalized.includes("locked") ? "locked_entity"
-        : normalized.includes("not found") || normalized.includes("reference") ? "invalid_reference"
-          : normalized.includes("conflict") || normalized.includes("external changes") ? "external_conflict"
-            : normalized.includes("not ready") || normalized.includes("not mounted") || normalized.includes("unavailable") ? "capability_unavailable"
-              : "editor_command_failed");
+  const attached = isRecord(value) && isRecord(value.envelope) && value.envelope.envelopeVersion === 1 && value.envelope.ok === false
+    ? value.envelope as unknown as EditorMcpErrorEnvelope
+    : null;
+  const classified = classifyEditorMcpError(value);
+  const state = lastKnownEditorState;
+  const identity = projectIdentity(state);
+  const errorEnvelope = attached ?? createEditorMcpErrorEnvelope({
+    requestId: null,
+    projectIdentityBefore: identity,
+    projectIdentityAfter: identity,
+    documentRevisionBefore: state?.documentRevision ?? null,
+    documentRevisionAfter: state?.documentRevision ?? null,
+    error: classified,
+    saveState: state?.saveState ?? null,
+  });
+  const structured = { ...errorEnvelope, message, code: errorEnvelope.error.code };
   return {
     content: [{ type: "text" as const, text: message }],
-    structuredContent: { code, message },
+    structuredContent: structured,
     isError: true,
   };
 }
@@ -423,6 +475,7 @@ server.registerTool(trackToolName("editor_select_host"), {
     const host = (await discoverHosts()).find((candidate) => candidate.pid === pid && candidate.port === port);
     if (!host) throw new Error(`No running editor MCP host was found for PID ${pid} on port ${port}. Refresh editor_list_hosts and try again.`);
     activeConnection = host;
+    lastKnownEditorState = null;
     return result({ pid, port, uiConnected: host.uiConnected, selected: true });
   } catch (value) { return failed(value); }
 });
@@ -454,14 +507,16 @@ server.registerTool(trackToolName("editor_capabilities"), {
         project: registeredToolNames.filter((name) => /project|undo|redo|asset_root|asset_set/.test(name)),
         interactions: registeredToolNames.filter((name) => /interaction|region|look_follow/.test(name)),
         behaviors: registeredToolNames.filter((name) => /behavior/.test(name)),
-         timeline: registeredToolNames.filter((name) => /sequence|animation|spine_layer|visual_layer|timeline_items|color|preview|seek|playback/.test(name)),
+        timeline: registeredToolNames.filter((name) => /sequence|animation|spine_layer|visual_layer|timeline_items|color|preview|seek|playback/.test(name)),
         audio: registeredToolNames.filter((name) => /audio/.test(name)),
         subtitles: registeredToolNames.filter((name) => /subtitle/.test(name)),
         camera: registeredToolNames.filter((name) => /camera/.test(name)),
         persistence: registeredToolNames.filter((name) => /save|recovery|project/.test(name)),
         diagnostics: registeredToolNames.filter((name) => /validate|analyze|profile/.test(name)),
       },
-        availability: { editorRunning: true, uiConnected: true, activeWorkspace: state.workspace, timelineWorkspaceMounted: state.timeline !== null, cameraWorkspaceMounted: state.workspace === "camera" && state.timeline !== null, assetLoaded: state.directory !== null, waveformProfilingBuild: state.waveformProfilingAvailable === true },
+      operationRegistry: Object.values(EDITOR_MCP_OPERATION_REGISTRY).map(({ name, toolName, description, mutation, revisionRequired, domain, workspace, handler, resultShape, annotations }) => ({ name, toolName, description, mutation, revisionRequired, domain, workspace, handler, resultShape, annotations })),
+      resultContract: { envelopeVersion: 1, success: "EditorMcpResultEnvelope", errorCodes: ["stale_document_revision", "invalid_reference", "locked_entity", "renderer_unavailable", "external_conflict", "unsupported_capability", "invalid_command", "revision_required", "command_timeout", "bridge_unavailable", "editor_command_failed"] },
+      availability: { editorRunning: true, uiConnected: true, activeWorkspace: state.workspace, timelineWorkspaceMounted: state.timeline !== null, cameraWorkspaceMounted: state.workspace === "camera" && state.timeline !== null, assetLoaded: state.directory !== null, waveformProfilingBuild: state.waveformProfilingAvailable === true },
       savePolicy: "explicit-save; external file changes are conflicts; written paths are read back and verified",
     });
   } catch (value) { return failed(value); }

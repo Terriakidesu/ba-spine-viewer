@@ -1,9 +1,57 @@
 import { describe, expect, test } from "bun:test";
-import { assertMcpTimelineLocksPreserved, EDITOR_MCP_REVISION_REQUIRED_COMMANDS, editorDocumentFingerprint, normalizeEditorMcpCommand } from "./editorMcp";
+import { assertMcpTimelineLocksPreserved, classifyEditorMcpError, createEditorMcpErrorEnvelope, createEditorMcpResultEnvelope, EDITOR_MCP_OPERATION_REGISTRY, EDITOR_MCP_REVISION_REQUIRED_COMMANDS, editorDocumentFingerprint, normalizeEditorMcpCommand } from "./editorMcp";
 import { createProject } from "./editorModel";
 import { switchSequence } from "./sequenceModel";
 
 describe("editor MCP command validation", () => {
+  test("shares typed operation policy, revision requirements, and stable result/error envelopes", () => {
+    const getProject = EDITOR_MCP_OPERATION_REGISTRY.get_project;
+    const deleteInteraction = EDITOR_MCP_OPERATION_REGISTRY.delete_interaction;
+    expect(getProject.inputSchema({ name: "get_project" })).toEqual({ name: "get_project" });
+    expect(() => getProject.inputSchema({ name: "get_project", extra: true })).toThrow();
+    expect(getProject).toMatchObject({ mutation: "none", revisionRequired: false, domain: "project", workspace: "any", handler: "editor", resultShape: "EditorMcpResultEnvelope<unknown>" });
+    expect(deleteInteraction).toMatchObject({ mutation: "authored", revisionRequired: true, domain: "interaction" });
+    expect(EDITOR_MCP_REVISION_REQUIRED_COMMANDS.has(deleteInteraction.name)).toBe(true);
+
+    const identity = { hostPid: 123, assetRoot: "D:/assets", directory: "Aru_home", projectName: "Aru" };
+    expect(createEditorMcpResultEnvelope({
+      requestId: "request-1",
+      projectIdentityBefore: identity,
+      projectIdentityAfter: identity,
+      documentRevisionBefore: 4,
+      documentRevisionAfter: 5,
+      result: { interactionId: "interaction-1", created: true },
+      affectedEntityIds: ["interaction-1", "interaction-1"],
+      createdEntityIds: ["interaction-1"],
+      warnings: ["normalized"],
+      normalization: { changed: true },
+      saveState: "dirty",
+    })).toEqual({
+      envelopeVersion: 1,
+      ok: true,
+      requestId: "request-1",
+      projectIdentity: { before: identity, after: identity },
+      documentRevisions: { before: 4, after: 5 },
+      result: { interactionId: "interaction-1", created: true },
+      affectedEntityIds: ["interaction-1"],
+      createdEntityIds: ["interaction-1"],
+      warnings: ["normalized"],
+      normalization: { changed: true },
+      saveState: "dirty",
+    });
+    expect(classifyEditorMcpError({ code: "stale_document_revision", message: "Stale", details: { expected: 4 } })).toEqual({ code: "stale_document_revision", message: "Stale", details: { expected: 4 } });
+    expect(classifyEditorMcpError(new Error("Camera evaluation requires the Camera workspace."))).toMatchObject({ code: "renderer_unavailable" });
+    expect(classifyEditorMcpError(new Error("Audio asset discovery is unavailable from this source."))).toMatchObject({ code: "unsupported_capability" });
+    expect(classifyEditorMcpError(new Error("The editor UI is not connected yet."))).toMatchObject({ code: "bridge_unavailable" });
+    expect(createEditorMcpErrorEnvelope({ error: classifyEditorMcpError(new Error("The Spine layer is locked.")), requestId: "request-2", projectIdentityBefore: identity, documentRevisionBefore: 5 })).toMatchObject({
+      envelopeVersion: 1,
+      ok: false,
+      requestId: "request-2",
+      documentRevisions: { before: 5, after: 5 },
+      error: { code: "locked_entity", message: "The Spine layer is locked." },
+    });
+  });
+
   test("accepts project inspection commands without allowing extra fields", () => {
     expect(normalizeEditorMcpCommand({ name: "get_project" })).toEqual({ name: "get_project" });
     expect(() => normalizeEditorMcpCommand({ name: "get_project", project: true })).toThrow();

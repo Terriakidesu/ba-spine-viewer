@@ -238,14 +238,244 @@ export type EditorMcpCommand =
   | { name: "start_waveform_profile" }
   | { name: "stop_waveform_profile" };
 
-/** Commands whose result depends on a reviewed authored-document revision. */
-export const EDITOR_MCP_REVISION_REQUIRED_COMMANDS: ReadonlySet<EditorMcpCommand["name"]> = new Set([
-  "preview_change_set", "apply_change_set", "restore_recovery", "open_project_file", "open_asset_root", "select_asset_set", "undo", "redo",
-  "add_interaction", "update_interaction", "duplicate_interaction", "delete_interaction", "add_region", "update_region", "duplicate_region", "delete_region", "update_look_follow", "replace_behavior_machines",
-  "create_talk_sequence", "delete_sequence", "reorder_sequences", "replace_sequence", "update_camera_track", "update_project_settings", "add_audio_clip", "duplicate_audio_clip", "update_audio_clip", "delete_audio_clip", "link_audio_subtitle", "match_audio_length",
-  "create_spine_layer", "delete_spine_layer", "duplicate_animation_clip", "update_spine_layer", "add_animation_clip", "update_animation_clip", "move_animation_clip", "delete_animation_clip",
-  "add_subtitle_cue", "update_subtitle_cue", "delete_subtitle_cue", "duplicate_subtitle_cue", "split_subtitle_cue", "set_timeline_items_enabled", "delete_timeline_items", "apply_subtitle_import", "reorder_visual_layer", "add_color_layer", "add_color_clip", "update_color_layer", "update_color_clip", "duplicate_color_clip", "delete_color_clip", "delete_color_layer", "select_sequence", "save",
-]);
+export type EditorMcpCommandName = EditorMcpCommand["name"];
+export type EditorMcpMutationCategory = "none" | "authored" | "temporary" | "lifecycle" | "filesystem" | "review";
+export type EditorMcpWorkspaceRequirement = "any" | "timeline-mounted" | "camera-workspace" | "interaction-renderer" | "waveform-profiling-build";
+export type EditorMcpHandler = "editor" | "editor-or-timeline" | "timeline-renderer";
+
+export interface EditorMcpProjectIdentity {
+  hostPid: number | null;
+  assetRoot: string | null;
+  directory: string | null;
+  projectName: string | null;
+}
+
+export interface EditorMcpResultEnvelope<T> {
+  envelopeVersion: 1;
+  ok: true;
+  requestId: string;
+  projectIdentity: { before: EditorMcpProjectIdentity; after: EditorMcpProjectIdentity };
+  documentRevisions: { before: number | null; after: number | null };
+  result: T;
+  affectedEntityIds: string[];
+  createdEntityIds: string[];
+  warnings: string[];
+  normalization: unknown | null;
+  saveState: string | null;
+}
+
+export type EditorMcpErrorCode =
+  | "stale_document_revision"
+  | "invalid_reference"
+  | "locked_entity"
+  | "renderer_unavailable"
+  | "external_conflict"
+  | "unsupported_capability"
+  | "invalid_command"
+  | "revision_required"
+  | "command_timeout"
+  | "bridge_unavailable"
+  | "editor_command_failed";
+
+export interface EditorMcpErrorEnvelope {
+  envelopeVersion: 1;
+  ok: false;
+  requestId: string | null;
+  projectIdentity: { before: EditorMcpProjectIdentity; after: EditorMcpProjectIdentity };
+  documentRevisions: { before: number | null; after: number | null };
+  error: { code: EditorMcpErrorCode; message: string; details?: unknown };
+  saveState: string | null;
+}
+
+export function createEditorMcpResultEnvelope<T>(input: {
+  requestId: string;
+  projectIdentityBefore: EditorMcpProjectIdentity;
+  projectIdentityAfter: EditorMcpProjectIdentity;
+  documentRevisionBefore: number | null;
+  documentRevisionAfter: number | null;
+  result: T;
+  affectedEntityIds?: string[];
+  createdEntityIds?: string[];
+  warnings?: string[];
+  normalization?: unknown;
+  saveState?: string | null;
+}): EditorMcpResultEnvelope<T> {
+  return {
+    envelopeVersion: 1,
+    ok: true,
+    requestId: input.requestId,
+    projectIdentity: { before: input.projectIdentityBefore, after: input.projectIdentityAfter },
+    documentRevisions: { before: input.documentRevisionBefore, after: input.documentRevisionAfter },
+    result: input.result,
+    affectedEntityIds: [...new Set(input.affectedEntityIds ?? [])],
+    createdEntityIds: [...new Set(input.createdEntityIds ?? [])],
+    warnings: [...(input.warnings ?? [])],
+    normalization: input.normalization ?? null,
+    saveState: input.saveState ?? null,
+  };
+}
+
+export function createEditorMcpErrorEnvelope(input: {
+  requestId?: string | null;
+  projectIdentityBefore?: EditorMcpProjectIdentity;
+  projectIdentityAfter?: EditorMcpProjectIdentity;
+  documentRevisionBefore?: number | null;
+  documentRevisionAfter?: number | null;
+  error: { code: EditorMcpErrorCode; message: string; details?: unknown };
+  saveState?: string | null;
+}): EditorMcpErrorEnvelope {
+  const emptyIdentity: EditorMcpProjectIdentity = { hostPid: null, assetRoot: null, directory: null, projectName: null };
+  return {
+    envelopeVersion: 1,
+    ok: false,
+    requestId: input.requestId ?? null,
+    projectIdentity: { before: input.projectIdentityBefore ?? emptyIdentity, after: input.projectIdentityAfter ?? input.projectIdentityBefore ?? emptyIdentity },
+    documentRevisions: { before: input.documentRevisionBefore ?? null, after: input.documentRevisionAfter ?? input.documentRevisionBefore ?? null },
+    error: input.error,
+    saveState: input.saveState ?? null,
+  };
+}
+
+export function classifyEditorMcpError(value: unknown): { code: EditorMcpErrorCode; message: string; details?: unknown } {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  const message = value instanceof Error ? value.message : typeof record?.message === "string" ? record.message : String(value);
+  const explicitCode = record?.code;
+  const supportedCodes: EditorMcpErrorCode[] = ["stale_document_revision", "invalid_reference", "locked_entity", "renderer_unavailable", "external_conflict", "unsupported_capability", "invalid_command", "revision_required", "command_timeout", "bridge_unavailable", "editor_command_failed"];
+  if (typeof explicitCode === "string" && supportedCodes.includes(explicitCode as EditorMcpErrorCode)) return { code: explicitCode as EditorMcpErrorCode, message, ...(record?.details === undefined ? {} : { details: record.details }) };
+  const normalized = message.toLocaleLowerCase();
+  const code: EditorMcpErrorCode = normalized.includes("stale") && normalized.includes("revision") ? "stale_document_revision"
+    : normalized.includes("locked") ? "locked_entity"
+      : normalized.includes("not found") || normalized.includes("reference") ? "invalid_reference"
+        : normalized.includes("conflict") || normalized.includes("external changes") ? "external_conflict"
+          : normalized.includes("timeout") || normalized.includes("did not start") || normalized.includes("outcome may be unknown") ? "command_timeout"
+            : normalized.includes("no running editor") || normalized.includes("not connected") || normalized.includes("desktop editor closed") || normalized.includes("bridge unavailable") || normalized.includes("unauthorized") ? "bridge_unavailable"
+              : normalized.includes("renderer") || normalized.includes("not mounted") || normalized.includes("not ready") || normalized.includes("workspace") && (normalized.includes("requires") || normalized.includes("not active")) ? "renderer_unavailable"
+                : normalized.includes("unsupported") || normalized.includes("unavailable") || normalized.includes("not enabled in this editor build") ? "unsupported_capability"
+                  : normalized.includes("expecteddocumentrevision is required") ? "revision_required"
+                    : normalized.includes("must be") || normalized.includes("unexpected") || normalized.includes("requires") || normalized.includes("invalid") ? "invalid_command"
+                      : "editor_command_failed";
+  return { code, message, ...(record?.details === undefined ? {} : { details: record.details }) };
+}
+
+export interface EditorMcpOperationDefinition<K extends EditorMcpCommandName = EditorMcpCommandName> {
+  name: K;
+  toolName: string;
+  description: string;
+  mutation: EditorMcpMutationCategory;
+  revisionRequired: boolean;
+  domain: "project" | "interaction" | "behavior" | "timeline" | "audio" | "subtitles" | "camera" | "diagnostics";
+  workspace: EditorMcpWorkspaceRequirement;
+  handler: EditorMcpHandler;
+  resultShape: "EditorMcpResultEnvelope<unknown>";
+  annotations: { readOnlyHint: boolean; idempotentHint: boolean; destructiveHint: boolean; openWorldHint: false };
+  inputSchema: (value: unknown) => Extract<EditorMcpCommand, { name: K }>;
+}
+
+const COMMAND_MUTATION_GROUPS = {
+  none: ["get_project", "validate_project", "inspect_recovery", "list_audio_assets", "evaluate_camera_track"],
+  authored: [
+    "apply_change_set", "undo", "redo", "add_interaction", "update_interaction", "duplicate_interaction", "delete_interaction", "add_region", "update_region", "duplicate_region", "delete_region", "update_look_follow", "replace_behavior_machines",
+    "create_talk_sequence", "delete_sequence", "reorder_sequences", "replace_sequence", "update_camera_track", "update_project_settings", "add_audio_clip", "duplicate_audio_clip", "update_audio_clip", "delete_audio_clip", "link_audio_subtitle", "match_audio_length",
+    "create_spine_layer", "delete_spine_layer", "duplicate_animation_clip", "duplicate_color_clip", "delete_color_clip", "delete_color_layer", "duplicate_subtitle_cue", "split_subtitle_cue", "set_timeline_items_enabled", "delete_timeline_items",
+    "update_spine_layer", "add_animation_clip", "update_animation_clip", "move_animation_clip", "delete_animation_clip", "add_subtitle_cue", "update_subtitle_cue", "delete_subtitle_cue", "apply_subtitle_import", "reorder_visual_layer", "add_color_layer", "add_color_clip", "update_color_layer", "update_color_clip",
+  ],
+  temporary: [
+    "select_interaction", "select_region", "preview_interaction_phase", "start_interaction_test", "move_interaction_test", "release_interaction_test", "cancel_interaction_test", "test_look_follow", "inject_behavior_event", "cancel_behavior_test",
+    "frame_camera_item", "preview_audio_clip", "stop_audio_preview", "set_workspace", "select_sequence", "seek", "set_playback", "set_preview_view", "zoom_preview", "pan_preview", "reset_preview", "select_visual", "select_subtitle_cue", "preview_subtitle_import", "capture_preview", "start_waveform_profile", "stop_waveform_profile",
+  ],
+  lifecycle: ["restore_recovery", "open_project_file", "open_asset_root", "select_asset_set"],
+  filesystem: ["save"],
+  review: ["preview_change_set"],
+} as const satisfies Record<EditorMcpMutationCategory, readonly EditorMcpCommandName[]>;
+
+const MCP_TOOL_NAME_BY_COMMAND = {
+  get_project: "editor_get_project", validate_project: "editor_validate", preview_change_set: "editor_preview_change_set", apply_change_set: "editor_apply_change_set",
+  inspect_recovery: "editor_inspect_recovery", restore_recovery: "editor_restore_recovery", open_project_file: "editor_open_project_file", undo: "editor_undo", redo: "editor_redo",
+  add_interaction: "editor_add_interaction", update_interaction: "editor_update_interaction", duplicate_interaction: "editor_duplicate_interaction", delete_interaction: "editor_delete_interaction", select_interaction: "editor_select_interaction",
+  add_region: "editor_add_region", update_region: "editor_update_region", duplicate_region: "editor_duplicate_region", delete_region: "editor_delete_region", select_region: "editor_select_region", update_look_follow: "editor_update_look_follow",
+  replace_behavior_machines: "editor_replace_behavior_machines", create_talk_sequence: "editor_create_talk_sequence", delete_sequence: "editor_delete_sequence", reorder_sequences: "editor_reorder_sequences", replace_sequence: "editor_replace_sequence",
+  update_camera_track: "editor_update_camera_track", evaluate_camera_track: "editor_evaluate_camera_track", frame_camera_item: "editor_frame_camera_item", update_project_settings: "editor_update_project_settings",
+  add_audio_clip: "editor_add_audio_clip", duplicate_audio_clip: "editor_duplicate_audio_clip", update_audio_clip: "editor_update_audio_clip", delete_audio_clip: "editor_delete_audio_clip", link_audio_subtitle: "editor_link_audio_subtitle", list_audio_assets: "editor_list_audio_assets", match_audio_length: "editor_match_audio_length", preview_audio_clip: "editor_preview_audio_clip", stop_audio_preview: "editor_stop_audio_preview",
+  create_spine_layer: "editor_create_spine_layer", delete_spine_layer: "editor_delete_spine_layer", duplicate_animation_clip: "editor_duplicate_animation_clip", duplicate_color_clip: "editor_duplicate_color_clip", delete_color_clip: "editor_delete_color_clip", delete_color_layer: "editor_delete_color_layer", duplicate_subtitle_cue: "editor_duplicate_subtitle_cue", select_subtitle_cue: "editor_select_subtitle_cue", split_subtitle_cue: "editor_split_subtitle_cue", set_timeline_items_enabled: "editor_set_timeline_items_enabled", delete_timeline_items: "editor_delete_timeline_items",
+  preview_interaction_phase: "editor_preview_interaction_phase", start_interaction_test: "editor_start_interaction_test", move_interaction_test: "editor_move_interaction_test", release_interaction_test: "editor_release_interaction_test", cancel_interaction_test: "editor_cancel_interaction_test", test_look_follow: "editor_test_look_follow", inject_behavior_event: "editor_inject_behavior_event", cancel_behavior_test: "editor_cancel_behavior_test",
+  open_asset_root: "editor_open_asset_root", select_asset_set: "editor_select_asset_set", set_workspace: "editor_set_workspace", select_sequence: "editor_select_sequence", seek: "editor_seek", set_playback: "editor_set_playback", set_preview_view: "editor_set_preview_view", zoom_preview: "editor_zoom_preview", pan_preview: "editor_pan_preview", reset_preview: "editor_reset_preview", select_visual: "editor_select_visual_layer", update_spine_layer: "editor_update_spine_layer", add_animation_clip: "editor_add_animation_clip", update_animation_clip: "editor_update_animation_clip", move_animation_clip: "editor_move_animation_clip", delete_animation_clip: "editor_delete_animation_clip", add_subtitle_cue: "editor_add_subtitle_cue", update_subtitle_cue: "editor_update_subtitle_cue", delete_subtitle_cue: "editor_delete_subtitle_cue", preview_subtitle_import: "editor_preview_subtitle_import", apply_subtitle_import: "editor_apply_subtitle_import", reorder_visual_layer: "editor_reorder_visual_layer", add_color_layer: "editor_add_color_layer", add_color_clip: "editor_add_color_clip", update_color_layer: "editor_update_color_layer", update_color_clip: "editor_update_color_clip", save: "editor_save", capture_preview: "editor_capture_preview", start_waveform_profile: "editor_start_waveform_profile", stop_waveform_profile: "editor_stop_waveform_profile",
+} satisfies Record<EditorMcpCommandName, string>;
+
+const WORKSPACE_REQUIREMENTS: Partial<Record<EditorMcpCommandName, EditorMcpWorkspaceRequirement>> = {
+  evaluate_camera_track: "camera-workspace", frame_camera_item: "camera-workspace",
+  match_audio_length: "timeline-mounted", preview_audio_clip: "timeline-mounted", stop_audio_preview: "timeline-mounted",
+  preview_subtitle_import: "timeline-mounted", apply_subtitle_import: "timeline-mounted", seek: "timeline-mounted", set_playback: "timeline-mounted",
+  set_preview_view: "timeline-mounted", zoom_preview: "timeline-mounted", pan_preview: "timeline-mounted", reset_preview: "timeline-mounted", capture_preview: "timeline-mounted",
+  preview_interaction_phase: "interaction-renderer", start_interaction_test: "interaction-renderer", move_interaction_test: "interaction-renderer", release_interaction_test: "interaction-renderer", cancel_interaction_test: "interaction-renderer", test_look_follow: "interaction-renderer", inject_behavior_event: "interaction-renderer", cancel_behavior_test: "interaction-renderer",
+  start_waveform_profile: "waveform-profiling-build", stop_waveform_profile: "waveform-profiling-build",
+};
+
+function commandDomain(name: EditorMcpCommandName): EditorMcpOperationDefinition["domain"] {
+  if (/interaction|region|look_follow/.test(name)) return "interaction";
+  if (/behavior/.test(name)) return "behavior";
+  if (/camera/.test(name)) return "camera";
+  if (/audio/.test(name)) return "audio";
+  if (/subtitle|cue/.test(name)) return "subtitles";
+  if (/timeline|sequence|animation|spine_layer|visual|color|playback|seek|preview_view|preview$/.test(name)) return "timeline";
+  if (/validate|analyze|waveform|profile/.test(name)) return "diagnostics";
+  return "project";
+}
+
+function commandHandler(name: EditorMcpCommandName): EditorMcpHandler {
+  if (["evaluate_camera_track", "frame_camera_item", "match_audio_length", "preview_audio_clip", "stop_audio_preview", "preview_subtitle_import", "apply_subtitle_import", "seek", "set_playback", "set_preview_view", "zoom_preview", "pan_preview", "reset_preview", "capture_preview"].includes(name)) return "timeline-renderer";
+  if (["select_visual", "update_spine_layer", "create_spine_layer", "delete_spine_layer", "duplicate_animation_clip", "duplicate_color_clip", "delete_color_clip", "delete_color_layer", "duplicate_subtitle_cue", "select_subtitle_cue", "split_subtitle_cue", "set_timeline_items_enabled", "delete_timeline_items", "add_animation_clip", "update_animation_clip", "move_animation_clip", "delete_animation_clip", "add_subtitle_cue", "update_subtitle_cue", "delete_subtitle_cue", "reorder_visual_layer", "add_color_layer", "add_color_clip", "update_color_layer", "update_color_clip"].includes(name)) return "editor-or-timeline";
+  return "editor";
+}
+
+const commandNamesByMutation = new Map<EditorMcpCommandName, EditorMcpMutationCategory>();
+for (const [mutation, names] of Object.entries(COMMAND_MUTATION_GROUPS) as Array<[EditorMcpMutationCategory, readonly EditorMcpCommandName[]]>) {
+  for (const name of names) {
+    if (commandNamesByMutation.has(name)) throw new Error(`MCP command ${name} appears in more than one mutation category.`);
+    commandNamesByMutation.set(name, mutation);
+  }
+}
+
+type UnclassifiedEditorMcpCommand = Exclude<EditorMcpCommandName, (typeof COMMAND_MUTATION_GROUPS)[keyof typeof COMMAND_MUTATION_GROUPS][number]>;
+export type EditorMcpRegistryClassificationIsExhaustive = UnclassifiedEditorMcpCommand extends never ? true : never;
+const registryClassificationIsExhaustive: EditorMcpRegistryClassificationIsExhaustive = true;
+void registryClassificationIsExhaustive;
+
+function validateRegisteredCommand<K extends EditorMcpCommandName>(name: K, value: unknown): Extract<EditorMcpCommand, { name: K }> {
+  const command = normalizeEditorMcpCommand(value);
+  if (command.name !== name) throw new Error(`Expected ${name}, received ${command.name}.`);
+  return command as Extract<EditorMcpCommand, { name: K }>;
+}
+
+export const EDITOR_MCP_OPERATION_REGISTRY = Object.fromEntries(
+  (Object.keys(MCP_TOOL_NAME_BY_COMMAND) as EditorMcpCommandName[]).map((name) => {
+    const mutation = commandNamesByMutation.get(name);
+    if (!mutation) throw new Error(`MCP command ${name} has no mutation policy.`);
+    const humanName = name.replaceAll("_", " ");
+    return [name, {
+      name,
+      toolName: MCP_TOOL_NAME_BY_COMMAND[name],
+      description: `Typed ${humanName} operation. Payloads are validated by the native Editor command parser.`,
+      mutation,
+      revisionRequired: ["authored", "lifecycle", "filesystem", "review"].includes(mutation) || name === "select_sequence",
+      domain: commandDomain(name),
+      workspace: WORKSPACE_REQUIREMENTS[name] ?? "any",
+      handler: commandHandler(name),
+      resultShape: "EditorMcpResultEnvelope<unknown>",
+      annotations: {
+        readOnlyHint: mutation === "none",
+        idempotentHint: mutation === "none",
+        destructiveHint: /^(delete_|restore_recovery|open_project_file|open_asset_root|select_asset_set)/.test(name),
+        openWorldHint: false,
+      },
+      inputSchema: (value: unknown) => validateRegisteredCommand(name, value),
+    }];
+  }),
+) as { [K in EditorMcpCommandName]: EditorMcpOperationDefinition<K> };
+
+/** Commands that require a caller-reviewed revision; derived from the shared operation registry. */
+export const EDITOR_MCP_REVISION_REQUIRED_COMMANDS: ReadonlySet<EditorMcpCommandName> = new Set(
+  Object.values(EDITOR_MCP_OPERATION_REGISTRY).filter((operation) => operation.revisionRequired).map((operation) => operation.name),
+);
 
 export interface EditorMcpTimelineBridge {
   snapshot: () => EditorMcpTimelineSnapshot | null;

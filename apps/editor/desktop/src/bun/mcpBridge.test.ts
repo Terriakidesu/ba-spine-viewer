@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
+import { EDITOR_MCP_OPERATION_REGISTRY, EDITOR_MCP_REVISION_REQUIRED_COMMANDS } from "@ba-spine/editor-feature/editorMcp";
 import { SpineEditorMcpBridge } from "./mcpBridge";
 
 const bridgeUrl = new URL("http://127.0.0.1:43210");
@@ -13,6 +14,20 @@ function jsonRequest(path: string, body: unknown, headers: Record<string, string
 }
 
 describe("Spine editor MCP bridge", () => {
+  test("the shared operation registry is exhaustive and every operation has a registered MCP tool", async () => {
+    const serverSource = await readFile(new URL("../../scripts/mcp-server.ts", import.meta.url), "utf8");
+    const registeredTools = new Set([...serverSource.matchAll(/trackToolName\("(editor_[^"]+)"\)/g)].map((match) => match[1]));
+    const operations = Object.values(EDITOR_MCP_OPERATION_REGISTRY);
+    expect(operations.length).toBeGreaterThan(50);
+    expect(new Set(operations.map((operation) => operation.toolName)).size).toBe(operations.length);
+    for (const operation of operations) {
+      expect(registeredTools.has(operation.toolName)).toBe(true);
+      expect(operation.resultShape).toBe("EditorMcpResultEnvelope<unknown>");
+      expect(typeof operation.inputSchema).toBe("function");
+      expect(operation.revisionRequired).toBe(EDITOR_MCP_REVISION_REQUIRED_COMMANDS.has(operation.name));
+    }
+  });
+
   test("publishes a private connection file and requires its token", async () => {
     const bridge = new SpineEditorMcpBridge(true);
     const connectionFile = await bridge.start(43210);
@@ -38,9 +53,9 @@ describe("Spine editor MCP bridge", () => {
     try {
       const enabled = await bridge.handle(new Request(new URL("/__spine/mcp/ui-enabled", bridgeUrl)), new URL("/__spine/mcp/ui-enabled", bridgeUrl));
       expect(await enabled.json()).toEqual({ enabled: true });
-      const posted = await bridge.handle(jsonRequest("/__spine/mcp/ui-state", { workspace: "timeline", directory: "Aru_home", documentRevision: 7 }), new URL("/__spine/mcp/ui-state", bridgeUrl));
+      const posted = await bridge.handle(jsonRequest("/__spine/mcp/ui-state", { workspace: "timeline", assetRoot: "D:/assets", directory: "Aru_home", projectName: "Aru", saveState: "saved", documentRevision: 7 }), new URL("/__spine/mcp/ui-state", bridgeUrl));
       expect(posted.status).toBe(200);
-      await bridge.handle(jsonRequest("/__spine/mcp/ui-state", { workspace: "timeline", directory: "Aru_home", documentRevision: 7 }), new URL("/__spine/mcp/ui-state", bridgeUrl));
+      await bridge.handle(jsonRequest("/__spine/mcp/ui-state", { workspace: "timeline", assetRoot: "D:/assets", directory: "Aru_home", projectName: "Aru", saveState: "saved", documentRevision: 7 }), new URL("/__spine/mcp/ui-state", bridgeUrl));
 
       const token = JSON.parse(await readFile(connectionFile!, "utf8")).token as string;
       const auth = { authorization: `Bearer ${token}` };
@@ -59,9 +74,26 @@ describe("Spine editor MCP bridge", () => {
       expect(queued.command).toEqual({ name: "seek", seconds: 2 });
       expect(queued.expectedDocumentRevision).toBe(7);
       expect(queued.expiresAt).toBeGreaterThan(Date.now());
-      await bridge.handle(jsonRequest("/__spine/mcp/ui-result", { id: queued.id, result: { currentTime: 2 } }), new URL("/__spine/mcp/ui-result", bridgeUrl));
+      await bridge.handle(jsonRequest("/__spine/mcp/ui-result", { id: queued.id, result: { currentTime: 2, documentRevision: 8 } }), new URL("/__spine/mcp/ui-result", bridgeUrl));
       const commandResponse = await pending;
-      expect(await commandResponse.json()).toEqual({ result: { currentTime: 2 } });
+      expect(await commandResponse.json()).toMatchObject({
+        envelopeVersion: 1,
+        ok: true,
+        requestId: queued.id,
+        currentTime: 2,
+        documentRevision: 8,
+        result: { currentTime: 2, documentRevision: 8 },
+        projectIdentity: {
+          before: { hostPid: process.pid, assetRoot: "D:/assets", directory: "Aru_home", projectName: "Aru" },
+          after: { hostPid: process.pid, assetRoot: "D:/assets", directory: "Aru_home", projectName: "Aru" },
+        },
+        documentRevisions: { before: 7, after: 7 },
+        affectedEntityIds: [],
+        createdEntityIds: [],
+        warnings: [],
+        normalization: null,
+        saveState: "saved",
+      });
     } finally {
       bridge.cleanup();
     }
@@ -76,12 +108,15 @@ describe("Spine editor MCP bridge", () => {
       const auth = { authorization: `Bearer ${token}` };
       const stale = await bridge.handle(jsonRequest("/__spine/mcp/command", { command: { name: "seek", seconds: 1 }, expectedDocumentRevision: 3 }, auth), new URL("/__spine/mcp/command", bridgeUrl));
       expect(stale.status).toBe(409);
-      expect(await stale.json()).toMatchObject({ code: "stale_document_revision", expectedDocumentRevision: 3, actualDocumentRevision: 4 });
+      expect(await stale.json()).toMatchObject({ envelopeVersion: 1, ok: false, code: "stale_document_revision", error: { code: "stale_document_revision", details: { expectedDocumentRevision: 3, actualDocumentRevision: 4 } }, documentRevisions: { before: 4, after: 4 } });
 
       const timedOut = bridge.handle(jsonRequest("/__spine/mcp/command", { command: { name: "seek", seconds: 2 }, expectedDocumentRevision: 4 }, auth), new URL("/__spine/mcp/command", bridgeUrl));
       const response = await timedOut;
       expect(response.status).toBe(504);
-      expect((await response.json()).error).toContain("queued command was canceled");
+      const timedOutPayload = await response.json() as { error: { message: string; code: string }; code: string; envelopeVersion: number; ok: boolean };
+      expect(timedOutPayload.error.message).toContain("queued command was canceled");
+      expect(timedOutPayload.error.code).toBe("command_timeout");
+      expect(timedOutPayload).toMatchObject({ envelopeVersion: 1, ok: false, code: "command_timeout" });
       const queued = await bridge.handle(new Request(new URL("/__spine/mcp/ui-command", bridgeUrl)), new URL("/__spine/mcp/ui-command", bridgeUrl));
       expect(await queued.json()).toBeNull();
     } finally {
@@ -98,7 +133,9 @@ describe("Spine editor MCP bridge", () => {
       const auth = { authorization: `Bearer ${token}` };
       const missingRevision = await bridge.handle(jsonRequest("/__spine/mcp/command", { command: { name: "delete_interaction", interactionId: "pat" } }, auth), new URL("/__spine/mcp/command", bridgeUrl));
       expect(missingRevision.status).toBe(400);
-      expect((await missingRevision.json()).error).toContain("expectedDocumentRevision is required");
+      const missingRevisionPayload = await missingRevision.json() as { error: { message: string }; code: string; envelopeVersion: number; ok: boolean };
+      expect(missingRevisionPayload.error.message).toContain("expectedDocumentRevision is required");
+      expect(missingRevisionPayload).toMatchObject({ envelopeVersion: 1, ok: false, code: "revision_required" });
     } finally {
       bridge.cleanup();
     }
@@ -138,7 +175,7 @@ describe("Spine editor MCP bridge", () => {
       expect(oversizedResult.status).toBe(413);
       const commandResponse = await pending;
       expect(commandResponse.status).toBe(502);
-      expect((await commandResponse.json()).error).toContain("1 MiB response limit");
+       expect(((await commandResponse.json()) as { error: { message: string } }).error.message).toContain("1 MiB response limit");
     } finally {
       bridge.cleanup();
     }
