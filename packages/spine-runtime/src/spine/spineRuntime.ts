@@ -23,6 +23,7 @@ import {
 } from "@esotericsoftware/spine-webgl";
 import { authoredViewport, behaviorRegionAtPoint, cameraPositionForZoomAnchor, fitScene, interactionTargetAtPoint, interactionZonesForDisplay, sceneBounds, type InteractionHitKind, type InteractionHitTarget, type SceneBounds, type SpineBehaviorHitRegion } from "./spineCamera";
 import { findIdleAnimation } from "./spineAnimation";
+import { createResourceQueue } from "./resourceQueue";
 import { spineCanvasBackingSize } from "./spineCanvasResolution";
 import { DEFAULT_EFFECTS_STRENGTH, drawWithEffectsStrength } from "./spineEffects";
 import { authoredInteraction, authoredInteractionAction, authoredRegions, clearInteractionTrack, DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, DEFAULT_TALK_MIX_DURATION, interactionKind, interactionPhaseAfterStart, interactionPressReady, lookFollowTarget, normalizeAnimationMixDuration, normalizeSpineLookFollowSettings, profileFromProject, queueInteractionFadeOut, setInteractionTrack, smoothLookFollowPoint, type SpineAnimationPair, type SpineInteractionAction, type SpineInteractionProfile, type SpineInteractionProject, type SpineAuthoredInteraction, type SpineAuthoredRegion, type SpineLookFollowSettings } from "./spineInteraction";
@@ -436,6 +437,7 @@ async function readSkeleton(
   files: SpineFiles,
   atlas: TextureAtlas,
   directoryName: string,
+  signal?: AbortSignal,
 ): Promise<{ skeleton: Skeleton; animations: string[] }> {
   const candidates = findPreferredSkeleton(filesWithExtension(files, ".skel"), directoryName);
   if (candidates.length === 0) throw new Error("This set does not contain a .skel file.");
@@ -445,8 +447,11 @@ async function readSkeleton(
   let fallback: { skeleton: Skeleton; animations: string[] } | null = null;
 
   for (const file of candidates) {
+    signal?.throwIfAborted();
     try {
-      const data = loader.readSkeletonData(await file.arrayBuffer());
+      const bytes = await file.arrayBuffer();
+      signal?.throwIfAborted();
+      const data = loader.readSkeletonData(bytes);
       const animations = data.animations.map((animation) => animation.name);
       const parsed = { skeleton: new Skeleton(data), animations };
       // Lobby sets can carry a second scene/background skeleton. The lobby
@@ -454,6 +459,7 @@ async function readSkeleton(
        if (findIdleAnimation(animations) || findIntroAnimation(animations)) return parsed;
       fallback ??= parsed;
     } catch (error) {
+      signal?.throwIfAborted();
       failures.push(`${file.name}: ${errorFrom(error).message}`);
     }
   }
@@ -588,7 +594,10 @@ function hasAuthoredLookFollow(project?: SpineInteractionProject | null): boolea
     && machine.sourceLegacyInteractionId === null));
 }
 
-async function loadBundle(files: SpineFiles, directoryName: string, renderer: SceneRenderer, context: ManagedWebGLRenderingContext, project?: SpineInteractionProject | null, onLoadProgress?: (progress: SpineLoadProgress) => void): Promise<LoadedBundle> {
+const queueBundleLoad = createResourceQueue(2);
+
+async function loadBundle(files: SpineFiles, directoryName: string, renderer: SceneRenderer, context: ManagedWebGLRenderingContext, project?: SpineInteractionProject | null, onLoadProgress?: (progress: SpineLoadProgress) => void, signal?: AbortSignal): Promise<LoadedBundle> {
+  signal?.throwIfAborted();
   const atlasFile = filesWithExtension(files, ".atlas")[0];
   if (!atlasFile) throw new Error("This set does not contain an .atlas file.");
 
@@ -597,25 +606,30 @@ async function loadBundle(files: SpineFiles, directoryName: string, renderer: Sc
   onLoadProgress?.({ stage: atlas.pages.length ? "textures" : "skeleton", loaded: 0, total: atlas.pages.length });
   const images: Array<HTMLImageElement | ImageBitmap> = [];
   try {
+    signal?.throwIfAborted();
     for (const [index, page] of atlas.pages.entries()) {
+      signal?.throwIfAborted();
       const imageFile = fileNamed(files, page.name);
       if (!imageFile) throw new Error(`The atlas page “${page.name}” is missing.`);
       const image = await loadImage(imageFile);
+      // Own the decoded image before any upload/filter operation can fail.
+      images.push(image);
+      signal?.throwIfAborted();
       // ImageBitmap was premultiplied during decode. The fallback HTML
       // image is still straight-alpha, so ask WebGL to normalize that path
       // before uploading it as well.
       const imageIsBitmap = typeof ImageBitmap !== "undefined" && image instanceof ImageBitmap;
       context.gl.pixelStorei(context.gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !imageIsBitmap);
       const texture = new GLTexture(context, image);
+      page.setTexture(texture);
       texture.setFilters(page.minFilter, page.magFilter);
       texture.setWraps(page.uWrap, page.vWrap);
-      page.setTexture(texture);
-      images.push(image);
       onLoadProgress?.({ stage: "textures", loaded: index + 1, total: atlas.pages.length });
     }
 
     onLoadProgress?.({ stage: "skeleton", loaded: 0, total: 0 });
-    const { skeleton, animations } = await readSkeleton(files, atlas, directoryName);
+    const { skeleton, animations } = await readSkeleton(files, atlas, directoryName, signal);
+    signal?.throwIfAborted();
     skeleton.setToSetupPose();
     skeleton.updateWorldTransform(Physics.update);
     // A bone named "camera" in these exports is usually an animated art/layer
@@ -706,6 +720,7 @@ async function loadBundle(files: SpineFiles, directoryName: string, renderer: Sc
 }
 
 export class SpineRenderer {
+  private loadController: AbortController | null = null;
   private readonly context: ManagedWebGLRenderingContext;
   private readonly renderer: SceneRenderer;
   private readonly canvas: HTMLCanvasElement;
@@ -790,7 +805,11 @@ export class SpineRenderer {
     this.raf = requestAnimationFrame(this.render);
   }
 
-  async load(files: SpineFiles, directoryName: string, project?: SpineInteractionProject | null) {
+  async load(files: SpineFiles, directoryName: string, project?: SpineInteractionProject | null, options: { preserveMetadata?: boolean } = {}) {
+    if (this.destroyed) return;
+    this.loadController?.abort();
+    const controller = new AbortController();
+    this.loadController = controller;
     const serial = ++this.loadSerial;
     this.lookFollowPreview = false;
     this.disposeBundle();
@@ -802,7 +821,7 @@ export class SpineRenderer {
     this.activeGestureInteractionId = null;
     this.fitCameraPose = null;
     this.pendingCameraPose = null;
-    this.callbacks.onMeta(null);
+    if (!options.preserveMetadata) this.callbacks.onMeta(null);
     this.callbacks.onError(null);
     this.callbacks.onLoading(true);
     this.callbacks.onLoadProgress?.({ stage: "files", loaded: 0, total: 0 });
@@ -819,7 +838,9 @@ export class SpineRenderer {
     this.introEventIndex = 0;
 
     try {
-      const bundle = await loadBundle(files, directoryName, this.renderer, this.context, project, (progress) => this.callbacks.onLoadProgress?.(progress));
+      const bundle = await queueBundleLoad(() => loadBundle(files, directoryName, this.renderer, this.context, project, (progress) => {
+        if (!controller.signal.aborted) this.callbacks.onLoadProgress?.(progress);
+      }, controller.signal), controller.signal);
       if (serial !== this.loadSerial || this.destroyed) {
         disposeBundle(bundle);
         return;
@@ -841,7 +862,7 @@ export class SpineRenderer {
         this.animationSelection = bundle.meta.idleAnimation;
         this.applyBaseAnimation(bundle.meta.idleAnimation, true);
       }
-      this.callbacks.onMeta(bundle.meta);
+      if (!options.preserveMetadata) this.callbacks.onMeta(bundle.meta);
       this.callbacks.onLoadProgress?.({ stage: "finalizing", loaded: 1, total: 1 });
       this.callbacks.onLoading(false);
     } catch (error) {
@@ -851,7 +872,18 @@ export class SpineRenderer {
     }
   }
 
+  /** Release a hidden workspace's heavy resources without resetting authored UI state. */
+  releaseAssets() {
+    this.loadController?.abort();
+    this.loadController = null;
+    ++this.loadSerial;
+    this.disposeBundle();
+    this.callbacks.onLoading(false);
+  }
+
   clear() {
+    this.loadController?.abort();
+    this.loadController = null;
     ++this.loadSerial;
     this.lookFollowPreview = false;
     this.resetInteractionTargets();
@@ -2378,6 +2410,9 @@ export class SpineRenderer {
   }
 
   dispose() {
+    if (this.destroyed) return;
+    this.loadController?.abort();
+    this.loadController = null;
     this.destroyed = true;
     ++this.loadSerial;
     cancelAnimationFrame(this.raf);

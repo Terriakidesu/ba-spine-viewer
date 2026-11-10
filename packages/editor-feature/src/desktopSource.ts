@@ -3,6 +3,7 @@ import type { AssetSource } from "@ba-spine/spine-runtime/spine/spineAssets";
 import { normalizeSpineManifest, type SpineManifestRecord } from "@ba-spine/spine-runtime/spine/spineManifest";
 import { parseHandoffMessage, parseSpineDraftSnapshot, type SpineDraftSnapshot, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
 import { contentVersion } from "@ba-spine/platform-contracts/contentVersion";
+import { createResourceQueue } from "@ba-spine/spine-runtime/spine/resourceQueue";
 
 declare global {
   interface Window {
@@ -61,14 +62,20 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   return response;
 }
 
-async function loadFile(path: string): Promise<File | null> {
-  const headers = new Headers();
-  if (typeof window !== "undefined" && window.__BA_SPINE_HOST_TOKEN__) headers.set("x-ba-spine-token", window.__BA_SPINE_HOST_TOKEN__);
-  const response = await fetch(`/__spine/file?path=${encodeURIComponent(path)}`, { headers });
-  if (response.status === 404) return null;
-  if (!response.ok) throw new Error(`Could not read ${path}.`);
-  const blob = await response.blob();
-  return new File([blob], path.split("/").at(-1) ?? "asset");
+const queueFileLoad = createResourceQueue(4);
+
+async function loadFile(path: string, signal?: AbortSignal): Promise<File | null> {
+  return queueFileLoad(async () => {
+    signal?.throwIfAborted();
+    const headers = new Headers();
+    if (typeof window !== "undefined" && window.__BA_SPINE_HOST_TOKEN__) headers.set("x-ba-spine-token", window.__BA_SPINE_HOST_TOKEN__);
+    const response = await fetch(`/__spine/file?path=${encodeURIComponent(path)}`, { headers, signal });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`Could not read ${path}.`);
+    const blob = await response.blob();
+    signal?.throwIfAborted();
+    return new File([blob], path.split("/").at(-1) ?? "asset");
+  }, signal);
 }
 
 export async function chooseDesktopSource(): Promise<DesktopAssetSource | null> {
@@ -145,13 +152,14 @@ export function sourceFromDesktop(rootPath: string): DesktopAssetSource {
   let catalogPromise: Promise<Catalog> | null = null;
   const manifestPromises = new Map<string, Promise<SpineManifestRecord | null>>();
   const loadCatalog = () => catalogPromise ??= request("/__spine/catalog").then((response) => response.json() as Promise<Catalog>);
-  const filesForSet = async (set: SpineSet): Promise<SpineFiles> => {
+  const filesForSet = async (set: SpineSet, signal?: AbortSignal): Promise<SpineFiles> => {
+    signal?.throwIfAborted();
     if (set.files) {
-      const entries = await Promise.all(set.files.map(async (path) => [path, await loadFile(path)] as const));
+      const entries = await Promise.all(set.files.map(async (path) => [path, await loadFile(path, signal)] as const));
       return new Map(entries.filter((entry): entry is [string, File] => entry[1] !== null).map(([path, file]) => [file.name || path.split("/").at(-1)!, file])) as SpineFiles;
     }
-    const files = await request(`/__spine/files?directory=${encodeURIComponent(set.path)}`).then((response) => response.json()) as { files: string[] };
-    const entries = await Promise.all(files.files.map(async (name) => [name, await loadFile(set.path === "." ? name : `${set.path}/${name}`)] as const));
+    const files = await request(`/__spine/files?directory=${encodeURIComponent(set.path)}`, { signal }).then((response) => response.json()) as { files: string[] };
+    const entries = await Promise.all(files.files.map(async (name) => [name, await loadFile(set.path === "." ? name : `${set.path}/${name}`, signal)] as const));
     return new Map(entries.filter((entry): entry is [string, File] => entry[1] !== null)) as SpineFiles;
   };
   const loadManifest = (directory: string): Promise<SpineManifestRecord | null> => manifestPromises.get(directory) ?? (() => {
@@ -182,16 +190,18 @@ export function sourceFromDesktop(rootPath: string): DesktopAssetSource {
     desktop: true,
     rootPath,
     getDirectories: async () => (await loadCatalog()).sets.map((set) => set.directory),
-    getSetFiles: async (directory) => {
+    getSetFiles: async (directory, signal) => {
+      signal?.throwIfAborted();
       const set = (await loadCatalog()).sets.find((item) => item.directory === directory);
       if (!set) throw new Error(`Spine directory not found: ${directory}`);
-      return filesForSet(set);
+      return filesForSet(set, signal);
     },
-    getSetFilesAtPath: async (path) => {
+    getSetFilesAtPath: async (path, signal) => {
+      signal?.throwIfAborted();
       const wanted = path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "").toLocaleLowerCase();
       const set = (await loadCatalog()).sets.find((item) => item.path.toLocaleLowerCase() === wanted || item.files?.some((file) => file.toLocaleLowerCase().startsWith(`${wanted}/`)));
       if (!set) throw new Error(`Manifest Spine path not found: ${path}`);
-      return filesForSet(set);
+      return filesForSet(set, signal);
     },
     getFile: loadFile,
     getManifest: loadManifest,

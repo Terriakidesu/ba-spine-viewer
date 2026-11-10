@@ -566,6 +566,7 @@ export function Editor() {
   const [directoryInfo, setDirectoryInfo] = useState<Record<string, CharacterDirectoryInfo>>({});
   const [directory, setDirectory] = useState("");
   const [files, setFiles] = useState<SpineFiles | null>(null);
+  const loadedFilesRef = useRef<{ source: DesktopAssetSource; directory: string; files: SpineFiles } | null>(null);
   const [meta, setMeta] = useState<SpineMeta | null>(null);
   const [frame, setFrame] = useState<SpineEditorFrame | null>(null);
   const [progress, setProgress] = useState<SpineProgress>({ time: 0, duration: 0, animation: null });
@@ -918,10 +919,8 @@ export function Editor() {
   };
 
   useEffect(() => {
-    // The interaction canvas stays mounted so it can continue loading the
-    // selected asset and rebuilding the editor project while the timeline is
-    // open. Its WebGL draw path is disabled separately in timeline mode, so
-    // only the timeline layer renderers paint the visible preview.
+    // Keep the canvas mounted for initial project reconstruction. Once that
+    // finishes, hidden workspaces release its bundle and reload it on demand.
     const canvas = canvasRef.current;
     if (!canvas) return;
     const renderer = new SpineRenderer(canvas, {
@@ -1066,6 +1065,7 @@ export function Editor() {
     metaRef.current = null;
     if (!source || !directory) return;
     let cancelled = false;
+    const controller = new AbortController();
     setTesting(false);
     stopLookFollowTest();
     previewRef.current.reset();
@@ -1073,21 +1073,58 @@ export function Editor() {
     setAssetLoading(true);
     setLoadProgress({ stage: "files", loaded: 0, total: 0 });
     setFiles(null);
-    void source.getSetFiles(directory).then((value) => { if (!cancelled) setFiles(value); }).catch((value) => {
+    void source.getSetFiles(directory, controller.signal).then((value) => {
+      if (!cancelled) {
+        loadedFilesRef.current = { source, directory, files: value };
+        setFiles(value);
+      }
+    }).catch((value) => {
       if (!cancelled) {
         setAssetLoading(false);
         setError(value instanceof Error ? value.message : String(value));
       }
     });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); };
   }, [source, directory]);
 
+  const interactionAssetsRef = useRef<{ files: SpineFiles; suspended: boolean } | null>(null);
+  const resumeAnimationRef = useRef(selectedAnimation);
+  resumeAnimationRef.current = selectedAnimation;
   useEffect(() => {
-    if (!files || !directory) return;
-    loadedAssetRef.current = { source, directory };
-    rendererRef.current?.load(files, directory);
-    rendererRef.current?.setCameraMode("fit");
-  }, [files]);
+    if (!files || !directory) {
+      interactionAssetsRef.current = null;
+      loadedFilesRef.current = null;
+      return;
+    }
+    const identity = loadedFilesRef.current;
+    if (identity?.files !== files || identity.directory !== directory || identity.source !== source) return;
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    const resident = interactionAssetsRef.current;
+    if (resident?.files !== files) {
+      interactionAssetsRef.current = { files, suspended: false };
+      loadedAssetRef.current = { source, directory };
+      void renderer.load(files, directory);
+      renderer.setCameraMode("fit");
+    } else if (workspace !== "interaction" && project?.assetDirectory === directory
+      && initializedAssetRef.current.startsWith(`${directory}:`) && !resident.suspended) {
+      // Initialization still runs in this renderer, but hidden workspaces must
+      // not retain another copy of every decoded atlas page and GPU texture.
+      resident.suspended = true;
+      renderer.releaseAssets();
+    } else if (workspace === "interaction" && resident.suspended) {
+      resident.suspended = false;
+      // Keep the initialized project, recovery state and undo history on resume.
+      void renderer.load(files, directory, undefined, { preserveMetadata: true }).then(() => {
+        if (interactionAssetsRef.current !== resident || resident.suspended) return;
+        const current = projectRef.current;
+        if (!current) return;
+        if (resumeAnimationRef.current) renderer.setAnimation(resumeAnimationRef.current, true);
+        renderer.setLookFollowSettings(current.lookFollow);
+        renderer.setBehaviorMachines(synchronizeLegacyBehaviorMachines(current.interactions, current.lookFollow, current.behaviorMachines));
+      });
+    }
+  }, [files, directory, source, workspace, project?.assetDirectory]);
 
   useEffect(() => {
     rendererRef.current?.setPlaying(playing);

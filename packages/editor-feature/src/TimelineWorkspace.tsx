@@ -272,6 +272,7 @@ function TimelineColorLayerPreview({ layer, time }: { layer: EditorColorLayer; t
 interface PendingAudioLoad {
   path: string;
   source: DesktopAssetSource;
+  controller: AbortController;
 }
 
 function cueText(cue: EditorSubtitleCue, language: TimelineLanguage): string {
@@ -371,9 +372,10 @@ function importedSubtitleCues(value: unknown): { cues: EditorSubtitleCue[]; audi
   return { cues, audio, duration };
 }
 
-async function findAudioFile(source: DesktopAssetSource, path: string): Promise<File | null> {
+async function findAudioFile(source: DesktopAssetSource, path: string, signal?: AbortSignal): Promise<File | null> {
   for (const candidate of spineAudioPathCandidates(path)) {
-    const file = await source.getFile(candidate);
+    signal?.throwIfAborted();
+    const file = await source.getFile(candidate, signal);
     if (file) return file;
   }
   return null;
@@ -547,6 +549,12 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   }
 
   function clearAudioUrl(id: string) {
+    const audio = audioElementsRef.current[id];
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    }
     const record = audioUrlRecordsRef.current[id];
     if (record) {
       URL.revokeObjectURL(record.url);
@@ -558,6 +566,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     delete audioUrlsRef.current[id];
     delete audioStartedRef.current[id];
     delete audioPreviousTimeRef.current[id];
+    pendingAudioLoadsRef.current[id]?.controller.abort();
     delete pendingAudioLoadsRef.current[id];
     setAudioPreloadState(id, "loading");
     pauseAudioElement(id);
@@ -2672,6 +2681,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       return;
     }
     let cancelled = false;
+    const controller = new AbortController();
     setFiles({});
     setLayerLoadErrors({});
     setLayerManifestVersions({});
@@ -2679,8 +2689,9 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       try {
         const assetPath = project?.timeline.assetPaths?.[layer.directory];
         const files = assetPath && source.getSetFilesAtPath
-          ? await source.getSetFilesAtPath(assetPath)
-          : await source.getSetFiles(layer.directory);
+          ? await source.getSetFilesAtPath(assetPath, controller.signal)
+          : await source.getSetFiles(layer.directory, controller.signal);
+        controller.signal.throwIfAborted();
         const manifest = await source.getManifest?.(layer.directory);
         const assetSet = manifest?.manifest.assets[layer.directory];
         if (manifest && !cancelled) setLayerManifestVersions((current) => ({ ...current, [layer.id]: manifest.manifest.schemaVersion }));
@@ -2705,7 +2716,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     })).then((entries) => {
       if (!cancelled) setFiles(Object.fromEntries(entries));
     });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); };
   }, [layerAssetPathsKey, layerDirectoriesKey, onError, source]);
 
   useEffect(() => {
@@ -2717,7 +2728,10 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       clearAudioUrl(id);
     }
     for (const id of Object.keys(pendingAudioLoadsRef.current)) {
-      if (!wanted.has(id)) delete pendingAudioLoadsRef.current[id];
+      if (!wanted.has(id)) {
+        pendingAudioLoadsRef.current[id]?.controller.abort();
+        delete pendingAudioLoadsRef.current[id];
+      }
     }
     setMissingAudio((value) => {
       const next = value.filter((path) => clips.some((clip) => clip.path === path));
@@ -2745,15 +2759,17 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       if (record) clearAudioUrl(clip.id);
       else if (audioPreloadStates[clip.id] === "missing") setAudioPreloadState(clip.id, "loading");
       if (!source) {
+        pendingAudioLoadsRef.current[clip.id]?.controller.abort();
         delete pendingAudioLoadsRef.current[clip.id];
         setAudioPreloadState(clip.id, "missing");
         continue;
       }
       const pending = pendingAudioLoadsRef.current[clip.id];
       if (pending?.path === clip.path && pending.source === source) continue;
-      const request: PendingAudioLoad = { path: clip.path, source };
+      pending?.controller.abort();
+      const request: PendingAudioLoad = { path: clip.path, source, controller: new AbortController() };
       pendingAudioLoadsRef.current[clip.id] = request;
-      void findAudioFile(source, clip.path).then((file) => {
+      void findAudioFile(source, clip.path, request.controller.signal).then((file) => {
         if (pendingAudioLoadsRef.current[clip.id] !== request) return;
         delete pendingAudioLoadsRef.current[clip.id];
         const currentClip = projectRef.current?.timeline.audio.find((item) => item.id === clip.id);
@@ -2777,8 +2793,14 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   }, [audioLoadKey, source, timeline?.audio]);
 
   useEffect(() => () => {
+    for (const request of Object.values(pendingAudioLoadsRef.current)) request.controller.abort();
+    for (const audio of Object.values(audioElementsRef.current)) {
+      if (!audio) continue;
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    }
     for (const record of Object.values(audioUrlRecordsRef.current)) URL.revokeObjectURL(record.url);
-    for (const audio of Object.values(audioElementsRef.current)) audio?.pause();
     audioUrlsRef.current = {};
     audioUrlRecordsRef.current = {};
     pendingAudioLoadsRef.current = {};

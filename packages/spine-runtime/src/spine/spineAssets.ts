@@ -105,7 +105,7 @@ export interface AssetSource {
   /** Resolve a manifest-declared root-relative Spine set path without inferring from directory names. */
   getSetFilesAtPath?: (path: string, signal?: AbortSignal) => Promise<SpineFiles>;
   getDirectories: () => Promise<string[]>;
-  getFile: (path: string) => Promise<File | null>;
+  getFile: (path: string, signal?: AbortSignal) => Promise<File | null>;
   getManifest?: (directory: string) => Promise<SpineManifestRecord | null>;
 }
 
