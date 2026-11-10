@@ -759,6 +759,7 @@ export class SpineRenderer {
   private introAudioEntry: TrackEntry | null = null;
   private introEventIndex = 0;
   private interactionFollowWorld: { x: number; y: number } | null = null;
+  /** Gaze displacement from the current animation pose, in target-local coordinates. */
   private interactionFollowLocal: { x: number; y: number } | null = null;
   private touchPointerOrigin: { x: number; y: number } | null = null;
   private touchFollowOffset: { x: number; y: number } | null = null;
@@ -1720,6 +1721,15 @@ export class SpineRenderer {
     beforeInteractionMotion(this.motionState());
   }
 
+  /** Let Spine sample the animated target pose before gaze applies its offset. */
+  private resetEyeFollowTargetForAnimation(bundle: LoadedBundle) {
+    if (this.interactionState !== "look" && this.interactionState !== "lookRelease") return;
+    const target = bundle.eyeTarget;
+    if (!target) return;
+    target.bone.x = target.baseX;
+    target.bone.y = target.baseY;
+  }
+
   private motionState(): SpineInteractionMotionState {
     if (!this.interactionMotionState) this.interactionMotionState = createInteractionMotionState();
     return this.interactionMotionState;
@@ -1767,11 +1777,7 @@ export class SpineRenderer {
       return;
     }
     const end = bundle.interaction.look?.end;
-    // Keep the live target pose. It will be eased back after the release clip
-    // is applied, rather than snapping to setup pose before LookEnd can play.
-    this.interactionFollowLocal = bundle.eyeTarget
-      ? { x: bundle.eyeTarget.bone.x, y: bundle.eyeTarget.bone.y }
-      : null;
+    // Keep the last gaze offset; release eases it over the live idle/LookEnd pose.
     this.resetInteractionTargets(true, true);
     this.interactionState = "lookRelease";
     if (end) {
@@ -2580,6 +2586,7 @@ export class SpineRenderer {
         this.callbacks.onBeforeEditorUpdate?.(bundle.skeleton);
         this.restoreInteractionPose();
         if (this.playing) bundle.state.update(delta * this.speed);
+        this.resetEyeFollowTargetForAnimation(bundle);
         bundle.state.apply(bundle.skeleton);
         bundle.skeleton.updateWorldTransform(Physics.update);
         this.callbacks.onEditorUpdate?.(this.playing ? delta * this.speed : 0, bundle.skeleton, bundle.state);
@@ -2921,20 +2928,23 @@ export class SpineRenderer {
     const eyeTarget = bundle?.eyeTarget;
     if (!bundle || !eyeTarget) return;
     if (this.interactionState === "lookRelease") {
-      const desired = { x: eyeTarget.baseX, y: eyeTarget.baseY };
-      const current = this.interactionFollowLocal ?? { x: eyeTarget.bone.x, y: eyeTarget.bone.y };
-      const settled = Math.hypot(desired.x - current.x, desired.y - current.y) <= LOOK_FOLLOW_REST_EPSILON;
-      const smoothed = settled ? desired : smoothLookFollowPoint(current, desired, delta, bundle.lookFollow.smoothing);
-      this.interactionFollowLocal = smoothed;
+      // Preserve the pose sampled from idle/LookEnd and ease only the gaze offset.
+      const basePose = { x: eyeTarget.bone.x, y: eyeTarget.bone.y };
+      const currentOffset = this.interactionFollowLocal ?? { x: 0, y: 0 };
+      const desiredOffset = { x: 0, y: 0 };
+      const settled = Math.hypot(currentOffset.x, currentOffset.y) <= LOOK_FOLLOW_REST_EPSILON;
+      const offset = settled ? desiredOffset : smoothLookFollowPoint(currentOffset, desiredOffset, delta, bundle.lookFollow.smoothing);
+      this.interactionFollowLocal = offset;
       this.interactionFollowWorld = null;
-      eyeTarget.bone.x = smoothed.x;
-      eyeTarget.bone.y = smoothed.y;
+      eyeTarget.bone.x = basePose.x + offset.x;
+      eyeTarget.bone.y = basePose.y + offset.y;
       bundle.skeleton.updateWorldTransform(Physics.pose);
       return;
     }
+    const baseLocal = { x: eyeTarget.bone.x, y: eyeTarget.bone.y };
     const base = eyeTarget.bone.parent
-      ? eyeTarget.bone.parent.localToWorld(new Vector2(eyeTarget.baseX, eyeTarget.baseY))
-      : new Vector2(eyeTarget.baseX + bundle.skeleton.x, eyeTarget.baseY + bundle.skeleton.y);
+      ? eyeTarget.bone.parent.localToWorld(new Vector2(baseLocal.x, baseLocal.y))
+      : new Vector2(baseLocal.x + bundle.skeleton.x, baseLocal.y + bundle.skeleton.y);
     const desired = lookFollowTarget(base, pointer, eyeTarget.rangeX, eyeTarget.rangeY, bundle.lookFollow.allowX, bundle.lookFollow.allowY);
     const current = this.interactionFollowWorld ?? { x: eyeTarget.bone.worldX, y: eyeTarget.bone.worldY };
     const settled = Math.hypot(desired.x - current.x, desired.y - current.y) <= LOOK_FOLLOW_REST_EPSILON;
@@ -2943,6 +2953,7 @@ export class SpineRenderer {
     const local = eyeTarget.bone.parent
       ? eyeTarget.bone.parent.worldToLocal(new Vector2(smoothed.x, smoothed.y))
       : new Vector2(smoothed.x - bundle.skeleton.x, smoothed.y - bundle.skeleton.y);
+    this.interactionFollowLocal = { x: local.x - baseLocal.x, y: local.y - baseLocal.y };
     eyeTarget.bone.x = local.x;
     eyeTarget.bone.y = local.y;
     // The authored Touch_Eye constraints consume the target bone during the
@@ -2952,8 +2963,9 @@ export class SpineRenderer {
   }
 
   private eyeFollowAtRest(): boolean {
-    const target = this.bundle?.eyeTarget;
-    return !target || Math.hypot(target.bone.x - target.baseX, target.bone.y - target.baseY) <= LOOK_FOLLOW_REST_EPSILON;
+    if (!this.bundle?.eyeTarget) return true;
+    const offset = this.interactionFollowLocal ?? { x: 0, y: 0 };
+    return Math.hypot(offset.x, offset.y) <= LOOK_FOLLOW_REST_EPSILON;
   }
 
   private applyTouchFollow(delta: number) {

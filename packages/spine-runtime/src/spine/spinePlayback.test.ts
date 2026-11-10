@@ -146,6 +146,10 @@ function lookPlayback(endAnimation: string | null = "LookEnd_01_M") {
   data.bones.push(root, new BoneData(1, "Touch_Eye_Key", root));
   data.animations.push(new Animation("Look_01_M", [], 1));
   if (endAnimation) data.animations.push(new Animation(endAnimation, [], 0.4));
+  const animatedIdleTarget = new TranslateTimeline(2, 0, 1);
+  animatedIdleTarget.setFrame(0, 0, 20, 0);
+  animatedIdleTarget.setFrame(1, 1, 20, 0);
+  data.animations.push(new Animation("Animated_Idle", [animatedIdleTarget], 1));
   const skeleton = new Skeleton(data);
   const rootBone = skeleton.bones[0]!;
   const eyeBone = skeleton.bones[1]!;
@@ -157,6 +161,7 @@ function lookPlayback(endAnimation: string | null = "LookEnd_01_M") {
     interactionState: "look",
     interactionTrackName: "Look_01_M",
     interactionFollowWorld: { x: 80, y: 0 },
+    interactionFollowLocal: { x: 80, y: 0 },
     eyeFollowHold: 1,
     bundle: {
       skeleton,
@@ -206,6 +211,7 @@ describe("Spine restart playback", () => {
 
     runtime.finishInteractionState();
     expect(runtime.interactionState).toBe("lookRelease");
+    runtime.resetEyeFollowTargetForAnimation(runtime.bundle);
     runtime.applyEyeFollow(0.05, null);
     expect(eyeBone.x).toBeGreaterThan(0);
     expect(eyeBone.x).toBeLessThan(80);
@@ -213,7 +219,10 @@ describe("Spine restart playback", () => {
     state.getCurrent(1)!.trackTime = state.getCurrent(1)!.animation!.duration;
     runtime.finishInteractionState();
     expect(runtime.interactionState).toBe("lookRelease");
-    for (let index = 0; index < 120; index++) runtime.applyEyeFollow(1 / 60, null);
+    for (let index = 0; index < 120; index++) {
+      runtime.resetEyeFollowTargetForAnimation(runtime.bundle);
+      runtime.applyEyeFollow(1 / 60, null);
+    }
     expect(eyeBone.x).toBeCloseTo(0);
     runtime.finishInteractionState();
     expect(runtime.interactionState).toBe("idle");
@@ -230,30 +239,51 @@ describe("Spine restart playback", () => {
     runtime.finishInteractionState();
     expect(runtime.interactionState).toBe("lookRelease");
 
-    for (let index = 0; index < 120; index++) runtime.applyEyeFollow(1 / 60, null);
+    for (let index = 0; index < 120; index++) {
+      runtime.resetEyeFollowTargetForAnimation(runtime.bundle);
+      runtime.applyEyeFollow(1 / 60, null);
+    }
     runtime.finishInteractionState();
     expect(eyeBone.x).toBeCloseTo(0);
     expect(runtime.interactionState).toBe("idle");
   });
 
-  test("look release settles in local space and accepts another trigger while its parent moves", () => {
+  test("look release eases its offset over the animated pose and accepts another trigger", () => {
     const { renderer, state, skeleton, rootBone, eyeBone } = lookPlayback();
     const runtime = renderer as any;
+
+    state.setAnimation(0, "Animated_Idle", true);
+    runtime.resetEyeFollowTargetForAnimation(runtime.bundle);
+    state.apply(skeleton);
+    skeleton.updateWorldTransform(0 as never);
+    runtime.applyEyeFollow(1 / 60, { x: 80, y: 0, z: 0 });
+    expect(eyeBone.x).toBeCloseTo(80);
+    expect(runtime.interactionFollowLocal.x).toBeCloseTo(60);
 
     runtime.endLook();
     state.getCurrent(1)!.trackTime = state.getCurrent(1)!.animation!.duration;
     for (let index = 0; index < 120; index++) {
       rootBone.x = index * 2;
       rootBone.rotation = index * 0.5;
+      state.update(1 / 60);
+      runtime.resetEyeFollowTargetForAnimation(runtime.bundle);
+      state.apply(skeleton);
       skeleton.updateWorldTransform(0 as never);
       runtime.applyEyeFollow(1 / 60, null);
       runtime.finishInteractionState();
       if (runtime.interactionState === "idle") break;
     }
 
-    expect(Math.abs(eyeBone.x)).toBeLessThanOrEqual(0.01);
+    const finalReleaseX = eyeBone.x;
+    expect(Math.abs(finalReleaseX - 20)).toBeLessThanOrEqual(0.01);
     expect(runtime.interactionState).toBe("idle");
     expect(runtime.isInteractionBusy()).toBe(false);
+
+    state.update(1 / 60);
+    state.apply(skeleton);
+    skeleton.updateWorldTransform(0 as never);
+    expect(Math.abs(eyeBone.x - finalReleaseX)).toBeLessThanOrEqual(0.01);
+
     runtime.beginLook();
     expect(runtime.interactionState).toBe("look");
     expect(runtime.isInteractionBusy()).toBe(true);
