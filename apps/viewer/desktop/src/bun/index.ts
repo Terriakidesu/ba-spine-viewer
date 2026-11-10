@@ -442,6 +442,7 @@ async function api(request: Request, url: URL): Promise<Response> {
     }
     if (url.pathname === "/__spine/video/ffmpeg/start" && request.method === "POST") {
       if (!videoSaveDirectory) return errorResponse("Choose a video export folder before recording.");
+      const selectedExportDirectory = videoSaveDirectory;
       const body = await request.json() as Record<string, unknown>;
       if (typeof body.filename !== "string" || typeof body.width !== "number" || typeof body.height !== "number"
         || typeof body.frameRate !== "number" || (body.format !== "webm" && body.format !== "mp4")) {
@@ -457,7 +458,8 @@ async function api(request: Request, url: URL): Promise<Response> {
         frameRate: body.frameRate as 30 | 60,
         format: body.format,
         quality: body.quality as "high" | "balanced" | "compact" | undefined,
-      });
+      }, selectedExportDirectory);
+      if (videoSaveDirectory === selectedExportDirectory) videoSaveDirectory = null;
       return json({ sessionId });
     }
     if (url.pathname === "/__spine/video/ffmpeg/audio" && request.method === "POST") {
@@ -485,9 +487,8 @@ async function api(request: Request, url: URL): Promise<Response> {
     if (url.pathname === "/__spine/video/ffmpeg/finish" && request.method === "POST") {
       const sessionId = request.headers.get("x-ba-spine-video-session") ?? "";
       const frameCount = Number(request.headers.get("x-ba-spine-video-frames"));
-      const result = await ffmpegVideoRecorder.finish(sessionId, frameCount);
-      lastVideoExportDirectory = videoSaveDirectory;
-      videoSaveDirectory = null;
+      const { exportDirectory, ...result } = await ffmpegVideoRecorder.finish(sessionId, frameCount);
+      lastVideoExportDirectory = exportDirectory;
       return json(result);
     }
     if (url.pathname === "/__spine/video/ffmpeg/cancel" && request.method === "POST") {

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { createWriteStream } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FfmpegVideoRecorder, ffmpegAudioMixFilterGraph, ffmpegEncoderAttempts, ffmpegVideoColorPipelineArgs, parseFfmpegProgressMetrics } from "./ffmpegVideoRecorder";
+import { FfmpegVideoRecorder, ffmpegAudioMixFilterGraph, ffmpegEncoderAttempts, ffmpegVideoColorPipelineArgs, parseFfmpegProgressMetrics, type FfmpegVideoSupport } from "./ffmpegVideoRecorder";
 
 describe("FFmpeg video encoder selection", () => {
   test("prefers available H.264 hardware encoders and keeps a software fallback", () => {
@@ -79,6 +79,49 @@ describe("FFmpeg progress parsing", () => {
 
   test("falls back to the legacy FFmpeg out_time_ms field when out_time_us is unavailable", () => {
     expect(parseFfmpegProgressMetrics({ out_time_us: "N/A", out_time_ms: "2750000" }, 100, 5).timeSeconds).toBe(2.75);
+  });
+});
+
+describe("FFmpeg video export destination", () => {
+  test("preserves the session destination in successful, repeated finish results", async () => {
+    const exportDirectory = await mkdtemp(join(tmpdir(), "ba-spine-video-destination-"));
+    const recorder = new FfmpegVideoRecorder("unused-ffmpeg.exe", () => null);
+    (recorder as unknown as { support: () => Promise<FfmpegVideoSupport> }).support = async () => ({
+      available: true,
+      formats: ["mp4"],
+      version: "test",
+      hardwareEncoders: [],
+    });
+    (recorder as unknown as {
+      encode: (session: { temporaryDirectory: string }) => Promise<{ encoder: string; outputPath: string }>;
+    }).encode = async (session) => {
+      const outputPath = join(session.temporaryDirectory, "recording.mp4");
+      await writeFile(outputPath, new Uint8Array([1, 2, 3]));
+      return { encoder: "test-encoder", outputPath };
+    };
+    let sessionId: string | undefined;
+
+    try {
+      sessionId = await recorder.start({
+        filename: "recording.mp4",
+        width: 1280,
+        height: 720,
+        frameRate: 30,
+        format: "mp4",
+      }, exportDirectory);
+      const session = (recorder as unknown as { sessions: Map<string, { exportDirectory: string; frameCount: number }> }).sessions.get(sessionId)!;
+      session.frameCount = 1;
+
+      const firstFinish = recorder.finish(sessionId, 1);
+      const result = await firstFinish;
+      const repeatedResult = await recorder.finish(sessionId, 1);
+
+      expect(result.exportDirectory).toBe(exportDirectory);
+      expect(repeatedResult).toBe(result);
+    } finally {
+      if (sessionId) await recorder.cancel(sessionId);
+      await rm(exportDirectory, { recursive: true, force: true });
+    }
   });
 });
 

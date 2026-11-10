@@ -3585,7 +3585,7 @@ export function Spine() {
     && videoRecorderDialog.phase !== "error"
     && videoRecorderDialog.phase !== "complete");
   const showRecorderSequencePreview = (videoRecorderDialog?.phase === "settings" && videoRecorderDialog.settings.mode === "full-sequence")
-    || (isExportProgressPhase && activeExportRun?.settings.mode === "full-sequence");
+    || (isExportProgressPhase && sequencePreviewIsRendering && activeExportRun?.settings.mode === "full-sequence");
   const activeExportUsesFfmpeg = activeExportRun?.useFfmpeg ?? recorderUsesFfmpeg;
   const recorderOutputDimensions = videoRecordingDimensions(recorderSettings.resolution, recorderSettings.aspectRatio);
   const recorderStageItems = activeExportUsesFfmpeg
@@ -4199,11 +4199,15 @@ export function Spine() {
     </div>
     {videoRecorderDialog && <div className="spine-recorder-backdrop">
       <section className={`spine-recorder-dialog${isExportProgressPhase ? " is-progress" : ""}`} role="dialog" aria-modal="true" aria-labelledby="spine-recorder-title">
-        <div className="spine-recorder-heading">
+        {!isExportProgressPhase && <div className="spine-recorder-heading">
           <div><span>{t("spine.recorder.eyebrow")}</span><h2 id="spine-recorder-title">{t(videoRecorderDialog.phase === "complete" ? "spine.recorder.complete" : isExportProgressPhase ? "spine.recorder.inProgress" : "spine.recorder.title")}</h2></div>
           {(videoRecorderDialog.phase === "settings" || videoRecorderDialog.phase === "error" || videoRecorderDialog.phase === "complete") && <button type="button" onClick={() => setVideoRecorderDialog(null)} aria-label={t("spine.recorder.close")}><IconClose /></button>}
-        </div>
+        </div>}
         {isExportProgressPhase && <div className="spine-recorder-progress-top" aria-live="polite">
+          <div className="spine-recorder-progress-title">
+            <div><span>{t("spine.recorder.eyebrow")}</span><h2 id="spine-recorder-title">{t("spine.recorder.inProgress")}</h2></div>
+            <strong className="spine-recorder-percent">{recorderProgressPercent === null ? "—" : `${recorderProgressPercent}%`}</strong>
+          </div>
           <div className="spine-recorder-dashboard-heading">
             <div>
               <span className="spine-recorder-current-label">{t("spine.recorder.currentStage")}</span>
@@ -4226,7 +4230,6 @@ export function Spine() {
                 {videoRecorderDialog.phase === "canceling" && t("spine.recorder.canceling")}
               </span>
             </div>
-            <strong className="spine-recorder-percent">{recorderProgressPercent === null ? "—" : `${recorderProgressPercent}%`}</strong>
           </div>
           <ol className="spine-recorder-stages" aria-label={t("spine.recorder.stages")}>
             {recorderStageItems.map((stage, index) => <li key={stage.id} className={index < recorderCurrentStageIndex ? "is-complete" : index === recorderCurrentStageIndex ? "is-current" : ""}>
@@ -4242,12 +4245,30 @@ export function Spine() {
         </div>}
         <div className={`spine-recorder-content${isExportProgressPhase ? " is-progress" : ""}`}>
           <div className="spine-recorder-visual">
+            {isExportProgressPhase && <h3 className="spine-recorder-panel-heading">{t("spine.recorder.previewHeading")}</h3>}
             <div className="spine-recorder-preview" data-aspect-ratio={recorderSettings.aspectRatio} aria-label={t(recorderLivePreview ? "spine.recorder.previewLive" : "spine.recorder.previewSnapshot")}>
               {videoRecorderPreviewUrl
                 ? <img src={videoRecorderPreviewUrl} alt={t(recorderLivePreview ? "spine.recorder.previewLive" : "spine.recorder.previewSnapshot")} />
                 : <div className="spine-recorder-preview-empty"><span className="spine-recorder-spinner" aria-hidden="true" /><span>{t("spine.recorder.previewLoading")}</span></div>}
               <span className="spine-recorder-preview-label">{t(recorderLivePreview ? "spine.recorder.previewLive" : "spine.recorder.previewSnapshot")}</span>
             </div>
+            {isExportProgressPhase && <section className="spine-recorder-summary" aria-label={t("spine.recorder.outputDetails")}>
+              <h3>{t("spine.recorder.outputDetails")}</h3>
+              <dl>
+                <div><dt>{t("spine.recorder.fileName")}</dt><dd title={activeExportRun?.destination.filename}>{activeExportRun?.destination.filename ?? "—"}</dd></div>
+                {activeExportRun?.destination.locationName && <div><dt>{t("spine.recorder.destination")}</dt><dd title={activeExportRun.destination.locationName}>{activeExportRun.destination.locationName}</dd></div>}
+                <div><dt>{t("spine.recorder.character")}</dt><dd>{selectedCharacter}</dd></div>
+                <div><dt>{t("spine.recorder.variant")}</dt><dd>{selectedVariant?.extraType ? extraLabel(selectedVariant.extraType) : selectedVariant?.variant ?? "—"}</dd></div>
+                <div><dt>{t("spine.recorder.resolution")}</dt><dd>{recorderOutputDimensions.width} × {recorderOutputDimensions.height}</dd></div>
+                <div><dt>{t("spine.recorder.frameRate")}</dt><dd>{recorderSettings.frameRate} FPS</dd></div>
+                <div><dt>{t("spine.recorder.format")}</dt><dd>{recorderSettings.format.toUpperCase()} · {recorderSettings.aspectRatio}</dd></div>
+                {activeExportUsesFfmpeg && <div><dt>{t("spine.recorder.quality")}</dt><dd>{t(`spine.recorder.quality.${recorderSettings.quality}`)}</dd></div>}
+                <div><dt>{t("spine.recorder.sequence")}</dt><dd>{t(recorderSettings.mode === "full-sequence" ? "spine.recorder.mode.fullSequence" : recorderSettings.mode === "opening-idle" ? "spine.recorder.mode.openingIdle" : "spine.recorder.mode.idleOnly")}</dd></div>
+                <div><dt>{t("spine.recorder.lightFx")}</dt><dd>{Math.round(effectsStrength * 100)}%</dd></div>
+                <div><dt>{t("spine.recorder.includeAudio")}</dt><dd>{t(recorderSettings.includeAudio ? "spine.recorder.on" : "spine.recorder.off")}</dd></div>
+                <div><dt>{t("spine.recorder.includeSubtitles")}</dt><dd>{t(recorderSettings.includeSubtitles ? "spine.recorder.on" : "spine.recorder.off")}</dd></div>
+              </dl>
+            </section>}
             {videoRecorderDialog.phase === "settings" && <section className="spine-recorder-settings-section spine-recorder-output-settings">
               <h3>{t("spine.recorder.outputSettings")}</h3>
               <div className="spine-recorder-fields">
@@ -4340,28 +4361,14 @@ export function Spine() {
                 {videoRecorderDialog.encoderAttempt && videoRecorderDialog.encoderAttempts && <div><dt>{t("spine.recorder.encoderAttemptLabel")}</dt><dd>{videoRecorderDialog.encoderAttempt} / {videoRecorderDialog.encoderAttempts}</dd></div>}
                 <div><dt>{t("spine.recorder.totalElapsed")}</dt><dd>{formatRecorderDuration(videoRecorderDialog.exportElapsedSeconds)}</dd></div>
               </dl>
-            </> : <div className={`spine-recorder-metrics${activeExportUsesFfmpeg ? " is-frame-export" : ""}`}>
-              {recorderMetricItems.map((item) => <div className="spine-recorder-metric" key={item.label}>
+            </> : <section className="spine-recorder-stage-details" aria-labelledby="spine-recorder-stage-details-title">
+              <h3 id="spine-recorder-stage-details-title">{t("spine.recorder.stageDetails")}</h3>
+              <div className={`spine-recorder-metrics${activeExportUsesFfmpeg ? " is-frame-export" : ""}`}>
+                {recorderMetricItems.map((item) => <div className="spine-recorder-metric" key={item.label}>
                   <span>{item.label}</span><strong>{item.value}</strong>
                 </div>)}
-              </div>}
-              {isExportProgressPhase && <section className="spine-recorder-summary" aria-label={t("spine.recorder.output")}>
-                <h3>{t("spine.recorder.output")}</h3>
-                <dl>
-                  <div><dt>{t("spine.recorder.fileName")}</dt><dd title={activeExportRun?.destination.filename}>{activeExportRun?.destination.filename ?? "—"}</dd></div>
-                  {activeExportRun?.destination.locationName && <div><dt>{t("spine.recorder.destination")}</dt><dd title={activeExportRun.destination.locationName}>{activeExportRun.destination.locationName}</dd></div>}
-                  <div><dt>{t("spine.recorder.character")}</dt><dd>{selectedCharacter}</dd></div>
-                  <div><dt>{t("spine.recorder.variant")}</dt><dd>{selectedVariant?.extraType ? extraLabel(selectedVariant.extraType) : selectedVariant?.variant ?? "—"}</dd></div>
-                  <div><dt>{t("spine.recorder.resolution")}</dt><dd>{recorderOutputDimensions.width} × {recorderOutputDimensions.height}</dd></div>
-                  <div><dt>{t("spine.recorder.frameRate")}</dt><dd>{recorderSettings.frameRate} FPS</dd></div>
-                  <div><dt>{t("spine.recorder.format")}</dt><dd>{recorderSettings.format.toUpperCase()} · {recorderSettings.aspectRatio}</dd></div>
-                  {activeExportUsesFfmpeg && <div><dt>{t("spine.recorder.quality")}</dt><dd>{t(`spine.recorder.quality.${recorderSettings.quality}`)}</dd></div>}
-                  <div><dt>{t("spine.recorder.sequence")}</dt><dd>{t(recorderSettings.mode === "full-sequence" ? "spine.recorder.mode.fullSequence" : recorderSettings.mode === "opening-idle" ? "spine.recorder.mode.openingIdle" : "spine.recorder.mode.idleOnly")}</dd></div>
-                  <div><dt>{t("spine.recorder.lightFx")}</dt><dd>{Math.round(effectsStrength * 100)}%</dd></div>
-                  <div><dt>{t("spine.recorder.includeAudio")}</dt><dd>{t(recorderSettings.includeAudio ? "spine.recorder.on" : "spine.recorder.off")}</dd></div>
-                  <div><dt>{t("spine.recorder.includeSubtitles")}</dt><dd>{t(recorderSettings.includeSubtitles ? "spine.recorder.on" : "spine.recorder.off")}</dd></div>
-                </dl>
-              </section>}
+              </div>
+            </section>}
           </div>
         </div>
         {!isExportProgressPhase && recorderSequencePreview}

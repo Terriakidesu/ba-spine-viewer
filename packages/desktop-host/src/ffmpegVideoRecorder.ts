@@ -96,6 +96,16 @@ interface FfmpegVideoSession {
   failure: Error | null;
 }
 
+export interface FfmpegVideoExportResult {
+  fileName: string;
+  encoder: string;
+  encoderHardware: boolean;
+  encoderAttempt: number;
+  encoderAttempts: number;
+  outputBytes: number;
+  exportDirectory: string;
+}
+
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const MAX_RECORDING_BYTES = 1_073_741_824;
 const MAX_FRAME_STREAM_BYTES = 4_294_967_296;
@@ -270,7 +280,7 @@ function safeRecordingDimensions(width: number, height: number): boolean {
 
 export class FfmpegVideoRecorder {
   private readonly sessions = new Map<string, FfmpegVideoSession>();
-  private readonly finishPromises = new Map<string, Promise<{ fileName: string; encoder: string; encoderHardware: boolean; encoderAttempt: number; encoderAttempts: number; outputBytes: number }>>();
+  private readonly finishPromises = new Map<string, Promise<FfmpegVideoExportResult>>();
   private supportPromise: Promise<FfmpegVideoSupport> | null = null;
 
   constructor(
@@ -337,7 +347,8 @@ export class FfmpegVideoRecorder {
     if (session?.socket === socket) session.socket = null;
   }
 
-  async start(options: FfmpegVideoRecordingOptions): Promise<string> {
+  async start(options: FfmpegVideoRecordingOptions, selectedExportDirectory?: string): Promise<string> {
+    const directory = selectedExportDirectory ?? this.exportDirectory();
     const support = await this.support();
     if (!support.available || !support.formats.includes(options.format)) throw new Error("The bundled FFmpeg encoder is unavailable for this video format.");
     if (!safeRecordingDimensions(options.width, options.height)) throw new Error("The requested video dimensions are invalid.");
@@ -348,7 +359,6 @@ export class FfmpegVideoRecorder {
       throw new Error("The requested filename does not match the video format.");
     }
     if (this.sessions.size > 0) throw new Error("A Viewer video recording is already in progress.");
-    const directory = this.exportDirectory();
     if (!directory) throw new Error("Choose a video export folder before recording.");
     const id = randomUUID();
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "ba-spine-video-"));
@@ -471,7 +481,7 @@ export class FfmpegVideoRecorder {
     return status;
   }
 
-  finish(sessionId: string, expectedFrameCount: number): Promise<{ fileName: string; encoder: string; encoderHardware: boolean; encoderAttempt: number; encoderAttempts: number; outputBytes: number }> {
+  finish(sessionId: string, expectedFrameCount: number): Promise<FfmpegVideoExportResult> {
     const existingFinish = this.finishPromises.get(sessionId);
     if (existingFinish) return existingFinish;
     const session = this.sessions.get(sessionId);
@@ -491,7 +501,7 @@ export class FfmpegVideoRecorder {
     return finishPromise;
   }
 
-  private async finishSession(sessionId: string, session: FfmpegVideoSession, expectedFrameCount: number): Promise<{ fileName: string; encoder: string; encoderHardware: boolean; encoderAttempt: number; encoderAttempts: number; outputBytes: number }> {
+  private async finishSession(sessionId: string, session: FfmpegVideoSession, expectedFrameCount: number): Promise<FfmpegVideoExportResult> {
     try {
       if (session.socket) {
         session.socket.close(1000, "Recording complete.");
@@ -537,6 +547,7 @@ export class FfmpegVideoRecorder {
         encoderAttempt: session.encoderAttempt,
         encoderAttempts: session.encoderAttempts,
         outputBytes: savedSize,
+        exportDirectory: session.exportDirectory,
       };
     } finally {
       this.sessions.delete(sessionId);
