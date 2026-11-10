@@ -305,13 +305,17 @@ describe("Spine editor project model", () => {
     expect(normalizeProject({ schemaVersion: 99, interactions: [{ id: "x" }] }, "Airi_home")).toBeNull();
   });
 
-  test("normalizes shared bone display settings", () => {
-    expect(normalizeViewSettings({ showBones: false, showBoneNames: true, showConstraints: false, showInactiveBones: true })).toEqual({
+  test("normalizes shared canvas overlay settings", () => {
+    expect(normalizeViewSettings({ showBones: false, showBoneNames: true, showConstraints: false, showInactiveBones: true, showInteractionRegions: false, showLookFollowGizmo: true, showMotionGizmo: false })).toEqual({
       showBones: false,
       showBoneNames: true,
       showConstraints: false,
       showInactiveBones: true,
+      showInteractionRegions: false,
+      showLookFollowGizmo: true,
+      showMotionGizmo: false,
     });
+    expect(normalizeViewSettings({})).toMatchObject({ showInteractionRegions: true, showLookFollowGizmo: true, showMotionGizmo: true });
     expect(normalizeViewSettings(null)).toBeNull();
   });
 

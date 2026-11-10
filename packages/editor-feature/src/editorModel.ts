@@ -164,16 +164,22 @@ export interface EditorProject {
   showBoneNames: boolean;
   showConstraints: boolean;
   showInactiveBones: boolean;
+  showInteractionRegions: boolean;
+  showLookFollowGizmo: boolean;
+  showMotionGizmo: boolean;
   timeline: EditorTimeline;
 }
 
-export type EditorViewSettings = Pick<EditorProject, "showBones" | "showBoneNames" | "showConstraints" | "showInactiveBones">;
+export type EditorViewSettings = Pick<EditorProject, "showBones" | "showBoneNames" | "showConstraints" | "showInactiveBones" | "showInteractionRegions" | "showLookFollowGizmo" | "showMotionGizmo">;
 
 export const DEFAULT_EDITOR_VIEW_SETTINGS: EditorViewSettings = {
   showBones: false,
   showBoneNames: false,
   showConstraints: false,
   showInactiveBones: false,
+  showInteractionRegions: true,
+  showLookFollowGizmo: true,
+  showMotionGizmo: true,
 };
 
 export const EDITOR_VIEW_SETTINGS_KEY = "shittim-spine-editor:view-settings:v3";
@@ -186,6 +192,9 @@ export function viewSettingsFromProject(project: Pick<EditorProject, keyof Edito
     showBoneNames: project.showBoneNames,
     showConstraints: project.showConstraints,
     showInactiveBones: project.showInactiveBones,
+    showInteractionRegions: project.showInteractionRegions,
+    showLookFollowGizmo: project.showLookFollowGizmo,
+    showMotionGizmo: project.showMotionGizmo,
   };
 }
 
@@ -197,6 +206,9 @@ export function normalizeViewSettings(value: unknown): EditorViewSettings | null
     showBoneNames: settings.showBoneNames === true,
     showConstraints: settings.showConstraints === true,
     showInactiveBones: settings.showInactiveBones === true,
+    showInteractionRegions: settings.showInteractionRegions !== false,
+    showLookFollowGizmo: settings.showLookFollowGizmo !== false,
+    showMotionGizmo: settings.showMotionGizmo !== false,
   };
 }
 
@@ -726,6 +738,9 @@ export function normalizeProject(value: unknown, directory: string): EditorProje
     showBoneNames: project.showBoneNames === true,
     showConstraints: project.showConstraints !== false,
     showInactiveBones: project.showInactiveBones === true,
+    showInteractionRegions: project.showInteractionRegions !== false,
+    showLookFollowGizmo: project.showLookFollowGizmo !== false,
+    showMotionGizmo: project.showMotionGizmo !== false,
     timeline: normalizeProjectTimeline(project.timeline),
     sequences: project.sequences && typeof project.sequences === "object"
       ? Object.fromEntries(Object.entries(project.sequences).map(([key, value]) => [key, normalizeProjectTimeline(value)])) : {},

@@ -189,6 +189,18 @@ export function IconTarget(props: IconProps) {
   return <Base {...props}><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="3" /><path d="M12 2v3m0 14v3M2 12h3m14 0h3" /></Base>;
 }
 
+export function IconBone(props: IconProps) {
+  return <Base {...props}><path d="m8 8 8 8" /><path d="M7.5 11.5a3.5 3.5 0 1 1 4-4l5 5a3.5 3.5 0 1 1-4 4Z" /></Base>;
+}
+
+export function IconText(props: IconProps) {
+  return <Base {...props}><path d="M5 5h14M12 5v14M8 19h8" /></Base>;
+}
+
+export function IconAxis(props: IconProps) {
+  return <Base {...props}><path d="M5 19V5m0 14h14" /><polyline points="2.5 7.5 5 5 7.5 7.5" /><polyline points="16.5 16.5 19 19 16.5 21.5" /></Base>;
+}
+
 export function IconEye(props: IconProps) {
   return <Base {...props}><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></Base>;
 }

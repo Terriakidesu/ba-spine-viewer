@@ -141,6 +141,9 @@ function workspaceForProject(project: EditorProject): Record<string, unknown> {
     showBoneNames: project.showBoneNames,
     showConstraints: project.showConstraints,
     showInactiveBones: project.showInactiveBones,
+    showInteractionRegions: project.showInteractionRegions,
+    showLookFollowGizmo: project.showLookFollowGizmo,
+    showMotionGizmo: project.showMotionGizmo,
   };
 }
 

@@ -75,7 +75,7 @@ import { assertMcpTimelineLocksPreserved, editorDocumentFingerprint, type Editor
 import { WaveformProfileRecorder } from "./waveformProfileDiagnostics";
 import type { AudioWaveformMeasurement } from "./AudioWaveform";
 import { DEFAULT_EDITOR_LAYOUT_PREFERENCES, EDITOR_LAYOUT_PREFERENCES_KEY, normalizeEditorLayoutPreferences, type WorkspaceLayoutPreset } from "./editorLayout";
-import { IconAlert, IconCheck, IconChevronDown, IconClose, IconEye, IconExpand, IconFile, IconFolder, IconHand, IconHelp, IconMenu, IconMessage, IconMore, IconPause, IconPlay, IconPlus, IconSave, IconSearch, IconSliders, IconSound, IconTarget } from "@ba-spine/app-ui/icons";
+import { IconAlert, IconAxis, IconBone, IconCheck, IconChevronDown, IconClose, IconEye, IconEyeOff, IconExpand, IconFile, IconFolder, IconHand, IconHelp, IconLink, IconMenu, IconMessage, IconMore, IconPause, IconPlay, IconPlus, IconSave, IconSearch, IconSliders, IconSound, IconTarget, IconText } from "@ba-spine/app-ui/icons";
 import { AboutPage } from "@ba-spine/app-ui/AboutPage";
 import { useReleaseUpdates } from "@ba-spine/app-ui/releaseUpdates";
 import { usePortableSuiteUpdates } from "@ba-spine/app-ui/portableSuiteUpdates";
@@ -279,9 +279,11 @@ function BoneOverlay({ frame, project, viewSettings, motionLimits, lookFollowVis
   if (!frame || !project) return null;
   const bones = frame.bones.filter((bone) => viewSettings.showInactiveBones || bone.active);
   const selectedBone = project.selectedBonePath;
-  const regions = project.interactions.flatMap((interaction) => interaction.regions.map((region) => ({ interaction, region })));
-  const motion = motionLimits ? motionLimitGeometry(frame, motionLimits) : null;
-  const look = lookFollowVisible ? lookFollowGeometry(frame) : null;
+  const regions = viewSettings.showInteractionRegions
+    ? project.interactions.flatMap((interaction) => interaction.regions.map((region) => ({ interaction, region })))
+    : [];
+  const motion = motionLimits && viewSettings.showMotionGizmo ? motionLimitGeometry(frame, motionLimits) : null;
+  const look = lookFollowVisible && viewSettings.showLookFollowGizmo ? lookFollowGeometry(frame) : null;
 
   const move = (event: ReactPointerEvent<SVGSVGElement>) => {
     const lookAxis = lookRangeDrag.current;
@@ -3747,10 +3749,19 @@ export function Editor() {
              <details className="editor-overlay-menu">
                <summary className="editor-button"><IconSliders /> Overlays <IconChevronDown /></summary>
               <div className="editor-overlay-menu-popover">
-                <label><input type="checkbox" checked={displaySettings.showBones} onChange={(event) => updateViewSetting("showBones", event.target.checked)} /> Bones</label>
-                <label><input type="checkbox" checked={displaySettings.showBoneNames} onChange={(event) => updateViewSetting("showBoneNames", event.target.checked)} /> Names</label>
-                <label><input type="checkbox" checked={displaySettings.showConstraints} onChange={(event) => updateViewSetting("showConstraints", event.target.checked)} /> Constraints</label>
-                <label><input type="checkbox" checked={displaySettings.showInactiveBones} onChange={(event) => updateViewSetting("showInactiveBones", event.target.checked)} /> Inactive bones</label>
+                <div className="editor-overlay-menu-group" role="group" aria-label="Skeleton overlays">
+                  <strong className="editor-overlay-menu-heading">Skeleton</strong>
+                  <label className="editor-overlay-menu-option" title="Show bone joints and links"><input type="checkbox" checked={displaySettings.showBones} onChange={(event) => updateViewSetting("showBones", event.target.checked)} /><IconBone /><span>Bones</span></label>
+                  <label className="editor-overlay-menu-option" title="Show bone names on the canvas"><input type="checkbox" checked={displaySettings.showBoneNames} onChange={(event) => updateViewSetting("showBoneNames", event.target.checked)} /><IconText /><span>Names</span></label>
+                  <label className="editor-overlay-menu-option" title="Show skeleton constraints"><input type="checkbox" checked={displaySettings.showConstraints} onChange={(event) => updateViewSetting("showConstraints", event.target.checked)} /><IconLink /><span>Constraints</span></label>
+                  <label className="editor-overlay-menu-option" title="Include inactive bones in the bone overlay"><input type="checkbox" checked={displaySettings.showInactiveBones} onChange={(event) => updateViewSetting("showInactiveBones", event.target.checked)} /><IconEyeOff /><span>Inactive bones</span></label>
+                </div>
+                <div className="editor-overlay-menu-group" role="group" aria-label="Interaction overlays">
+                  <strong className="editor-overlay-menu-heading">Interaction</strong>
+                  <label className="editor-overlay-menu-option" title="Show and edit interaction regions on the canvas"><input type="checkbox" checked={displaySettings.showInteractionRegions} onChange={(event) => updateViewSetting("showInteractionRegions", event.target.checked)} /><IconTarget /><span>Hit regions</span></label>
+                  <label className="editor-overlay-menu-option" title="Show the Look gizmo while editing or previewing Look follow"><input type="checkbox" checked={displaySettings.showLookFollowGizmo} onChange={(event) => updateViewSetting("showLookFollowGizmo", event.target.checked)} /><IconEye /><span>Look gizmo</span></label>
+                  <label className="editor-overlay-menu-option" title="Show movement limits while editing or testing an interaction"><input type="checkbox" checked={displaySettings.showMotionGizmo} onChange={(event) => updateViewSetting("showMotionGizmo", event.target.checked)} /><IconAxis /><span>Movement gizmo</span></label>
+                </div>
               </div>
             </details>
             <button className="editor-button" onClick={resetPreview} disabled={!meta}>Reset idle</button>

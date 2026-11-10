@@ -479,9 +479,15 @@ input[type="color"] { width: 100%; height: 32px; padding: 2px; border: 1px solid
 .editor-overlay-menu { position: relative; }
 .editor-overlay-menu > summary { list-style: none; }
 .editor-overlay-menu > summary::-webkit-details-marker { display: none; }
-.editor-overlay-menu-popover { position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; display: grid; gap: 7px; min-width: 150px; padding: 9px; border: 1px solid var(--editor-line); border-radius: 4px; background: #102333; box-shadow: 0 8px 24px #0008; }
-.editor-overlay-menu-popover label { display: flex; align-items: center; gap: 7px; color: var(--editor-muted); font-size: 10px; white-space: nowrap; }
-.editor-overlay-menu-popover label:hover { color: var(--editor-text); }
+.editor-overlay-menu-popover { position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; display: grid; gap: 0; width: min(198px, calc(100vw - 24px)); padding: 7px; border: 1px solid var(--editor-line); border-radius: 4px; background: #102333; box-shadow: 0 8px 24px #0008; }
+.editor-overlay-menu-group { display: grid; gap: 3px; }
+.editor-overlay-menu-group + .editor-overlay-menu-group { margin-top: 6px; padding-top: 7px; border-top: 1px solid var(--editor-line); }
+.editor-overlay-menu-heading { padding: 0 4px 2px; color: var(--editor-text); font-size: 9px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+.editor-overlay-menu-option { display: grid; grid-template-columns: 13px 14px minmax(0, 1fr); align-items: center; gap: 7px; min-height: 25px; padding: 2px 4px; border-radius: 3px; color: var(--editor-muted); font-size: 10px; white-space: nowrap; cursor: pointer; }
+.editor-overlay-menu-option:hover { background: #ffffff0a; color: var(--editor-text); }
+.editor-overlay-menu-option input { width: 12px; height: 12px; margin: 0; accent-color: var(--editor-cyan); }
+.editor-overlay-menu-option .icon { width: 13px; height: 13px; color: #a8c5d7; }
+.editor-overlay-menu-option span { overflow: hidden; text-overflow: ellipsis; }
 .editor-open-menu { position: relative; }
 .editor-open-menu > summary { list-style: none; cursor: pointer; }
 .editor-open-menu > summary::-webkit-details-marker { display: none; }
