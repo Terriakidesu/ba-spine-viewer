@@ -57,6 +57,7 @@ let libraryChangeDebouncer: ReturnType<typeof createDebouncedAction> | null = nu
 const pendingLibraryPaths = new Set<string | null>();
 const MAX_VIEWER_VIDEO_BYTES = 1_073_741_824;
 let videoSaveDirectory: string | null = null;
+let lastVideoExportDirectory: string | null = null;
 const ffmpegExecutableCandidates = [
   resolve(import.meta.dir, "../views/ffmpeg/ffmpeg.exe"),
   resolve(import.meta.dir, "../../build/ffmpeg/ffmpeg.exe"),
@@ -84,6 +85,22 @@ function syncViewerApplicationMenu(fullScreen: boolean) {
     { label: "BA Spine Viewer", submenu: [{ role: "quit" }] },
     { label: "Edit", submenu: [{ role: "copy" }, { role: "paste" }, { role: "selectAll" }] },
   ]);
+}
+
+function openDirectoryInFileManager(directory: string): Promise<void> {
+  const executable = process.platform === "win32" ? "explorer.exe"
+    : process.platform === "darwin" ? "open"
+      : process.platform === "linux" ? "xdg-open"
+        : null;
+  if (!executable) return Promise.reject(new Error("Opening export folders is not supported on this platform."));
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(executable, [directory], { detached: true, stdio: "ignore" });
+    child.once("error", rejectPromise);
+    child.once("spawn", () => {
+      child.unref();
+      resolvePromise();
+    });
+  });
 }
 
 const companionInbox = new CompanionInbox("viewer", undefined, () => {
@@ -408,8 +425,17 @@ async function api(request: Request, url: URL): Promise<Response> {
       const expectedExtension = contentType === "video/webm" ? ".webm" : ".mp4";
       const withoutExtension = requestedName.replace(/\.[^.]*$/, "") || "spine-recording";
       const savedAs = await saveVideoWithoutOverwrite(videoSaveDirectory, `${withoutExtension}${expectedExtension}`, bytes);
+      lastVideoExportDirectory = videoSaveDirectory;
       videoSaveDirectory = null;
       return json({ fileName: savedAs });
+    }
+    if (url.pathname === "/__spine/video/open-folder" && request.method === "POST") {
+      const directory = lastVideoExportDirectory;
+      if (!directory) return errorResponse("The last video export folder is unavailable.");
+      const directoryInfo = await stat(directory).catch(() => null);
+      if (!directoryInfo?.isDirectory()) return errorResponse("The last video export folder is unavailable.");
+      await openDirectoryInFileManager(directory);
+      return json({ opened: true });
     }
     if (url.pathname === "/__spine/video/ffmpeg/support" && request.method === "GET") {
       return json(await ffmpegVideoRecorder.support());
@@ -460,6 +486,7 @@ async function api(request: Request, url: URL): Promise<Response> {
       const sessionId = request.headers.get("x-ba-spine-video-session") ?? "";
       const frameCount = Number(request.headers.get("x-ba-spine-video-frames"));
       const result = await ffmpegVideoRecorder.finish(sessionId, frameCount);
+      lastVideoExportDirectory = videoSaveDirectory;
       videoSaveDirectory = null;
       return json(result);
     }

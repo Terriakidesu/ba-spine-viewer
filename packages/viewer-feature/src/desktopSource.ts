@@ -102,6 +102,11 @@ export async function chooseDesktopVideoDirectory(): Promise<string | null> {
   return typeof result.directoryName === "string" && result.directoryName ? result.directoryName : null;
 }
 
+export async function openDesktopVideoFolder(): Promise<void> {
+  if (!isDesktopHost()) throw new Error("The native export folder is unavailable.");
+  await request("/__spine/video/open-folder", { method: "POST" });
+}
+
 export async function saveDesktopVideo(blob: Blob, filename: string, format: "webm" | "mp4"): Promise<string> {
   const result = await request("/__spine/video/save", {
     method: "POST",

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, normalizeVideoRecordingQuality, readVideoRecordingQuality, VIDEO_RECORDING_QUALITY_STORAGE_KEY, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingTimelineOffsets, writeVideoRecordingQuality } from "./videoRecorder";
+import { createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, normalizeVideoRecordingQuality, readVideoRecordingQuality, VIDEO_RECORDING_QUALITY_STORAGE_KEY, VIDEO_RECORDING_SUBTITLE_SELECTOR, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingTimelineOffsets, writeVideoRecordingQuality } from "./videoRecorder";
 
 describe("Viewer video quality preference", () => {
   test("defaults safely and persists a validated quality preset", () => {
@@ -20,6 +20,11 @@ describe("Viewer video quality preference", () => {
 });
 
 describe("Viewer video recording plans", () => {
+  test("captures dialogue and behavior subtitles in exported frames", () => {
+    expect(VIDEO_RECORDING_SUBTITLE_SELECTOR).toContain(".spine-dialogue");
+    expect(VIDEO_RECORDING_SUBTITLE_SELECTOR).toContain(".spine-behavior-subtitle");
+  });
+
   test("counts the opening once and stops at the requested idle-loop boundary", () => {
     const plan = createVideoRecordingPlan("opening-idle", 5.5, 2, 3);
     expect(plan.totalDuration).toBe(11.5);
@@ -126,6 +131,7 @@ describe("Viewer video recording plans", () => {
     expect(videoRecordingDimensions(1080, "16:9")).toEqual({ width: 1920, height: 1080 });
     expect(videoRecordingDimensions(1440, "16:9")).toEqual({ width: 2560, height: 1440 });
     expect(videoRecordingDimensions(2160, "16:9")).toEqual({ width: 3840, height: 2160 });
+    expect(videoRecordingDimensions(1080, "4:3")).toEqual({ width: 1440, height: 1080 });
     expect(videoRecordingDimensions(720, "4:3")).toEqual({ width: 960, height: 720 });
   });
 
@@ -151,6 +157,31 @@ describe("Viewer video recording plans", () => {
     expect(videoRecordingAudioSchedule(2.25, 8, 0.65, 5)).toEqual({ start: 2.25, duration: 2.75, volume: 0.65 });
     expect(videoRecordingAudioSchedule(-1, 2, 1.5, 4)).toEqual({ start: 0, duration: 2, volume: 1 });
     expect(videoRecordingAudioSchedule(5, 6, 1, 5)).toBeNull();
+  });
+
+  test("keeps a final Talk audio tail on the global export clock", () => {
+    const plan = createFullSequenceRecordingPlan({
+      openingDuration: 0,
+      idleDuration: 1,
+      idleSequenceId: "opening",
+      includeOpening: false,
+      initialIdleLoops: 1,
+      betweenTalkIdleSeconds: 0,
+      finalIdleLoops: 1,
+      talks: [{ sequenceId: "talk-1", duration: 7 }],
+      selectedTalkSequenceIds: ["talk-1"],
+    });
+    const talkOffset = videoRecordingTimelineOffsets(plan, {
+      timeline: { sequenceId: "opening" } as never,
+      sequences: { "talk-1": { sequenceId: "talk-1" } as never },
+    })[0]?.start ?? 0;
+
+    expect(talkOffset).toBe(1);
+    expect(videoRecordingAudioSchedule(talkOffset + 5, talkOffset + 7, 1, plan.totalDuration)).toEqual({
+      start: 6,
+      duration: 2,
+      volume: 1,
+    });
   });
 
   test("sanitizes generated export names without touching the chosen folder", () => {

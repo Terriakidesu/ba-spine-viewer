@@ -1,4 +1,5 @@
 import { timelineForSequence, type SpineTimeline, type SpineTimelineProject } from "@ba-spine/spine-runtime/spine/spineTimeline";
+import type { SpineCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 
 export type VideoRecordingMode = "full-sequence" | "opening-idle" | "idle-only";
 export type VideoRecordingFormat = "webm" | "mp4";
@@ -43,6 +44,7 @@ export interface VideoRecordingSettings {
   betweenTalkIdleSeconds: number;
   finalIdleLoops: number;
   resolution: VideoRecordingResolution;
+  aspectRatio: SpineCameraAspectRatio;
   frameRate: VideoRecordingFrameRate;
   framing: "current" | "saved";
   includeAudio: boolean;
@@ -397,6 +399,8 @@ interface StageFramePlan {
   subtitleRoot: Element;
 }
 
+export const VIDEO_RECORDING_SUBTITLE_SELECTOR = ".spine-dialogue, .spine-behavior-subtitle";
+
 function createStageFramePlan(stageElement: HTMLElement): StageFramePlan {
   return {
     subtitleRoot: stageElement.closest(".spine-stage-frame") ?? stageElement.parentElement ?? stageElement,
@@ -461,7 +465,7 @@ function drawStageFrame(
   context.restore();
 
   if (includeSubtitles) {
-    for (const element of plan.subtitleRoot.querySelectorAll<HTMLElement>(".spine-dialogue")) {
+    for (const element of plan.subtitleRoot.querySelectorAll<HTMLElement>(VIDEO_RECORDING_SUBTITLE_SELECTOR)) {
       drawSubtitle(context, element, stage, scale, offsetX, offsetY);
     }
   }

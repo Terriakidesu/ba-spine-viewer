@@ -705,9 +705,9 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 
 .spine-record-video-button > svg { color: #ef5673; }
 .spine-recorder-background { display: contents; }
-.spine-recorder-backdrop { position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 20px; background: #071018c9; backdrop-filter: blur(6px); }
-.spine-recorder-dialog { display: flex; width: min(1000px, 100%); min-width: 0; max-height: min(800px, calc(100dvh - 40px)); flex-direction: column; overflow: hidden; box-sizing: border-box; padding: 22px; border: 1px solid color-mix(in srgb, var(--cyan) 35%, var(--line)); border-top: 3px solid var(--cyan); border-radius: 9px; background: var(--surface); color: var(--text); box-shadow: 0 24px 80px #0008; }
-.spine-recorder-dialog.is-progress { width: min(1200px, 100%); max-height: min(840px, calc(100dvh - 24px)); padding: 20px 24px 16px; }
+.spine-recorder-backdrop { position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 12px; background: #071018c9; backdrop-filter: blur(6px); }
+.spine-recorder-dialog { display: flex; width: min(1480px, 100%); min-width: 0; max-height: min(960px, calc(100dvh - 24px)); flex-direction: column; overflow: hidden; box-sizing: border-box; padding: 22px 26px; border: 1px solid color-mix(in srgb, var(--cyan) 35%, var(--line)); border-top: 3px solid var(--cyan); border-radius: 9px; background: var(--surface); color: var(--text); box-shadow: 0 24px 80px #0008; }
+.spine-recorder-dialog.is-progress { width: min(1480px, 100%); max-height: min(960px, calc(100dvh - 24px)); padding: 20px 26px 16px; }
 .spine-recorder-heading { display: flex; flex: none; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 17px; }
 .spine-recorder-heading > div > span { color: var(--cyan); font-size: 9px; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
 .spine-recorder-heading h2 { margin: 5px 0 0; font-size: 21px; }
@@ -738,7 +738,7 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-summary dd, .spine-recorder-complete-details dd { overflow: hidden; margin: 3px 0 0; color: var(--text); font-size: 10px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .spine-recorder-summary dt { margin-bottom: 3px; color: var(--muted); font-size: 9px; font-weight: 750; }
 .spine-recorder-summary dd { overflow: hidden; margin: 0; color: var(--text); font-size: 10px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
-.spine-recorder-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.spine-recorder-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .spine-recorder-fields label { display: flex; min-width: 0; flex-direction: column; gap: 6px; color: var(--muted); font-size: 10px; font-weight: 750; }
 .spine-recorder-fields :is(input, select) { width: 100%; min-width: 0; min-height: 36px; box-sizing: border-box; padding: 7px 9px; font-size: 12px; }
 .spine-recorder-quality-note { margin: -5px 0 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
@@ -759,6 +759,8 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-talk-list > label.has-warning small { grid-column: 2 / -1; color: var(--amber, #d3a84a); text-align: left; }
 .spine-recorder-sequence-preview { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: color-mix(in srgb, var(--surface-alt) 46%, transparent); }
 .spine-recorder-sequence-preview.is-docked { flex: none; margin-top: 10px; padding: 8px 10px 10px; }
+.spine-recorder-progress-top .spine-recorder-sequence-preview.is-docked { margin: 0; padding: 7px 10px; }
+.spine-recorder-progress-top .spine-recorder-sequence-preview-header { margin-bottom: 5px; }
 .spine-recorder-sequence-preview-header { display: flex; min-width: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 8px; }
 .spine-recorder-sequence-preview-header h3 { flex: none; margin: 0; color: var(--text); font-size: 10px; font-weight: 850; }
 .spine-recorder-sequence-current { min-width: 0; color: var(--text); font-size: 10px; font-weight: 800; font-variant-numeric: tabular-nums; }
@@ -820,7 +822,8 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-progress.is-indeterminate > span { width: 32%; animation: spine-load-sweep 1.2s ease-in-out infinite; }
 @media (max-width: 760px) {
   .spine-recorder-content:not(.is-progress) { grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  .spine-recorder-content.is-progress { grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 10px; }
+  .spine-recorder-content.is-progress { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .spine-recorder-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .spine-recorder-preview { width: min(100%, 440px); justify-self: center; }
 }
 @media (max-width: 520px) {
