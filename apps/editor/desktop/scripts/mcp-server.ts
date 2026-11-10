@@ -375,7 +375,7 @@ const behaviorActivationSchema = z.object({
 }).strict();
 const behaviorActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("play-animation"), mainAnimation: z.string().nullable(), faceAnimation: z.string().nullable(), bodyTrack: z.number().int().min(1).max(32), faceTrack: z.number().int().min(1).max(32), loop: z.boolean(), mixDuration: z.number().finite().min(0).max(2), fallbackProfile: z.enum(["look-start", "look-end"]).optional() }).strict(),
-  z.object({ type: z.literal("pointer-follow"), targetBonePath: z.string().nullable(), allowX: z.boolean(), allowY: z.boolean(), rangeX: z.number().finite().min(0).max(512).nullable(), rangeY: z.number().finite().min(0).max(512).nullable(), smoothing: z.number().finite().min(0.1).max(60) }).strict(),
+  z.object({ type: z.literal("pointer-follow"), targetBonePath: z.string().nullable(), allowX: z.boolean(), allowY: z.boolean(), rangeX: z.number().finite().min(0).max(512).nullable(), rangeY: z.number().finite().min(0).max(512).nullable(), smoothing: z.number().finite().min(0.1).max(60), rotationEnabled: z.boolean().default(false), rotationAxis: z.enum(["x", "y"]).default("x"), rotationMin: z.number().finite().min(-180).max(0).default(-15), rotationMax: z.number().finite().min(0).max(180).default(15) }).strict(),
   z.object({ type: z.literal("drag-bone"), targetBonePath: z.string().nullable(), sensitivity: z.number().finite().min(0).max(10), limitX: z.number().finite().min(0), limitY: z.number().finite().min(0), allowX: z.boolean(), allowY: z.boolean(), smoothing: z.number().finite().min(0.1).max(60), returnDuration: z.number().finite().min(0.05).max(10) }).strict(),
   z.object({ type: z.literal("rotate-bone"), targetBonePath: z.string().nullable(), axis: z.enum(["x", "y"]), minimum: z.number().finite().min(-360).max(0), maximum: z.number().finite().min(0).max(360), returnDuration: z.number().finite().min(0.05).max(10) }).strict(),
   z.object({ type: z.literal("play-audio"), audioId: z.string(), volume: z.number().finite().min(0).max(1), loop: z.boolean() }).strict(),
@@ -663,6 +663,7 @@ const lookFollowPatchSchema = z.object({
   enabled: z.boolean().optional(), targetBonePath: z.string().nullable().optional(), delay: z.number().finite().min(0).max(10).optional(),
   rangeX: z.number().finite().min(0).max(512).nullable().optional(), rangeY: z.number().finite().min(0).max(512).nullable().optional(),
   smoothing: z.number().finite().min(0.1).max(60).optional(), allowX: z.boolean().optional(), allowY: z.boolean().optional(),
+  rotationEnabled: z.boolean().optional(), rotationAxis: z.enum(["x", "y"]).optional(), rotationMin: z.number().finite().min(-180).max(0).optional(), rotationMax: z.number().finite().min(0).max(180).optional(),
   startAnimation: z.string().optional(), faceStartAnimation: z.string().optional(), endAnimation: z.string().optional(), faceEndAnimation: z.string().optional(),
 }).strict().refine((patch) => Object.keys(patch).length > 0, "Set at least one Look-follow field.");
 const timelineItemRefSchema = z.object({ kind: z.enum(["layer", "color-layer", "animation", "color", "cue", "audio"]), id: z.string().min(1) }).strict();
@@ -807,7 +808,7 @@ server.registerTool(trackToolName("editor_select_region"), {
 
 server.registerTool(trackToolName("editor_update_look_follow"), {
   title: "Update Look-follow settings",
-  description: "Edit Look-follow enablement, target bone, axes, ranges, smoothing, delay, and phase animations. Authored behavior settings remain canonical and synchronized.",
+  description: "Edit Look-follow enablement, target bone, axes, ranges, local rotation limits, smoothing, delay, and phase animations. Authored behavior settings remain canonical and synchronized.",
   inputSchema: z.object({ patch: lookFollowPatchSchema, expectedDocumentRevision: z.number().int().nonnegative().optional() }).strict(),
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
 }, async ({ patch, expectedDocumentRevision }) => {

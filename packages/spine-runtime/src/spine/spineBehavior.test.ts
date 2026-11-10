@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { arbitrateSpineBehaviors, evaluateSpineBehaviorTransition, migrateLegacyInteractionsToBehaviors, normalizeSpineBehaviorMachine, normalizeSpineBehaviorMachines, synchronizeLegacyBehaviorMachines, type SpineBehaviorEvent, type SpineBehaviorMachine } from "./spineBehavior";
+import { arbitrateSpineBehaviors, behaviorMachineWithLookFollowSettings, evaluateSpineBehaviorTransition, migrateLegacyInteractionsToBehaviors, normalizeSpineBehaviorMachine, normalizeSpineBehaviorMachines, spineLookFollowSettingsFromBehaviorMachines, synchronizeLegacyBehaviorMachines, type SpineBehaviorEvent, type SpineBehaviorMachine } from "./spineBehavior";
 import { DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, normalizeSpineInteractionProject, type SpineAuthoredInteraction } from "./spineInteraction";
 import { SpineBehaviorRuntime } from "./spineBehaviorRuntime";
 
@@ -168,6 +168,10 @@ describe("declarative behavior machines", () => {
       smoothing: 21,
       allowX: false,
       allowY: true,
+      rotationEnabled: true,
+      rotationAxis: "y" as const,
+      rotationMin: -42,
+      rotationMax: 28,
       startAnimation: "LookStart_M",
       faceStartAnimation: "LookStart_A",
       endAnimation: "LookEnd_M",
@@ -178,9 +182,24 @@ describe("declarative behavior machines", () => {
     expect(look).toMatchObject({ enabled: false, sourceLegacyInteractionId: "$legacy-look-follow", activation: { holdDelay: 0.76 } });
     expect(follow.actions.find((action) => action.type === "pointer-follow")).toMatchObject({
       targetBonePath: "root/EyeTarget", rangeX: 92, rangeY: 37, smoothing: 21, allowX: false, allowY: true,
+      rotationEnabled: true, rotationAxis: "y", rotationMin: -42, rotationMax: 28,
     });
     expect(follow.actions.find((action) => action.type === "play-animation" && action.fallbackProfile === "look-start")).toMatchObject({ mainAnimation: "LookStart_M", faceAnimation: "LookStart_A" });
     expect(look.states.find((state) => state.id === "returning")?.actions[0]).toMatchObject({ mainAnimation: "LookEnd_M", faceAnimation: "LookEnd_A" });
+  });
+
+  test("round-trips Look rotation through an independently authored behavior machine", () => {
+    const generated = migrateLegacyInteractionsToBehaviors([], DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS).find((item) => item.id === "look-follow")!;
+    const authored = { ...generated, sourceLegacyInteractionId: null };
+    const settings = {
+      ...DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS,
+      rotationEnabled: true,
+      rotationAxis: "y" as const,
+      rotationMin: -55,
+      rotationMax: 32,
+    };
+    const updated = behaviorMachineWithLookFollowSettings(authored, settings);
+    expect(spineLookFollowSettingsFromBehaviorMachines(DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, [updated])).toMatchObject(settings);
   });
 
   test("legacy synchronization updates generated machines and retains independently authored machines", () => {

@@ -154,6 +154,7 @@ function lookPlayback(endAnimation: string | null = "LookEnd_01_M") {
   const rootBone = skeleton.bones[0]!;
   const eyeBone = skeleton.bones[1]!;
   eyeBone.x = 80;
+  skeleton.updateWorldTransform(0 as never);
   const eyeTarget = { bone: eyeBone, baseX: 0, baseY: 0, rangeX: 100, rangeY: 100 };
   const state = new AnimationState(new AnimationStateData(data));
   const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
@@ -287,6 +288,110 @@ describe("Spine restart playback", () => {
     runtime.beginLook();
     expect(runtime.interactionState).toBe("look");
     expect(runtime.isInteractionBusy()).toBe(true);
+  });
+
+  test("Look-follow rotation layers over animated local rotation and returns without flattening it", () => {
+    const { renderer, eyeBone } = lookPlayback(null);
+    const runtime = renderer as any;
+    runtime.bundle.lookFollow = {
+      enabled: true, smoothing: 10, allowX: true, allowY: true,
+      rotationEnabled: true, rotationAxis: "x", rotationMin: -30, rotationMax: 45,
+    };
+    eyeBone.x = 0;
+    eyeBone.rotation = 12;
+    runtime.applyEyeFollow(0.5, { x: 200, y: 0, z: 0 });
+    expect(eyeBone.rotation).toBeGreaterThan(56);
+    expect(eyeBone.rotation).toBeLessThan(58);
+
+    runtime.resetEyeFollowTargetForAnimation(runtime.bundle);
+    expect(eyeBone.rotation).toBeCloseTo(12);
+    eyeBone.rotation = 24;
+    runtime.applyEyeFollow(0.5, { x: 200, y: 0, z: 0 });
+    expect(eyeBone.rotation).toBeCloseTo(69, 0);
+
+    runtime.interactionState = "lookRelease";
+    runtime.resetEyeFollowTargetForAnimation(runtime.bundle);
+    eyeBone.rotation = 40;
+    runtime.applyEyeFollow(0.05, null);
+    expect(eyeBone.rotation).toBeGreaterThan(40);
+    expect(eyeBone.rotation).toBeLessThan(69);
+
+    let animationRotation = 40;
+    for (let index = 0; index < 120; index += 1) {
+      runtime.resetEyeFollowTargetForAnimation(runtime.bundle);
+      animationRotation += 0.1;
+      eyeBone.rotation = animationRotation;
+      runtime.applyEyeFollow(1 / 60, null);
+    }
+    expect(eyeBone.rotation).toBeCloseTo(animationRotation, 1);
+    expect(runtime.eyeFollowAtRest()).toBe(true);
+  });
+
+  test("authored pointer-follow rotation follows the animated pose and eases its local offset home", () => {
+    const data = new SkeletonData();
+    const root = new BoneData(0, "root", null);
+    data.bones.push(root, new BoneData(1, "Touch_Eye_Key", root));
+    const skeleton = new Skeleton(data);
+    const bone = skeleton.bones[1]!;
+    bone.rotation = 5;
+    skeleton.updateWorldTransform(0 as never);
+    const action = {
+      type: "pointer-follow" as const,
+      targetBonePath: "root/Touch_Eye_Key",
+      allowX: true,
+      allowY: true,
+      rangeX: 100,
+      rangeY: 100,
+      smoothing: 10,
+      rotationEnabled: true,
+      rotationAxis: "x" as const,
+      rotationMin: -20,
+      rotationMax: 30,
+    };
+    const control = {
+      key: "look-follow/following/1",
+      machineId: "look-follow",
+      bone,
+      action,
+      baseX: bone.x,
+      baseY: bone.y,
+      baseRotation: bone.rotation,
+      currentWorldX: bone.worldX,
+      currentWorldY: bone.worldY,
+      currentRotation: 0,
+      originLocal: null,
+      returning: false,
+      returnElapsed: 0,
+      returnDuration: 0.35,
+      returnFromX: bone.x,
+      returnFromY: bone.y,
+      returnFromRotation: bone.rotation,
+    };
+    const bundle = { skeleton, bounds: { x: 0, y: 0, width: 100, height: 100 }, eyeTarget: { bone, rangeX: 100, rangeY: 100 } } as any;
+    const runtime = Object.assign(Object.create(SpineRenderer.prototype), {
+      bundle,
+      behaviorControls: new Map([[control.key, control]]),
+      pointerWorld: () => ({ x: 100, y: 0, z: 0 }),
+    }) as any;
+
+    runtime.applyBehaviorBoneControls(bundle, 0.5);
+    expect(bone.rotation).toBeGreaterThan(34);
+    expect(bone.rotation).toBeLessThan(35);
+    runtime.restoreBehaviorBoneControlPose();
+    bone.rotation = 20;
+    runtime.applyBehaviorBoneControls(bundle, 0.5);
+    expect(bone.rotation).toBeCloseTo(50);
+
+    runtime.returnBehaviorBoneControl(control.key, 0.5);
+    runtime.restoreBehaviorBoneControlPose();
+    bone.rotation = 40;
+    runtime.applyBehaviorBoneControls(bundle, 0.25);
+    expect(bone.rotation).toBeCloseTo(47.5);
+    runtime.restoreBehaviorBoneControlPose();
+    bone.rotation = 60;
+    runtime.applyBehaviorBoneControls(bundle, 0.25);
+    expect(bone.rotation).toBeCloseTo(60);
+    expect(runtime.behaviorControls.size).toBe(0);
   });
 
   test("restarts the intro after the queued idle has already begun", () => {

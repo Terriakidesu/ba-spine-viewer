@@ -26,7 +26,7 @@ import { findIdleAnimation } from "./spineAnimation";
 import { createResourceQueue } from "./resourceQueue";
 import { spineCanvasBackingSize } from "./spineCanvasResolution";
 import { DEFAULT_EFFECTS_STRENGTH, drawWithEffectsStrength } from "./spineEffects";
-import { authoredInteraction, authoredInteractionAction, authoredRegions, clearInteractionTrack, DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, DEFAULT_TALK_MIX_DURATION, interactionKind, interactionPhaseAfterStart, interactionPressReady, lookFollowTarget, normalizeAnimationMixDuration, normalizeSpineLookFollowSettings, profileFromProject, queueInteractionFadeOut, setInteractionTrack, smoothLookFollowPoint, type SpineAnimationPair, type SpineInteractionAction, type SpineInteractionProfile, type SpineInteractionProject, type SpineAuthoredInteraction, type SpineAuthoredRegion, type SpineLookFollowSettings } from "./spineInteraction";
+import { authoredInteraction, authoredInteractionAction, authoredRegions, clearInteractionTrack, DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, DEFAULT_TALK_MIX_DURATION, interactionKind, interactionPhaseAfterStart, interactionPressReady, lookFollowRotation, lookFollowTarget, normalizeAnimationMixDuration, normalizeSpineLookFollowSettings, profileFromProject, queueInteractionFadeOut, setInteractionTrack, smoothLookFollowPoint, type SpineAnimationPair, type SpineInteractionAction, type SpineInteractionProfile, type SpineInteractionProject, type SpineAuthoredInteraction, type SpineAuthoredRegion, type SpineLookFollowSettings } from "./spineInteraction";
 import { SpineBehaviorRuntime, type SpineBehaviorDebugMachine, type SpineBehaviorRuntimeContext } from "./spineBehaviorRuntime";
 import { normalizeSpineBehaviorMachines, type SpineBehaviorAction, type SpineBehaviorEvent, type SpineBehaviorMachine, type SpineBehaviorState } from "./spineBehavior";
 import {
@@ -151,6 +151,8 @@ export interface SpineLookFollowGizmoFrame {
   currentScreenY: number;
   rangeX: number;
   rangeY: number;
+  /** Local rotation added by Look-follow; used to anchor the limit arc to the animation pose. */
+  rotationOffset: number;
   active: boolean;
 }
 
@@ -761,6 +763,8 @@ export class SpineRenderer {
   private interactionFollowWorld: { x: number; y: number } | null = null;
   /** Gaze displacement from the current animation pose, in target-local coordinates. */
   private interactionFollowLocal: { x: number; y: number } | null = null;
+  /** Pat-style local rotation offset layered over the target's sampled animation pose. */
+  private interactionFollowRotation = 0;
   private touchPointerOrigin: { x: number; y: number } | null = null;
   private touchFollowOffset: { x: number; y: number } | null = null;
   private behaviorPointerHeldSeconds = 0;
@@ -914,6 +918,7 @@ export class SpineRenderer {
     this.eyeFollowHold = 0;
     this.interactionFollowWorld = null;
     this.interactionFollowLocal = null;
+    this.interactionFollowRotation = 0;
     this.touchPointerOrigin = null;
     this.touchFollowOffset = null;
     this.talkIndex = 0;
@@ -1254,7 +1259,7 @@ export class SpineRenderer {
       baseRotation: bone.rotation,
       currentWorldX: baseWorld.x,
       currentWorldY: baseWorld.y,
-      currentRotation: bone.rotation,
+      currentRotation: action.type === "pointer-follow" ? 0 : bone.rotation,
       originLocal,
       returning: false,
       returnElapsed: 0,
@@ -1271,9 +1276,17 @@ export class SpineRenderer {
     control.returning = true;
     control.returnElapsed = 0;
     control.returnDuration = Math.max(0.05, duration);
-    control.returnFromX = control.bone.x;
-    control.returnFromY = control.bone.y;
-    control.returnFromRotation = control.bone.rotation;
+    if (control.action.type === "pointer-follow") {
+      // Return offsets over each freshly sampled animation pose, not toward a
+      // stale absolute pose captured when Look-follow began.
+      control.returnFromX = control.bone.x - control.baseX;
+      control.returnFromY = control.bone.y - control.baseY;
+      control.returnFromRotation = control.bone.rotation - control.baseRotation;
+    } else {
+      control.returnFromX = control.bone.x;
+      control.returnFromY = control.bone.y;
+      control.returnFromRotation = control.bone.rotation;
+    }
   }
 
   private behaviorPointerToParentLocal(bundle: LoadedBundle, bone: Bone, point: { x: number; y: number }): { x: number; y: number } {
@@ -1296,6 +1309,21 @@ export class SpineRenderer {
         control.returnElapsed += delta;
         const progress = Math.min(1, control.returnElapsed / control.returnDuration);
         const eased = 1 - (1 - progress) * (1 - progress);
+        if (control.action.type === "pointer-follow") {
+          control.baseX = bone.x;
+          control.baseY = bone.y;
+          control.baseRotation = bone.rotation;
+          if (bundle.eyeTarget?.bone === bone) {
+            bundle.eyeTarget.baseX = control.baseX;
+            bundle.eyeTarget.baseY = control.baseY;
+          }
+          const remaining = 1 - eased;
+          bone.x = control.baseX + control.returnFromX * remaining;
+          bone.y = control.baseY + control.returnFromY * remaining;
+          bone.rotation = control.baseRotation + control.returnFromRotation * remaining;
+          if (progress >= 1) this.behaviorControls.delete(key);
+          continue;
+        }
         bone.x = control.returnFromX + (control.baseX - control.returnFromX) * eased;
         bone.y = control.returnFromY + (control.baseY - control.returnFromY) * eased;
         bone.rotation = control.returnFromRotation + (control.baseRotation - control.returnFromRotation) * eased;
@@ -1309,6 +1337,16 @@ export class SpineRenderer {
       }
       if (!pointer) continue;
       if (control.action.type === "pointer-follow") {
+        // The animation is sampled after the prior frame's offset is removed.
+        // Rebase each frame so both movement and rotation preserve animated
+        // target motion instead of freezing the pose from state entry.
+        control.baseX = bone.x;
+        control.baseY = bone.y;
+        control.baseRotation = bone.rotation;
+        if (bundle.eyeTarget?.bone === bone) {
+          bundle.eyeTarget.baseX = control.baseX;
+          bundle.eyeTarget.baseY = control.baseY;
+        }
         const base = bone.parent
           ? bone.parent.localToWorld(new Vector2(control.baseX, control.baseY))
           : new Vector2(control.baseX + bundle.skeleton.x, control.baseY + bundle.skeleton.y);
@@ -1326,6 +1364,20 @@ export class SpineRenderer {
           : new Vector2(smoothed.x - bundle.skeleton.x, smoothed.y - bundle.skeleton.y);
         bone.x = local.x;
         bone.y = local.y;
+        const localPointer = this.behaviorPointerToParentLocal(bundle, bone, pointer);
+        const desiredRotation = control.action.rotationEnabled
+          ? lookFollowRotation(
+            { x: localPointer.x - control.baseX, y: localPointer.y - control.baseY },
+            rangeX,
+            rangeY,
+            control.action.rotationAxis,
+            control.action.rotationMin,
+            control.action.rotationMax,
+          )
+          : 0;
+        const rotationAmount = 1 - Math.exp(-Math.max(0, delta) * control.action.smoothing);
+        control.currentRotation += (desiredRotation - control.currentRotation) * rotationAmount;
+        bone.rotation = control.baseRotation + control.currentRotation;
       } else if (control.originLocal) {
         const localPointer = this.behaviorPointerToParentLocal(bundle, bone, pointer);
         if (control.action.type === "drag-bone") {
@@ -1344,6 +1396,16 @@ export class SpineRenderer {
           bone.rotation += (desired - bone.rotation) * factor;
         }
       }
+    }
+  }
+
+  /** Remove active Look-follow offsets before Spine samples the next animation pose. */
+  private restoreBehaviorBoneControlPose() {
+    for (const control of this.behaviorControls.values()) {
+      if (control.action.type !== "pointer-follow" || !this.bundle?.skeleton.bones.includes(control.bone)) continue;
+      control.bone.x = control.baseX;
+      control.bone.y = control.baseY;
+      control.bone.rotation = control.baseRotation;
     }
   }
 
@@ -1495,6 +1557,7 @@ export class SpineRenderer {
     this.eyeFollowHold = 0;
     this.interactionFollowWorld = null;
     this.interactionFollowLocal = null;
+    this.interactionFollowRotation = 0;
     this.touchPointerOrigin = null;
     this.touchFollowOffset = null;
     if (mode === "interaction") {
@@ -1636,6 +1699,7 @@ export class SpineRenderer {
     }
     this.interactionFollowWorld = null;
     this.interactionFollowLocal = null;
+    this.interactionFollowRotation = 0;
     this.touchPointerOrigin = null;
     this.touchFollowOffset = null;
   }
@@ -1675,6 +1739,7 @@ export class SpineRenderer {
     this.eyeFollowHold = 0;
     this.interactionFollowWorld = null;
     this.interactionFollowLocal = null;
+    this.interactionFollowRotation = 0;
     this.interactionPressedTarget = null;
     this.interactionPressedTrigger = "hold";
     this.interactionPressOrigin = null;
@@ -1708,8 +1773,13 @@ export class SpineRenderer {
       }
     }
     if (!preserveLookFollow) {
+      const rotationOffset = this.interactionFollowRotation ?? 0;
+      if (bundle?.eyeTarget && rotationOffset !== 0) {
+        bundle.eyeTarget.bone.rotation -= rotationOffset;
+      }
       this.interactionFollowWorld = null;
       this.interactionFollowLocal = null;
+      this.interactionFollowRotation = 0;
     }
     this.touchPointerOrigin = null;
     this.touchFollowOffset = null;
@@ -1728,6 +1798,7 @@ export class SpineRenderer {
     if (!target) return;
     target.bone.x = target.baseX;
     target.bone.y = target.baseY;
+    target.bone.rotation -= this.interactionFollowRotation ?? 0;
   }
 
   private motionState(): SpineInteractionMotionState {
@@ -1765,6 +1836,7 @@ export class SpineRenderer {
     const profile = bundle.interaction.look;
     this.interactionState = "look";
     this.interactionFollowLocal = null;
+    this.interactionFollowRotation = 0;
     this.interactionTrackName = profile?.start.main ?? null;
     if (profile) this.playOverlayPair(profile.start, 1, 2, false, false);
   }
@@ -1850,6 +1922,7 @@ export class SpineRenderer {
     this.eyeFollowHold = 0;
     this.interactionFollowWorld = null;
     this.interactionFollowLocal = null;
+    this.interactionFollowRotation = 0;
     const pointer = this.pointerWorld();
     this.touchPointerOrigin = pointer ? { x: pointer.x, y: pointer.y } : null;
     this.touchFollowOffset = null;
@@ -2143,6 +2216,7 @@ export class SpineRenderer {
     this.eyeFollowHold = 0;
     this.interactionFollowWorld = null;
     this.interactionFollowLocal = null;
+    this.interactionFollowRotation = 0;
     this.touchPointerOrigin = null;
     this.touchFollowOffset = null;
     this.sampledEditorFace = "";
@@ -2199,6 +2273,12 @@ export class SpineRenderer {
         ? eyeTarget.bone.parent.localToWorld(new Vector2(eyeTarget.baseX, eyeTarget.baseY))
         : new Vector2(eyeTarget.baseX + bundle.skeleton.x, eyeTarget.baseY + bundle.skeleton.y)
       : null;
+    const lookBehaviorControl = eyeTarget
+      ? [...this.behaviorControls.values()].find((control) => control.action.type === "pointer-follow" && control.bone === eyeTarget.bone)
+      : null;
+    const lookRotationOffset = this.interactionState === "look" || this.interactionState === "lookRelease"
+      ? this.interactionFollowRotation ?? 0
+      : lookBehaviorControl ? eyeTarget!.bone.rotation - lookBehaviorControl.baseRotation : 0;
     const lookFollow = eyeTarget && lookBaseWorld
       ? {
         targetBonePath: bonePath(eyeTarget.bone),
@@ -2208,6 +2288,7 @@ export class SpineRenderer {
         currentScreenY: screen(eyeTarget.bone.worldX, eyeTarget.bone.worldY).y,
         rangeX: eyeTarget.rangeX,
         rangeY: eyeTarget.rangeY,
+        rotationOffset: lookRotationOffset,
         active: this.interactionState === "look",
       }
       : null;
@@ -2585,6 +2666,7 @@ export class SpineRenderer {
         this.emitBehaviorDebug(bundle);
         this.callbacks.onBeforeEditorUpdate?.(bundle.skeleton);
         this.restoreInteractionPose();
+        this.restoreBehaviorBoneControlPose();
         if (this.playing) bundle.state.update(delta * this.speed);
         this.resetEyeFollowTargetForAnimation(bundle);
         bundle.state.apply(bundle.skeleton);
@@ -2962,20 +3044,31 @@ export class SpineRenderer {
     const eyeTarget = bundle?.eyeTarget;
     if (!bundle || !eyeTarget) return;
     if (this.interactionState === "lookRelease") {
-      // Preserve the pose sampled from idle/LookEnd and ease only the gaze offset.
-      const basePose = { x: eyeTarget.bone.x, y: eyeTarget.bone.y };
+      // Preserve the pose sampled from idle/LookEnd and ease only the gaze offsets.
+      const basePose = { x: eyeTarget.bone.x, y: eyeTarget.bone.y, rotation: eyeTarget.bone.rotation };
+      eyeTarget.baseX = basePose.x;
+      eyeTarget.baseY = basePose.y;
       const currentOffset = this.interactionFollowLocal ?? { x: 0, y: 0 };
       const desiredOffset = { x: 0, y: 0 };
       const settled = Math.hypot(currentOffset.x, currentOffset.y) <= LOOK_FOLLOW_REST_EPSILON;
       const offset = settled ? desiredOffset : smoothLookFollowPoint(currentOffset, desiredOffset, delta, bundle.lookFollow.smoothing);
+      const currentRotation = this.interactionFollowRotation ?? 0;
+      const rotationAmount = 1 - Math.exp(-Math.max(0, delta) * bundle.lookFollow.smoothing);
+      const rotationOffset = Math.abs(currentRotation) <= LOOK_FOLLOW_REST_EPSILON
+        ? 0
+        : currentRotation * (1 - rotationAmount);
       this.interactionFollowLocal = offset;
+      this.interactionFollowRotation = rotationOffset;
       this.interactionFollowWorld = null;
       eyeTarget.bone.x = basePose.x + offset.x;
       eyeTarget.bone.y = basePose.y + offset.y;
+      eyeTarget.bone.rotation = basePose.rotation + rotationOffset;
       bundle.skeleton.updateWorldTransform(Physics.pose);
       return;
     }
     const baseLocal = { x: eyeTarget.bone.x, y: eyeTarget.bone.y };
+    eyeTarget.baseX = baseLocal.x;
+    eyeTarget.baseY = baseLocal.y;
     const base = eyeTarget.bone.parent
       ? eyeTarget.bone.parent.localToWorld(new Vector2(baseLocal.x, baseLocal.y))
       : new Vector2(baseLocal.x + bundle.skeleton.x, baseLocal.y + bundle.skeleton.y);
@@ -2988,8 +3081,23 @@ export class SpineRenderer {
       ? eyeTarget.bone.parent.worldToLocal(new Vector2(smoothed.x, smoothed.y))
       : new Vector2(smoothed.x - bundle.skeleton.x, smoothed.y - bundle.skeleton.y);
     this.interactionFollowLocal = { x: local.x - baseLocal.x, y: local.y - baseLocal.y };
+    const pointerLocal = pointer ? this.behaviorPointerToParentLocal(bundle, eyeTarget.bone, pointer) : null;
+    const desiredRotation = bundle.lookFollow.rotationEnabled
+      ? lookFollowRotation(
+        pointerLocal ? { x: pointerLocal.x - baseLocal.x, y: pointerLocal.y - baseLocal.y } : null,
+        eyeTarget.rangeX,
+        eyeTarget.rangeY,
+        bundle.lookFollow.rotationAxis,
+        bundle.lookFollow.rotationMin,
+        bundle.lookFollow.rotationMax,
+      )
+      : 0;
+    const currentRotation = this.interactionFollowRotation ?? 0;
+    const rotationAmount = 1 - Math.exp(-Math.max(0, delta) * bundle.lookFollow.smoothing);
+    this.interactionFollowRotation = currentRotation + (desiredRotation - currentRotation) * rotationAmount;
     eyeTarget.bone.x = local.x;
     eyeTarget.bone.y = local.y;
+    eyeTarget.bone.rotation = eyeTarget.bone.rotation + this.interactionFollowRotation;
     // The authored Touch_Eye constraints consume the target bone during the
     // world-transform pass. Re-run that pass after moving the target so the
     // eyes, brows and Touch_Point followers respond in the same frame.
@@ -2999,7 +3107,8 @@ export class SpineRenderer {
   private eyeFollowAtRest(): boolean {
     if (!this.bundle?.eyeTarget) return true;
     const offset = this.interactionFollowLocal ?? { x: 0, y: 0 };
-    return Math.hypot(offset.x, offset.y) <= LOOK_FOLLOW_REST_EPSILON;
+    return Math.hypot(offset.x, offset.y) <= LOOK_FOLLOW_REST_EPSILON
+      && Math.abs(this.interactionFollowRotation ?? 0) <= LOOK_FOLLOW_REST_EPSILON;
   }
 
   private applyTouchFollow(delta: number) {

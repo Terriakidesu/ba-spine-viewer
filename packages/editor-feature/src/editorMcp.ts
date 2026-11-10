@@ -672,7 +672,7 @@ function validateBehaviorMachineCollection(value: unknown): SpineBehaviorMachine
           if (!isRecord(rawAction) || typeof rawAction.type !== "string") throw new Error(`machines[${index}].states[${stateIndex}].${phase}[${actionIndex}] must be a typed action.`);
           const actionFields: Record<string, string[]> = {
             "play-animation": ["type", "mainAnimation", "faceAnimation", "bodyTrack", "faceTrack", "loop", "mixDuration", "fallbackProfile"],
-            "pointer-follow": ["type", "targetBonePath", "allowX", "allowY", "rangeX", "rangeY", "smoothing"],
+            "pointer-follow": ["type", "targetBonePath", "allowX", "allowY", "rangeX", "rangeY", "smoothing", "rotationEnabled", "rotationAxis", "rotationMin", "rotationMax"],
             "drag-bone": ["type", "targetBonePath", "sensitivity", "limitX", "limitY", "allowX", "allowY", "smoothing", "returnDuration"],
             "rotate-bone": ["type", "targetBonePath", "axis", "minimum", "maximum", "returnDuration"],
             "play-audio": ["type", "audioId", "volume", "loop"], "show-subtitle": ["type", "cueId"],
@@ -693,7 +693,12 @@ function validateBehaviorMachineCollection(value: unknown): SpineBehaviorMachine
             case "pointer-follow":
               nullableString("targetBonePath"); behaviorBoolean(rawAction.allowX, `${fieldPath}.allowX`); behaviorBoolean(rawAction.allowY, `${fieldPath}.allowY`);
               for (const field of ["rangeX", "rangeY"]) if (rawAction[field] !== null) behaviorNumber(rawAction[field], `${fieldPath}.${field}`, 0, 512);
-              behaviorNumber(rawAction.smoothing, `${fieldPath}.smoothing`, 0.1, 60); break;
+              behaviorNumber(rawAction.smoothing, `${fieldPath}.smoothing`, 0.1, 60);
+              if (rawAction.rotationEnabled !== undefined) behaviorBoolean(rawAction.rotationEnabled, `${fieldPath}.rotationEnabled`);
+              if (rawAction.rotationAxis !== undefined && rawAction.rotationAxis !== "x" && rawAction.rotationAxis !== "y") throw new Error(`${fieldPath}.rotationAxis is unsupported.`);
+              if (rawAction.rotationMin !== undefined) behaviorNumber(rawAction.rotationMin, `${fieldPath}.rotationMin`, -180, 0);
+              if (rawAction.rotationMax !== undefined) behaviorNumber(rawAction.rotationMax, `${fieldPath}.rotationMax`, 0, 180);
+              break;
             case "drag-bone":
               nullableString("targetBonePath"); behaviorNumber(rawAction.sensitivity, `${fieldPath}.sensitivity`, 0, 10);
               behaviorNumber(rawAction.limitX, `${fieldPath}.limitX`, 0); behaviorNumber(rawAction.limitY, `${fieldPath}.limitY`, 0);
@@ -1072,12 +1077,15 @@ export function normalizeEditorMcpCommand(value: unknown): EditorMcpCommand {
       return { name: value.name, interactionId: stringField(value.interactionId, "interactionId"), regionId: stringField(value.regionId, "regionId") };
     case "update_look_follow": {
       if (!onlyKeys(value, ["name", "patch"])) throw new Error("Unexpected update_look_follow fields.");
-      const patch = validatePatch(value.patch, ["enabled", "targetBonePath", "delay", "rangeX", "rangeY", "smoothing", "allowX", "allowY", "startAnimation", "faceStartAnimation", "endAnimation", "faceEndAnimation"], "patch");
-      for (const field of ["enabled", "allowX", "allowY"] as const) if (patch[field] !== undefined) optionalBoolean(patch[field], `patch.${field}`);
+      const patch = validatePatch(value.patch, ["enabled", "targetBonePath", "delay", "rangeX", "rangeY", "smoothing", "allowX", "allowY", "rotationEnabled", "rotationAxis", "rotationMin", "rotationMax", "startAnimation", "faceStartAnimation", "endAnimation", "faceEndAnimation"], "patch");
+      for (const field of ["enabled", "allowX", "allowY", "rotationEnabled"] as const) if (patch[field] !== undefined) optionalBoolean(patch[field], `patch.${field}`);
       if (patch.targetBonePath !== undefined) optionalNullableText(patch.targetBonePath, "patch.targetBonePath");
+      if (patch.rotationAxis !== undefined && patch.rotationAxis !== "x" && patch.rotationAxis !== "y") throw new Error("patch.rotationAxis must be x or y.");
       for (const field of ["startAnimation", "faceStartAnimation", "endAnimation", "faceEndAnimation"] as const) if (patch[field] !== undefined) optionalText(patch[field], `patch.${field}`);
       if (patch.delay !== undefined) optionalNumber(patch.delay, "patch.delay", 0, 10);
       if (patch.smoothing !== undefined) optionalNumber(patch.smoothing, "patch.smoothing", 0.1, 60);
+      if (patch.rotationMin !== undefined) optionalNumber(patch.rotationMin, "patch.rotationMin", -180, 0);
+      if (patch.rotationMax !== undefined) optionalNumber(patch.rotationMax, "patch.rotationMax", 0, 180);
       for (const field of ["rangeX", "rangeY"] as const) if (patch[field] !== undefined && patch[field] !== null) optionalNumber(patch[field], `patch.${field}`, 0, 512);
       return { name: value.name, patch: patch as Partial<SpineLookFollowSettings> };
     }

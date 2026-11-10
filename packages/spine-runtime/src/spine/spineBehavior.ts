@@ -23,7 +23,7 @@ export type SpineBehaviorCondition =
 
 export type SpineBehaviorAction =
   | { type: "play-animation"; mainAnimation: string | null; faceAnimation: string | null; bodyTrack: number; faceTrack: number; loop: boolean; mixDuration: number; fallbackProfile?: "look-start" | "look-end" }
-  | { type: "pointer-follow"; targetBonePath: string | null; allowX: boolean; allowY: boolean; rangeX: number | null; rangeY: number | null; smoothing: number }
+  | { type: "pointer-follow"; targetBonePath: string | null; allowX: boolean; allowY: boolean; rangeX: number | null; rangeY: number | null; smoothing: number; rotationEnabled: boolean; rotationAxis: "x" | "y"; rotationMin: number; rotationMax: number }
   | { type: "drag-bone"; targetBonePath: string | null; sensitivity: number; limitX: number; limitY: number; allowX: boolean; allowY: boolean; smoothing: number; returnDuration: number }
   | { type: "rotate-bone"; targetBonePath: string | null; axis: "x" | "y"; minimum: number; maximum: number; returnDuration: number }
   | { type: "play-audio"; audioId: string; volume: number; loop: boolean }
@@ -154,6 +154,10 @@ function normalizeAction(value: unknown): SpineBehaviorAction | null {
         rangeX: typeof action.rangeX === "number" && Number.isFinite(action.rangeX) ? number(action.rangeX, 0, 0, 512) : null,
         rangeY: typeof action.rangeY === "number" && Number.isFinite(action.rangeY) ? number(action.rangeY, 0, 0, 512) : null,
         smoothing: number(action.smoothing, 14, 0.1, 60),
+        rotationEnabled: action.rotationEnabled === true,
+        rotationAxis: action.rotationAxis === "y" ? "y" : "x",
+        rotationMin: number(action.rotationMin, -15, -180, 0),
+        rotationMax: number(action.rotationMax, 15, 0, 180),
       };
     case "drag-bone":
       return {
@@ -466,7 +470,7 @@ function lookFollowMachine(settings: SpineLookFollowSettings, existingIds: Set<s
       {
         id: "following", name: "Following", actions: [
           start,
-          { type: "pointer-follow", targetBonePath: settings.targetBonePath, allowX: settings.allowX, allowY: settings.allowY, rangeX: settings.rangeX, rangeY: settings.rangeY, smoothing: settings.smoothing },
+          { type: "pointer-follow", targetBonePath: settings.targetBonePath, allowX: settings.allowX, allowY: settings.allowY, rangeX: settings.rangeX, rangeY: settings.rangeY, smoothing: settings.smoothing, rotationEnabled: settings.rotationEnabled, rotationAxis: settings.rotationAxis, rotationMin: settings.rotationMin, rotationMax: settings.rotationMax },
         ],
         exitActions: [],
         cancelActions: [{ type: "restore-resource", resource: "look-follow-target" }],
@@ -524,6 +528,10 @@ export function spineLookFollowSettingsFromBehaviorMachines(
       rangeX: pointerAction.rangeX,
       rangeY: pointerAction.rangeY,
       smoothing: pointerAction.smoothing,
+      rotationEnabled: pointerAction.rotationEnabled,
+      rotationAxis: pointerAction.rotationAxis,
+      rotationMin: pointerAction.rotationMin,
+      rotationMax: pointerAction.rotationMax,
     } : {}),
     ...(startAction?.type === "play-animation" ? {
       startAnimation: startAction.mainAnimation ?? "",
@@ -548,7 +556,7 @@ export function behaviorMachineWithLookFollowSettings(
     const actions = state.actions.map((action): SpineBehaviorAction => {
       if (action.type === "pointer-follow") {
         foundPointer = true;
-        return { ...action, targetBonePath: settings.targetBonePath, allowX: settings.allowX, allowY: settings.allowY, rangeX: settings.rangeX, rangeY: settings.rangeY, smoothing: settings.smoothing };
+        return { ...action, targetBonePath: settings.targetBonePath, allowX: settings.allowX, allowY: settings.allowY, rangeX: settings.rangeX, rangeY: settings.rangeY, smoothing: settings.smoothing, rotationEnabled: settings.rotationEnabled, rotationAxis: settings.rotationAxis, rotationMin: settings.rotationMin, rotationMax: settings.rotationMax };
       }
       if (action.type === "play-animation" && action.fallbackProfile === "look-start") {
         foundStart = true;
@@ -560,7 +568,7 @@ export function behaviorMachineWithLookFollowSettings(
       }
       return action;
     });
-    if (state.id === "following" && !foundPointer) actions.push({ type: "pointer-follow", targetBonePath: settings.targetBonePath, allowX: settings.allowX, allowY: settings.allowY, rangeX: settings.rangeX, rangeY: settings.rangeY, smoothing: settings.smoothing });
+    if (state.id === "following" && !foundPointer) actions.push({ type: "pointer-follow", targetBonePath: settings.targetBonePath, allowX: settings.allowX, allowY: settings.allowY, rangeX: settings.rangeX, rangeY: settings.rangeY, smoothing: settings.smoothing, rotationEnabled: settings.rotationEnabled, rotationAxis: settings.rotationAxis, rotationMin: settings.rotationMin, rotationMax: settings.rotationMax });
     if (state.id === "following" && !foundStart) actions.unshift(animationAction(settings.startAnimation, settings.faceStartAnimation, false, "look-start"));
     if (state.id === "returning" && !foundEnd) actions.unshift(animationAction(settings.endAnimation, settings.faceEndAnimation, false, "look-end"));
     return { ...state, actions };

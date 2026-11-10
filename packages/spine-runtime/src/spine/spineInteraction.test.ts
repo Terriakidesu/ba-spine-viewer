@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Animation, AnimationState, AnimationStateData, BoneData, Skeleton, SkeletonData } from "@esotericsoftware/spine-core";
-import { authoredInteractionAction, authoredRegions, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, DEFAULT_TALK_MIX_DURATION, findInteractionProfile, interactionPhaseAfterStart, interactionPressReady, INTERACTION_PHASE_MIX, lookFollowTarget, normalizeSpineInteractionProject, normalizeSpineLookFollowSettings, profileFromProject, setInteractionTrack, smoothLookFollowPoint } from "./spineInteraction";
+import { authoredInteractionAction, authoredRegions, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, DEFAULT_TALK_MIX_DURATION, findInteractionProfile, interactionPhaseAfterStart, interactionPressReady, INTERACTION_PHASE_MIX, lookFollowRotation, lookFollowTarget, normalizeSpineInteractionProject, normalizeSpineLookFollowSettings, profileFromProject, setInteractionTrack, smoothLookFollowPoint } from "./spineInteraction";
 
 describe("Spine lobby interaction data", () => {
   test("pairs the game start, follow and release tracks", () => {
@@ -180,6 +180,10 @@ describe("Spine lobby interaction data", () => {
       smoothing: 40,
       allowX: false,
       allowY: true,
+      rotationEnabled: true,
+      rotationAxis: "y",
+      rotationMin: -38,
+      rotationMax: 24,
       startAnimation: "Look_Custom_M",
       faceStartAnimation: "Look_Custom_A",
       endAnimation: "Look_Custom_End_M",
@@ -194,6 +198,10 @@ describe("Spine lobby interaction data", () => {
       smoothing: 30,
       allowX: false,
       allowY: true,
+      rotationEnabled: true,
+      rotationAxis: "y",
+      rotationMin: -38,
+      rotationMax: 24,
       startAnimation: "Look_Custom_M",
       faceStartAnimation: "Look_Custom_A",
       endAnimation: "Look_Custom_End_M",
@@ -201,6 +209,27 @@ describe("Spine lobby interaction data", () => {
     });
     expect(normalizeSpineLookFollowSettings({ rangeX: null, rangeY: Number.NaN }).rangeX).toBeNull();
     expect(normalizeSpineLookFollowSettings({ rangeX: null, rangeY: Number.NaN }).rangeY).toBeNull();
+  });
+
+  test("normalizes Pat-style Look-follow rotation limits and maps the selected input axis", () => {
+    expect(normalizeSpineLookFollowSettings({}).rotationEnabled).toBe(false);
+    expect(normalizeSpineLookFollowSettings({ rotationEnabled: true, rotationAxis: "y", rotationMin: 20, rotationMax: 240 })).toMatchObject({
+      rotationEnabled: true, rotationAxis: "y", rotationMin: 0, rotationMax: 180,
+    });
+    expect(lookFollowRotation({ x: -50, y: 10 }, 100, 100, "x", -30, 20)).toBeCloseTo(-15);
+    expect(lookFollowRotation({ x: -50, y: 50 }, 100, 100, "y", -30, 20)).toBeCloseTo(10);
+    expect(lookFollowRotation({ x: 200, y: 0 }, 100, 100, "x", -30, 20)).toBeCloseTo(20);
+    expect(lookFollowRotation(null, 100, 100, "x", -30, 20)).toBe(0);
+
+    const project = normalizeSpineInteractionProject({
+      schemaVersion: 2,
+      assetDirectory: "Airi_home",
+      interactions: [],
+      lookFollow: { rotationEnabled: true, rotationAxis: "y", rotationMin: -44, rotationMax: 26 },
+    })!;
+    expect(project.lookFollow).toMatchObject({ rotationEnabled: true, rotationAxis: "y", rotationMin: -44, rotationMax: 26 });
+    expect(project.behaviorMachines?.find((machine) => machine.id === "look-follow")?.states.find((state) => state.id === "following")?.actions)
+      .toContainEqual(expect.objectContaining({ type: "pointer-follow", rotationEnabled: true, rotationAxis: "y", rotationMin: -44, rotationMax: 26 }));
   });
 
   test("uses automatic look phases by default and supports authored look overrides", () => {

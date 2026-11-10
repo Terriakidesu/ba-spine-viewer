@@ -235,19 +235,32 @@ function motionLimitGeometry(frame: SpineEditorFrame, overlay: MotionLimitOverla
   };
 }
 
-function lookFollowGeometry(frame: SpineEditorFrame) {
+function lookFollowGeometry(frame: SpineEditorFrame, settings: SpineLookFollowSettings) {
   const look = frame.lookFollow;
   if (!look) return null;
   const ux = { x: frame.screenUnitXEndX - frame.screenOriginX, y: frame.screenUnitXEndY - frame.screenOriginY };
   const uy = { x: frame.screenUnitYEndX - frame.screenOriginX, y: frame.screenUnitYEndY - frame.screenOriginY };
-  const point = (angle: number) => ({
-    x: look.centerScreenX + ux.x * look.rangeX * Math.cos(angle) + uy.x * look.rangeY * Math.sin(angle),
-    y: look.centerScreenY + ux.y * look.rangeX * Math.cos(angle) + uy.y * look.rangeY * Math.sin(angle),
+  const point = (x: number, y: number) => ({
+    x: look.centerScreenX + ux.x * look.rangeX * x + uy.x * look.rangeY * y,
+    y: look.centerScreenY + ux.y * look.rangeX * x + uy.y * look.rangeY * y,
   });
-  const outline = Array.from({ length: 49 }, (_, index) => point(index * Math.PI * 2 / 48));
-  const path = outline.map((item, index) => `${index === 0 ? "M" : "L"} ${item.x} ${item.y}`).join(" ") + " Z";
+  const corners = [point(-1, -1), point(1, -1), point(1, 1), point(-1, 1)];
+  const path = corners.map((item, index) => `${index === 0 ? "M" : "L"} ${item.x} ${item.y}`).join(" ") + " Z";
+  const target = frame.bones.find((bone) => bone.path === look.targetBonePath);
+  const axis = target
+    ? Math.hypot(target.screenEndX - target.screenX, target.screenEndY - target.screenY) > 0.001
+      ? { x: target.screenEndX - target.screenX, y: target.screenEndY - target.screenY }
+      : { x: target.screenLocalXEndX - target.screenX, y: target.screenLocalXEndY - target.screenY }
+    : { x: 1, y: 0 };
+  const boneRotation = Math.atan2(axis.y, axis.x) * 180 / Math.PI + look.rotationOffset;
+  const rotationRadius = Math.max(18, Math.min(42, Math.max(Math.hypot(ux.x, ux.y) * look.rangeX, Math.hypot(uy.x, uy.y) * look.rangeY) * 0.25));
   return {
     path,
+    rotationPath: settings.rotationEnabled
+      ? arcPath(look.centerScreenX, look.centerScreenY, rotationRadius, boneRotation - settings.rotationMax, boneRotation - settings.rotationMin)
+      : null,
+    rotationEnabled: settings.rotationEnabled,
+    rotationRadius,
     centerX: look.centerScreenX,
     centerY: look.centerScreenY,
     currentX: look.currentScreenX,
@@ -270,6 +283,10 @@ function arcPath(cx: number, cy: number, radius: number, startDegrees: number, e
   const end = point(endDegrees);
   const largeArc = Math.abs(endDegrees - startDegrees) > 180 ? 1 : 0;
   const sweep = endDegrees >= startDegrees ? 1 : 0;
+  if (Math.abs(endDegrees - startDegrees) >= 359.999) {
+    const midpoint = point(startDegrees + (endDegrees - startDegrees) / 2);
+    return `M ${start.x} ${start.y} A ${radius} ${radius} 0 1 ${sweep} ${midpoint.x} ${midpoint.y} A ${radius} ${radius} 0 1 ${sweep} ${end.x} ${end.y}`;
+  }
   return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArc} ${sweep} ${end.x} ${end.y}`;
 }
 
@@ -284,7 +301,7 @@ function BoneOverlay({ frame, project, viewSettings, motionLimits, lookFollowVis
     ? project.interactions.flatMap((interaction) => interaction.regions.map((region) => ({ interaction, region })))
     : [];
   const motion = motionLimits && viewSettings.showMotionGizmo ? motionLimitGeometry(frame, motionLimits) : null;
-  const look = lookFollowVisible && viewSettings.showLookFollowGizmo ? lookFollowGeometry(frame) : null;
+  const look = lookFollowVisible && viewSettings.showLookFollowGizmo ? lookFollowGeometry(frame, project.lookFollow) : null;
 
   const move = (event: ReactPointerEvent<SVGSVGElement>) => {
     const lookAxis = lookRangeDrag.current;
@@ -366,8 +383,11 @@ function BoneOverlay({ frame, project, viewSettings, motionLimits, lookFollowVis
         <circle className={motionLimits?.rotationEnabled ? "editor-motion-rotation-handle is-enabled" : "editor-motion-rotation-handle is-locked"} cx={motion.centerX} cy={motion.centerY} r={6} />
         <text className="editor-motion-label rotation" x={motion.centerX + motion.rotationRadius + 5} y={motion.centerY - 5}>R</text>
       </g>}
-      {look && <g className={`editor-look-follow-gizmo${frame.lookFollow?.active ? " is-active" : ""}${project.lookFollow.enabled ? "" : " is-disabled"}`} aria-label="Look-follow range gizmo">
+      {look && <g className={`editor-look-follow-gizmo${frame.lookFollow?.active ? " is-active" : ""}${project.lookFollow.enabled ? "" : " is-disabled"}`} aria-label="Look-follow range and rotation gizmo">
         <path className="editor-look-follow-range" d={look.path} />
+        {look.rotationPath && <path className="editor-look-follow-rotation" d={look.rotationPath} />}
+        <circle className={`editor-look-follow-rotation-handle${look.rotationEnabled ? " is-enabled" : " is-locked"}`} cx={look.centerX} cy={look.centerY} r={5} />
+        <text className="editor-look-follow-label rotation" x={look.centerX + look.rotationRadius + 5} y={look.centerY - 5}>R</text>
         <line className="editor-look-follow-vector" x1={look.centerX} y1={look.centerY} x2={look.currentX} y2={look.currentY} />
         <circle className="editor-look-follow-origin" cx={look.centerX} cy={look.centerY} r={5} />
         <circle className="editor-look-follow-current" cx={look.currentX} cy={look.currentY} r={5} />
@@ -4052,6 +4072,17 @@ export function Editor() {
               <div className="editor-look-range-row">
                 <NumberField label={`Range Y${project.lookFollow.rangeY === null ? " · auto" : ""}`} value={project.lookFollow.rangeY ?? frame?.lookFollow?.rangeY ?? 0} min={0} max={512} step={1} precision={1} unit="units" onCommit={(value) => updateLookFollow("rangeY", value)} />
                 <button type="button" className="editor-preview-button" disabled={project.lookFollow.rangeY === null} onClick={() => updateLookFollow("rangeY", null)}>Use auto</button>
+              </div>
+              <div className="editor-subheading">Local rotation</div>
+              <p className="editor-field-hint">Rotate the same Look target using pointer displacement on its parent-local X or Y axis.</p>
+              <div className="editor-axis-checks" aria-label="Look-follow rotation">
+                <span>Rotation input</span>
+                <label><input type="checkbox" checked={project.lookFollow.rotationEnabled} onChange={(event) => updateLookFollow("rotationEnabled", event.target.checked)} /> Enabled</label>
+                <label>Axis<select value={project.lookFollow.rotationAxis} disabled={!project.lookFollow.rotationEnabled} onChange={(event) => updateLookFollow("rotationAxis", event.target.value as "x" | "y")}><option value="x">X</option><option value="y">Y</option></select></label>
+              </div>
+              <div className="editor-two-fields">
+                <NumberField label="Minimum rotation" value={project.lookFollow.rotationMin} min={-180} max={0} step={1} precision={1} unit="°" disabled={!project.lookFollow.rotationEnabled} onCommit={(value) => updateLookFollow("rotationMin", value)} />
+                <NumberField label="Maximum rotation" value={project.lookFollow.rotationMax} min={0} max={180} step={1} precision={1} unit="°" disabled={!project.lookFollow.rotationEnabled} onCommit={(value) => updateLookFollow("rotationMax", value)} />
               </div>
               <div className="editor-subheading">Animation overrides</div>
               <p className="editor-field-hint">Leave these on automatic to detect Look and LookEnd animation names from the Spine asset.</p>

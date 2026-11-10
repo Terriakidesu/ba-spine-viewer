@@ -32,6 +32,11 @@ export interface SpineLookFollowSettings {
   smoothing: number;
   allowX: boolean;
   allowY: boolean;
+  /** Rotate the existing look target from pointer displacement on its parent-local axis. */
+  rotationEnabled: boolean;
+  rotationAxis: "x" | "y";
+  rotationMin: number;
+  rotationMax: number;
   /** Empty animation names retain animation-name auto detection. */
   startAnimation: string;
   faceStartAnimation: string;
@@ -48,6 +53,10 @@ export const DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS: SpineLookFollowSettings = {
   smoothing: 14,
   allowX: true,
   allowY: true,
+  rotationEnabled: false,
+  rotationAxis: "x",
+  rotationMin: -15,
+  rotationMax: 15,
   startAnimation: "",
   faceStartAnimation: "",
   endAnimation: "",
@@ -74,6 +83,24 @@ export function lookFollowTarget(
     x: base.x + (allowX ? clamp(pointer.x - base.x, rangeX) : 0),
     y: base.y + (allowY ? clamp(pointer.y - base.y, rangeY) : 0),
   };
+}
+
+/** Map the selected parent-local pointer axis to Pat-style signed angle limits. */
+export function lookFollowRotation(
+  localOffset: SpineLookFollowPoint | null,
+  rangeX: number,
+  rangeY: number,
+  axis: "x" | "y",
+  minimum: number,
+  maximum: number,
+): number {
+  if (!localOffset) return 0;
+  const distance = axis === "y" ? localOffset.y : localOffset.x;
+  const range = Math.max(0, axis === "y" ? rangeY : rangeX);
+  const input = Math.max(-1, Math.min(1, distance / Math.max(range, 1e-6)));
+  const min = Math.min(0, Math.max(-180, finiteNumber(minimum, -15)));
+  const max = Math.max(0, Math.min(180, finiteNumber(maximum, 15)));
+  return input < 0 ? input * Math.abs(min) : input * max;
 }
 
 /** Frame-rate independent exponential smoothing for the shared runtime and preview. */
@@ -206,6 +233,10 @@ export function normalizeSpineLookFollowSettings(value: unknown): SpineLookFollo
     smoothing: Math.max(1, Math.min(30, finiteNumber(settings.smoothing, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS.smoothing))),
     allowX: settings.allowX !== false,
     allowY: settings.allowY !== false,
+    rotationEnabled: settings.rotationEnabled === true,
+    rotationAxis: settings.rotationAxis === "y" ? "y" : "x",
+    rotationMin: Math.min(0, Math.max(-180, finiteNumber(settings.rotationMin, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS.rotationMin))),
+    rotationMax: Math.max(0, Math.min(180, finiteNumber(settings.rotationMax, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS.rotationMax))),
     startAnimation: stringValue(settings.startAnimation),
     faceStartAnimation: stringValue(settings.faceStartAnimation),
     endAnimation: stringValue(settings.endAnimation),

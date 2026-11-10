@@ -92,8 +92,8 @@ describe("editor MCP command validation", () => {
     expect(normalizeEditorMcpCommand({ name: "update_region", interactionId: "pat", regionId: "head", patch: { anchorBone: null, radiusX: 64 } })).toEqual({
       name: "update_region", interactionId: "pat", regionId: "head", patch: { anchorBone: null, radiusX: 64 },
     });
-    expect(normalizeEditorMcpCommand({ name: "update_look_follow", patch: { rangeX: null, enabled: false } })).toEqual({
-      name: "update_look_follow", patch: { rangeX: null, enabled: false },
+    expect(normalizeEditorMcpCommand({ name: "update_look_follow", patch: { rangeX: null, enabled: false, rotationEnabled: true, rotationAxis: "y", rotationMin: -40, rotationMax: 25 } })).toEqual({
+      name: "update_look_follow", patch: { rangeX: null, enabled: false, rotationEnabled: true, rotationAxis: "y", rotationMin: -40, rotationMax: 25 },
     });
 
     const machine = {
@@ -104,6 +104,15 @@ describe("editor MCP command validation", () => {
       transitions: [],
     } as const;
     expect(normalizeEditorMcpCommand({ name: "replace_behavior_machines", machines: [machine] })).toMatchObject({ name: "replace_behavior_machines", machines: [{ id: "custom" }] });
+    const pointerAction = { type: "pointer-follow", targetBonePath: null, allowX: true, allowY: true, rangeX: null, rangeY: null, smoothing: 14, rotationEnabled: true, rotationAxis: "y", rotationMin: -30, rotationMax: 20 } as const;
+    const pointerMachine = { ...machine, states: [{ ...machine.states[0]!, actions: [pointerAction] }] };
+    expect(normalizeEditorMcpCommand({ name: "replace_behavior_machines", machines: [pointerMachine] })).toMatchObject({
+      machines: [{ states: [{ actions: [expect.objectContaining({ rotationEnabled: true, rotationAxis: "y", rotationMin: -30, rotationMax: 20 })] }] }],
+    });
+    const legacyPointerAction = (({ rotationEnabled: _enabled, rotationAxis: _axis, rotationMin: _min, rotationMax: _max, ...action }) => action)(pointerAction);
+    expect(normalizeEditorMcpCommand({ name: "replace_behavior_machines", machines: [{ ...pointerMachine, states: [{ ...pointerMachine.states[0]!, actions: [legacyPointerAction] }] }] })).toMatchObject({
+      machines: [{ states: [{ actions: [expect.objectContaining({ rotationEnabled: false, rotationAxis: "x", rotationMin: -15, rotationMax: 15 })] }] }],
+    });
     expect(normalizeEditorMcpCommand({ name: "replace_behavior_machines", machines: [machine], graphLayouts: { custom: { mode: "manual", statePositions: { idle: { x: 24, y: -18 } } } } })).toMatchObject({ graphLayouts: { custom: { mode: "manual", statePositions: { idle: { x: 24, y: -18 } } } } });
     expect(() => normalizeEditorMcpCommand({ name: "replace_behavior_machines", machines: [machine], graphLayouts: { stale: { mode: "manual", statePositions: {} } } })).toThrow(/unknown behavior machine/);
     expect(() => normalizeEditorMcpCommand({ name: "replace_behavior_machines", machines: [machine], graphLayouts: { custom: { mode: "manual", statePositions: { missing: { x: 0, y: 0 } } } } })).toThrow(/unknown state/);
@@ -112,6 +121,8 @@ describe("editor MCP command validation", () => {
     expect(() => normalizeEditorMcpCommand({ name: "replace_behavior_machines", machines: [{ ...machine, states: [{ ...machine.states[0], actions: [{ type: "execute", source: "unsafe" }] }] }] })).toThrow();
     expect(() => normalizeEditorMcpCommand({ name: "update_interaction", interactionId: "pat", patch: { returnDuration: 50 } })).toThrow();
     expect(() => normalizeEditorMcpCommand({ name: "update_region", interactionId: "pat", regionId: "head", patch: { shape: "triangle" } })).toThrow();
+    expect(() => normalizeEditorMcpCommand({ name: "update_look_follow", patch: { rotationMin: 5 } })).toThrow();
+    expect(() => normalizeEditorMcpCommand({ name: "update_look_follow", patch: { rotationAxis: "z" } })).toThrow();
   });
 
   test("validates sequence, camera, project-setting, and audio authoring commands", () => {
