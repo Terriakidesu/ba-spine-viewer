@@ -2,47 +2,30 @@ import { describe, expect, test } from "bun:test";
 import type { DesktopAssetSource } from "./desktopSource";
 import { getViewerThumbnail } from "./lobbyThumbnail";
 
-describe("Viewer thumbnail memory cache", () => {
-  test("reuses the same fingerprinted image after a thumbnail row remounts", async () => {
-    const image = new Blob(["cached preview"], { type: "image/webp" });
-    let cacheReads = 0;
+describe("saved lobby thumbnails", () => {
+  test("both thumbnail styles read the saved PNG without touching Spine or the generated cache", async () => {
+    const image = new File(["saved thumbnail"], "thumbnail.png", { type: "image/png" });
+    const paths: string[] = [];
+    const forbidden = async () => { throw new Error("Browsing must not load or render Spine assets."); };
     const source = {
-      desktop: true,
-      rootPath: `thumbnail-memory-test-${Date.now()}-${Math.random()}`,
-      getThumbnailFingerprint: async () => "fixture-fingerprint",
-      getThumbnail: async () => { cacheReads++; return image; },
-      getThumbnailFiles: async () => { throw new Error("A cache hit must not load Spine files."); },
-      putThumbnail: async () => undefined,
+      getFile: async (path: string) => { paths.push(path); return image; },
+      getThumbnailFingerprint: forbidden, getThumbnailFiles: forbidden, getThumbnail: forbidden, putThumbnail: forbidden,
     } as unknown as DesktopAssetSource;
-
-    const first = await getViewerThumbnail(source, "Airi_home", "lobby", new AbortController().signal);
-    const second = await getViewerThumbnail(source, "Airi_home", "lobby", new AbortController().signal);
-
-    expect(first).toBe(image);
-    expect(second).toBe(image);
-    expect(cacheReads).toBe(1);
+    for (const kind of ["face", "lobby"] as const) {
+      expect(await getViewerThumbnail(source, "Airi_home", kind, new AbortController().signal)).toBe(image);
+    }
+    expect(paths).toEqual(["lobbies/Airi_home/thumbnail.png", "lobbies/Airi_home/thumbnail.png"]);
   });
 
-  test("separates face and lobby images even when they share source assets", async () => {
-    const images = new Map([
-      ["lobby-v2:fixture-fingerprint", new Blob(["lobby"], { type: "image/webp" })],
-      ["face-v1:fixture-fingerprint", new Blob(["face"], { type: "image/webp" })],
-    ]);
-    let cacheReads = 0;
-    const source = {
-      desktop: true,
-      rootPath: `thumbnail-kinds-test-${Date.now()}-${Math.random()}`,
-      getThumbnailFingerprint: async () => "fixture-fingerprint",
-      getThumbnail: async (_directory: string, fingerprint: string) => { cacheReads++; return images.get(fingerprint) ?? null; },
-      getThumbnailFiles: async () => { throw new Error("A cache hit must not load Spine files."); },
-      putThumbnail: async () => undefined,
-    } as unknown as DesktopAssetSource;
+  test("missing thumbnails stay placeholders, without generation", async () => {
+    const source = { getFile: async () => null } as unknown as DesktopAssetSource;
+    expect(await getViewerThumbnail(source, "Airi_home", "lobby", new AbortController().signal)).toBeNull();
+  });
 
-    const lobby = await getViewerThumbnail(source, "Airi_home", "lobby", new AbortController().signal);
-    const face = await getViewerThumbnail(source, "Airi_home", "face", new AbortController().signal);
-
-    expect(await lobby?.text()).toBe("lobby");
-    expect(await face?.text()).toBe("face");
-    expect(cacheReads).toBe(2);
+  test("cancelled requests perform no IO", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const source = { getFile: async () => { throw new Error("Unexpected IO"); } } as unknown as DesktopAssetSource;
+    await expect(getViewerThumbnail(source, "Airi_home", "lobby", controller.signal)).rejects.toHaveProperty("name", "AbortError");
   });
 });

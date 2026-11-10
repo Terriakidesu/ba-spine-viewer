@@ -23,7 +23,8 @@
     "test": "bun test",
     "profile:wasm-candidates": "bun scripts/profile-wasm-candidates.ts",
     "profile:timeline-waveforms": "bun --cwd=apps/editor run dev -- --host 127.0.0.1",
-    "profile:editor-waveforms": "bun --cwd=apps/editor/desktop run dev -- --mcp --profile-waveforms"
+    "profile:editor-waveforms": "bun --cwd=apps/editor/desktop run dev -- --mcp --profile-waveforms",
+    "thumbnails:generate": "bun scripts/generate-lobby-thumbnails.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",
@@ -31,6 +32,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
     "typescript": "^5.7.0",
+    "playwright-core": "1.65.0",
     "vite": "^6.0.0"
   }
 }
