@@ -56,7 +56,7 @@ export interface SpineTimelineLayer {
   animation: string;
   faceAnimation?: string;
   animationClips?: SpineTimelineAnimationClip[];
-  /** Use the main character's matching animation and sample clock when available. */
+  /** Follow the main character's layer transform and sample clock; match its animation by name when possible. */
   followMainAnimation?: boolean;
   start: number;
   end: number;
@@ -65,6 +65,7 @@ export interface SpineTimelineLayer {
   loop: boolean;
   x: number;
   y: number;
+  rotation?: number;
   scale: number;
   opacity: number;
   order: number;
@@ -161,6 +162,35 @@ export function timelineReferenceLayerId(
   const authoredReference = camera?.referenceLayerId;
   if (authoredReference && timeline.layers.some((layer) => layer.id === authoredReference)) return authoredReference;
   return timeline.layers.find((layer) => layer.role === "character")?.id ?? timeline.layers[0]?.id ?? "";
+}
+
+export interface SpineTimelineLayerTransform {
+  x: number;
+  y: number;
+  rotation: number;
+  scale: number;
+}
+
+/** Compose a following layer's local transform under the main character transform. */
+export function timelineLayerTransform(
+  layer: Pick<SpineTimelineLayer, "followMainAnimation" | "x" | "y" | "rotation" | "scale">,
+  mainCharacter?: Pick<SpineTimelineLayer, "x" | "y" | "rotation" | "scale"> | null,
+): SpineTimelineLayerTransform {
+  const rotation = layer.rotation ?? 0;
+  if (!layer.followMainAnimation || !mainCharacter) {
+    return { x: layer.x, y: layer.y, rotation, scale: layer.scale };
+  }
+
+  const mainRotation = mainCharacter.rotation ?? 0;
+  const angle = mainRotation * Math.PI / 180;
+  const scaledX = layer.x * mainCharacter.scale;
+  const scaledY = layer.y * mainCharacter.scale;
+  return {
+    x: mainCharacter.x + scaledX * Math.cos(angle) - scaledY * Math.sin(angle),
+    y: mainCharacter.y + scaledX * Math.sin(angle) + scaledY * Math.cos(angle),
+    rotation: mainRotation + rotation,
+    scale: mainCharacter.scale * layer.scale,
+  };
 }
 
 export interface SpineTimelineCameraSource {
@@ -606,6 +636,7 @@ function normalizeLayer(value: unknown, index: number, duration: number): SpineT
     loop: layer.loop !== false,
     x: finiteNumber(layer.x, 0),
     y: finiteNumber(layer.y, 0),
+    rotation: finiteNumber(layer.rotation, 0),
     scale: Math.max(0.01, finiteNumber(layer.scale, 1)),
     opacity: Math.max(0, Math.min(1, finiteNumber(layer.opacity, 1))),
     order: Math.max(0, finiteNumber(layer.order, index)),

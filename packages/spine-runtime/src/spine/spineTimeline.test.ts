@@ -22,7 +22,7 @@ test("a clip can inherit the layer face animation or explicitly disable it", () 
   expect(timelineFaceAnimation(configuredLayer, { faceAnimation: "" })).toBe("");
   expect(timelineFaceAnimation(configuredLayer, { faceAnimation: "LookEnd_01_A" })).toBe("LookEnd_01_A");
 });
-import { advanceSpineTimeline, normalizeSpineTimeline, timelineActiveAnimationClip, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAnimationNeedsIdleUnderlay, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineAuthoredCueEnd, timelineBlendModeCss, timelineColorClipOpacity, timelineForSequence, timelineLastDefinedCameraTrack, timelineLayerAnimation, timelineLayerAnimationPlaybackEnd, timelineLayerPlaybackEnd, timelineLayerSampleTime, timelineMainAnimation, timelineOpeningDuration, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineSequenceIds, timelineTalkSequenceIds, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer } from "./spineTimeline";
+import { advanceSpineTimeline, normalizeSpineTimeline, timelineActiveAnimationClip, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAnimationNeedsIdleUnderlay, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineAuthoredCueEnd, timelineBlendModeCss, timelineColorClipOpacity, timelineForSequence, timelineLastDefinedCameraTrack, timelineLayerAnimation, timelineLayerAnimationPlaybackEnd, timelineLayerPlaybackEnd, timelineLayerSampleTime, timelineLayerTransform, timelineMainAnimation, timelineOpeningDuration, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineSequenceIds, timelineTalkSequenceIds, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer } from "./spineTimeline";
 
 const character = { start: 1, animationOffset: 0.25, loop: false, role: "character" as const };
 
@@ -214,6 +214,23 @@ test("background layers follow the main animation by name and clock", () => {
   const mainState = timelineMainAnimation(clipMain, meta, 2.5, "opening", "direct", 0, 1);
   expect(timelineLayerAnimation(clipBackground, meta, mainState.animation, 2.5, "opening", "direct", 0)).toBe("Start_Idle_2");
   expect(mainState.time).toBeCloseTo(0.6);
+});
+
+test("following layers inherit the main character transform and retain local offsets", () => {
+  const transform = timelineLayerTransform(
+    { followMainAnimation: true, x: 3, y: 4, rotation: 15, scale: 0.5 },
+    { x: 10, y: 20, rotation: 90, scale: 2 },
+  );
+  expect(transform.x).toBeCloseTo(2);
+  expect(transform.y).toBeCloseTo(26);
+  expect(transform).toMatchObject({ rotation: 105, scale: 1 });
+});
+
+test("layers without transform following keep their own transform", () => {
+  expect(timelineLayerTransform(
+    { followMainAnimation: false, x: 3, y: 4, rotation: 15, scale: 0.5 },
+    { x: 10, y: 20, rotation: 90, scale: 2 },
+  )).toEqual({ x: 3, y: 4, rotation: 15, scale: 0.5 });
 });
 
 test("opening intro and post-intro clocks are shared by the main layer", () => {

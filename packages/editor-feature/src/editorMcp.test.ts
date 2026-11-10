@@ -75,10 +75,10 @@ describe("editor MCP command validation", () => {
     expect(normalizeEditorMcpCommand({ name: "pan_preview", deltaX: 12, deltaY: -9 })).toEqual({ name: "pan_preview", deltaX: 12, deltaY: -9 });
     expect(normalizeEditorMcpCommand({ name: "reset_preview", mode: "pan" })).toEqual({ name: "reset_preview", mode: "pan" });
     expect(normalizeEditorMcpCommand({ name: "set_workspace", workspace: "camera" })).toEqual({ name: "set_workspace", workspace: "camera" });
-    expect(normalizeEditorMcpCommand({ name: "update_spine_layer", layerId: "spine-1", patch: { enabled: false, blendMode: "screen", opacity: 0.75 } })).toEqual({
+    expect(normalizeEditorMcpCommand({ name: "update_spine_layer", layerId: "spine-1", patch: { enabled: false, blendMode: "screen", opacity: 0.75, rotation: 45 } })).toEqual({
       name: "update_spine_layer",
       layerId: "spine-1",
-      patch: { enabled: false, blendMode: "screen", opacity: 0.75 },
+      patch: { enabled: false, blendMode: "screen", opacity: 0.75, rotation: 45 },
     });
     expect(normalizeEditorMcpCommand({ name: "capture_preview", mode: "viewport" })).toEqual({ name: "capture_preview", mode: "viewport" });
     expect(normalizeEditorMcpCommand({ name: "start_waveform_profile" })).toEqual({ name: "start_waveform_profile" });
@@ -254,6 +254,7 @@ describe("editor MCP command validation", () => {
     expect(() => normalizeEditorMcpCommand({ name: "pan_preview", deltaX: 1, deltaY: Number.NaN })).toThrow();
     expect(() => normalizeEditorMcpCommand({ name: "update_spine_layer", layerId: "spine-1", patch: { opacity: 1.5 } })).toThrow();
     expect(() => normalizeEditorMcpCommand({ name: "update_spine_layer", layerId: "spine-1", patch: { scale: 0 } })).toThrow();
+    expect(() => normalizeEditorMcpCommand({ name: "update_spine_layer", layerId: "spine-1", patch: { rotation: 360_001 } })).toThrow();
     expect(() => normalizeEditorMcpCommand({ name: "capture_preview", mode: "desktop" })).toThrow();
     expect(() => normalizeEditorMcpCommand({ name: "execute_javascript", source: "alert(1)" })).toThrow();
     expect(() => normalizeEditorMcpCommand({ name: "start_waveform_profile", source: "alert(1)" })).toThrow();

@@ -48,11 +48,12 @@ test("background timeline layers follow the main animation by default and keep e
     timeline: {
       layers: [
         { id: "character", directory: "Akari_home", role: "character" },
-        { id: "background", directory: "akari_bg", role: "background", followMainAnimation: false },
+        { id: "background", directory: "akari_bg", role: "background", followMainAnimation: false, rotation: -12 },
       ],
     },
   }, "Akari_home");
   expect(project?.timeline.layers.find((layer) => layer.role === "background")?.followMainAnimation).toBe(false);
+  expect(project?.timeline.layers.find((layer) => layer.role === "background")?.rotation).toBe(-12);
 
   const legacy = normalizeProject({
     schemaVersion: 2,
@@ -61,6 +62,7 @@ test("background timeline layers follow the main animation by default and keep e
     timeline: { layers: [{ id: "background", directory: "akari_bg", role: "background" }] },
   }, "Akari_home");
   expect(legacy?.timeline.layers.find((layer) => layer.role === "background")?.followMainAnimation).toBe(true);
+  expect(legacy?.timeline.layers.find((layer) => layer.role === "background")?.rotation).toBe(0);
 });
 
 test("project Light FX strength defaults, clamps, and survives normalization", () => {

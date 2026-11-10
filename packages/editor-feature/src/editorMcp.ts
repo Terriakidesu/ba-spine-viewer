@@ -222,7 +222,7 @@ export type EditorMcpCommand =
   | { name: "pan_preview"; deltaX: number; deltaY: number }
   | { name: "reset_preview"; mode?: "pan" | "fit" }
   | { name: "select_visual"; kind: "spine-layer" | "color-layer" | "color-clip"; id: string }
-  | { name: "update_spine_layer"; layerId: string; patch: { name?: string; enabled?: boolean; locked?: boolean; blendMode?: EditorMcpBlendMode; animation?: string; faceAnimation?: string; followMainAnimation?: boolean; start?: number; end?: number; endMode?: "auto" | "manual"; animationOffset?: number; loop?: boolean; x?: number; y?: number; scale?: number; opacity?: number } }
+  | { name: "update_spine_layer"; layerId: string; patch: { name?: string; enabled?: boolean; locked?: boolean; blendMode?: EditorMcpBlendMode; animation?: string; faceAnimation?: string; followMainAnimation?: boolean; start?: number; end?: number; endMode?: "auto" | "manual"; animationOffset?: number; loop?: boolean; x?: number; y?: number; rotation?: number; scale?: number; opacity?: number } }
   | { name: "add_animation_clip"; layerId: string; animation: string; start: number; end?: number; loop?: boolean; faceAnimation?: string | null; continueAfterOpening?: boolean }
   | { name: "update_animation_clip"; clipId: string; patch: { animation?: string; faceAnimation?: string | null; start?: number; end?: number; endMode?: "auto" | "manual"; animationOffset?: number; loop?: boolean; enabled?: boolean; continueAfterOpening?: boolean; hideCharacter?: boolean } }
   | { name: "move_animation_clip"; clipId: string; start: number; ripple: boolean }
@@ -903,7 +903,7 @@ function validateEditorTimelineSnapshot(sequence: Record<string, unknown>, seque
   const colorClipIds = new Set<string>();
   for (const [layerIndex, rawLayer] of (sequence.layers as unknown[]).entries()) {
     const field = `sequence.layers[${layerIndex}]`;
-    if (!isRecord(rawLayer) || !onlyKeys(rawLayer, ["id", "name", "role", "directory", "enabled", "locked", "blendMode", "animation", "faceAnimation", "animationClips", "followMainAnimation", "start", "end", "endMode", "animationOffset", "loop", "x", "y", "scale", "opacity", "order"])) throw new Error(`${field} is invalid or contains unsupported fields.`);
+    if (!isRecord(rawLayer) || !onlyKeys(rawLayer, ["id", "name", "role", "directory", "enabled", "locked", "blendMode", "animation", "faceAnimation", "animationClips", "followMainAnimation", "start", "end", "endMode", "animationOffset", "loop", "x", "y", "rotation", "scale", "opacity", "order"])) throw new Error(`${field} is invalid or contains unsupported fields.`);
     const layerId = uniqueId(rawLayer.id, `${field}.id`);
     layerIds.add(layerId);
     stringValue(rawLayer.name, `${field}.name`, true); stringValue(rawLayer.directory, `${field}.directory`); stringValue(rawLayer.animation, `${field}.animation`, true);
@@ -917,6 +917,7 @@ function validateEditorTimelineSnapshot(sequence: Record<string, unknown>, seque
     for (const name of ["start", "end"] as const) numericValue(rawLayer[name], `${field}.${name}`, 0);
     if ((rawLayer.end as number) < (rawLayer.start as number) + 0.01) throw new Error(`${field}.end must be at least 0.01 seconds after start.`);
     numericValue(rawLayer.animationOffset, `${field}.animationOffset`, 0); numericValue(rawLayer.x, `${field}.x`); numericValue(rawLayer.y, `${field}.y`);
+    if (rawLayer.rotation !== undefined) numericValue(rawLayer.rotation, `${field}.rotation`, -360_000, 360_000);
     numericValue(rawLayer.scale, `${field}.scale`, 0.01); numericValue(rawLayer.opacity, `${field}.opacity`, 0, 1); numericValue(rawLayer.order, `${field}.order`);
     if (rawLayer.animationClips !== undefined) {
       if (!Array.isArray(rawLayer.animationClips)) throw new Error(`${field}.animationClips must be an array.`);
@@ -1321,7 +1322,7 @@ export function normalizeEditorMcpCommand(value: unknown): EditorMcpCommand {
       return { name: value.name, kind: value.kind as "spine-layer" | "color-layer" | "color-clip", id: stringField(value.id, "id") };
     case "update_spine_layer": {
       if (!onlyKeys(value, ["name", "layerId", "patch"])) throw new Error("Unexpected update_spine_layer fields.");
-      const patch = validatePatch(value.patch, ["name", "enabled", "locked", "blendMode", "animation", "faceAnimation", "followMainAnimation", "start", "end", "endMode", "animationOffset", "loop", "x", "y", "scale", "opacity"], "patch");
+      const patch = validatePatch(value.patch, ["name", "enabled", "locked", "blendMode", "animation", "faceAnimation", "followMainAnimation", "start", "end", "endMode", "animationOffset", "loop", "x", "y", "rotation", "scale", "opacity"], "patch");
       if (patch.name !== undefined) stringField(patch.name, "patch.name");
       for (const field of ["enabled", "locked", "followMainAnimation", "loop"] as const) if (patch[field] !== undefined) optionalBoolean(patch[field], `patch.${field}`);
       if (patch.blendMode !== undefined && !["normal", "multiply", "screen", "additive"].includes(String(patch.blendMode))) throw new Error("Unsupported Spine layer blend mode.");
@@ -1333,6 +1334,7 @@ export function normalizeEditorMcpCommand(value: unknown): EditorMcpCommand {
       if (patch.animationOffset !== undefined) optionalNumber(patch.animationOffset, "patch.animationOffset", 0);
       if (patch.x !== undefined) optionalNumber(patch.x, "patch.x", -100_000, 100_000);
       if (patch.y !== undefined) optionalNumber(patch.y, "patch.y", -100_000, 100_000);
+      if (patch.rotation !== undefined) optionalNumber(patch.rotation, "patch.rotation", -360_000, 360_000);
       if (patch.scale !== undefined) optionalNumber(patch.scale, "patch.scale", 0.01, 1000);
       if (patch.opacity !== undefined) optionalNumber(patch.opacity, "patch.opacity", 0, 1);
       return { name: value.name, layerId: stringField(value.layerId, "layerId"), patch: patch as Extract<EditorMcpCommand, { name: "update_spine_layer" }>['patch'] };

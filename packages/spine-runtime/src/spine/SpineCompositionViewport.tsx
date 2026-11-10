@@ -3,7 +3,7 @@ import { SpineRenderer, type SpineCameraFrame, type SpineCameraMode, type SpineC
 import type { AssetSource } from "./spineAssets";
 import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration, type SpineInteractionProject } from "./spineInteraction";
 import { spineAudioPathCandidates } from "./spineAudio";
-import { advanceSpineTimeline, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineIdleAnimation, timelineLayerAnimation, timelineLayerAnimationClips, timelineLayerAnimationPlaybackEnd, timelineMainAnimation, timelineOpeningContinuationStart, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer, type SpineTimelineAudioPreloadState } from "./spineTimeline";
+import { advanceSpineTimeline, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineIdleAnimation, timelineLayerAnimation, timelineLayerAnimationClips, timelineLayerAnimationPlaybackEnd, timelineLayerTransform, timelineMainAnimation, timelineOpeningContinuationStart, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer, type SpineTimelineAudioPreloadState } from "./spineTimeline";
 import { SpineTimelineLayerCanvas } from "./SpineTimelineLayerCanvas";
 import { cameraAspectValue, changeSpineCameraAspectRatio, evaluateSpineCameraTrack, type SpineCameraAspectRatio, type SpineCameraTrack } from "./spineCameraMotion";
 
@@ -606,12 +606,13 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
        : []
      : idleMode === "none" ? timelineActiveSubtitleTexts(timeline, effectiveCurrentTime) : [];
   const interactionLayer = layers.find((layer) => layer.id === referenceLayerId);
+  const interactionLayerTransform = interactionLayer ? timelineLayerTransform(interactionLayer, characterLayer) : null;
   const interactionOverlayStyle: CSSProperties = interactionLayer
     ? {
       position: "absolute",
       inset: 0,
       zIndex: 2,
-      transform: `translate(${interactionLayer.x}px, ${interactionLayer.y}px) scale(${interactionLayer.scale})`,
+      transform: `translate(${interactionLayerTransform?.x ?? interactionLayer.x}px, ${interactionLayerTransform?.y ?? interactionLayer.y}px) rotate(${interactionLayerTransform?.rotation ?? interactionLayer.rotation ?? 0}deg) scale(${interactionLayerTransform?.scale ?? interactionLayer.scale})`,
       transformOrigin: "center center",
       pointerEvents: "none",
     }
@@ -630,11 +631,12 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
               talkMixDuration={talkMixDuration}
               talkBlendOutStart={talkBlendOutStart}
               showInteractionPoints={showInteractionPoints}
-              currentTime={effectiveCurrentTime}
-              mainAnimation={mainAnimationState?.animation}
-              mainAnimationTime={mainAnimationState?.time}
-              mainAnimationLoop={mainAnimationState?.loop}
-              idleAnimationTime={recordingIdleAnimationTime}
+               currentTime={effectiveCurrentTime}
+               mainAnimation={mainAnimationState?.animation}
+               mainAnimationTime={mainAnimationState?.time}
+               mainAnimationLoop={mainAnimationState?.loop}
+               mainCharacterTransform={characterLayer}
+               idleAnimationTime={recordingIdleAnimationTime}
               recordingIdleOverride={recordingIdleOverride}
               sequenceId={timeline.sequenceId}
               openingMode={timeline.openingMode}
@@ -653,7 +655,8 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
               onRenderer={(id, value) => {
                 if (value) {
                   layerRenderersRef.current.set(id, value);
-                  const layerScale = includeLayerScaleRef.current ? Math.max(1, timeline.layers.find((layer) => layer.id === id)?.scale ?? 1) : 1;
+                  const layer = timeline.layers.find((candidate) => candidate.id === id);
+                  const layerScale = includeLayerScaleRef.current && layer ? Math.max(1, timelineLayerTransform(layer, characterLayer).scale) : 1;
                   value.setResolutionScale(resolutionScaleRef.current * layerScale);
                 } else {
                   layerRenderersRef.current.delete(id);

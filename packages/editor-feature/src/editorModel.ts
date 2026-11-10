@@ -82,6 +82,7 @@ export interface EditorTimelineLayer {
   loop: boolean;
   x: number;
   y: number;
+  rotation?: number;
   scale: number;
   opacity: number;
   order: number;
@@ -388,6 +389,7 @@ export function createTimelineLayer(directory: string, role: TimelineLayerRole, 
     loop: true,
     x: 0,
     y: 0,
+    rotation: 0,
     scale: 1,
     opacity: 1,
     order,
@@ -531,6 +533,7 @@ function normalizeTimelineLayer(value: Partial<EditorTimelineLayer>, index: numb
     loop: value.loop !== false,
     x: finiteNumber(value.x, 0),
     y: finiteNumber(value.y, 0),
+    rotation: finiteNumber(value.rotation, 0),
     scale: finiteNumber(value.scale, 1, 0.01),
     opacity: Math.max(0, Math.min(1, finiteNumber(value.opacity, 1, 0))),
     order: finiteNumber(value.order, index, 0),
