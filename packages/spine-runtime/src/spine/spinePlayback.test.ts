@@ -140,6 +140,40 @@ function playback(selection: string) {
   return { renderer, state };
 }
 
+function lookPlayback(endAnimation: string | null = "LookEnd_01_M") {
+  const data = new SkeletonData();
+  const root = new BoneData(0, "root", null);
+  data.bones.push(root, new BoneData(1, "Touch_Eye_Key", root));
+  data.animations.push(new Animation("Look_01_M", [], 1));
+  if (endAnimation) data.animations.push(new Animation(endAnimation, [], 0.4));
+  const skeleton = new Skeleton(data);
+  const eyeBone = skeleton.bones[1]!;
+  eyeBone.x = 80;
+  const eyeTarget = { bone: eyeBone, baseX: 0, baseY: 0, rangeX: 100, rangeY: 100 };
+  const state = new AnimationState(new AnimationStateData(data));
+  const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
+    interactionMode: "interaction",
+    interactionState: "look",
+    interactionTrackName: "Look_01_M",
+    interactionFollowWorld: { x: 80, y: 0 },
+    eyeFollowHold: 1,
+    bundle: {
+      skeleton,
+      state,
+      eyeTarget,
+      touchTarget: null,
+      lookFollow: { smoothing: 10, allowX: true, allowY: true },
+      interaction: {
+        look: endAnimation ? {
+          start: { main: "Look_01_M", face: null },
+          end: { main: endAnimation, face: null },
+        } : null,
+      },
+    },
+  }) as SpineRenderer;
+  return { renderer, state, eyeBone };
+}
+
 describe("Spine restart playback", () => {
   test("recognizes the alternate Konoka idle name", () => {
     expect(findIntroAnimation(["Dummy", "Start_Idle_01", "Idle"])).toBe("Start_Idle_01");
@@ -158,6 +192,47 @@ describe("Spine restart playback", () => {
     expect(defaultSpineAnimation(animations)).toBe("");
     expect(defaultSpineAnimation(["Start_Idle_01", "LookEnd_01_M", "Idle_02"])).toBe(INTRO_ANIMATION);
     expect(findIdleAnimation(["Idle_LookEnd_01", "Idle_01_M"])).toBe("Idle_01_M");
+  });
+
+  test("look release preserves the gaze target and eases it home through LookEnd", () => {
+    const { renderer, state, eyeBone } = lookPlayback();
+    const runtime = renderer as any;
+
+    runtime.endLook();
+    expect(runtime.interactionState).toBe("lookRelease");
+    expect(state.getCurrent(1)?.animation?.name).toBe("LookEnd_01_M");
+    expect(eyeBone.x).toBe(80);
+
+    runtime.finishInteractionState();
+    expect(runtime.interactionState).toBe("lookRelease");
+    runtime.applyEyeFollow(0.05, null);
+    expect(eyeBone.x).toBeGreaterThan(0);
+    expect(eyeBone.x).toBeLessThan(80);
+
+    state.getCurrent(1)!.trackTime = state.getCurrent(1)!.animation!.duration;
+    runtime.finishInteractionState();
+    expect(runtime.interactionState).toBe("lookRelease");
+    for (let index = 0; index < 120; index++) runtime.applyEyeFollow(1 / 60, null);
+    expect(eyeBone.x).toBeCloseTo(0);
+    runtime.finishInteractionState();
+    expect(runtime.interactionState).toBe("idle");
+  });
+
+  test("look without an end clip still returns smoothly before becoming idle", () => {
+    const { renderer, eyeBone } = lookPlayback(null);
+    const runtime = renderer as any;
+
+    runtime.endLook();
+    expect(runtime.interactionState).toBe("lookRelease");
+    expect(runtime.interactionTrackName).toBeNull();
+    expect(eyeBone.x).toBe(80);
+    runtime.finishInteractionState();
+    expect(runtime.interactionState).toBe("lookRelease");
+
+    for (let index = 0; index < 120; index++) runtime.applyEyeFollow(1 / 60, null);
+    runtime.finishInteractionState();
+    expect(eyeBone.x).toBeCloseTo(0);
+    expect(runtime.interactionState).toBe("idle");
   });
 
   test("restarts the intro after the queued idle has already begun", () => {
