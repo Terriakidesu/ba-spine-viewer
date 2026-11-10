@@ -759,6 +759,7 @@ export class SpineRenderer {
   private introAudioEntry: TrackEntry | null = null;
   private introEventIndex = 0;
   private interactionFollowWorld: { x: number; y: number } | null = null;
+  private interactionFollowLocal: { x: number; y: number } | null = null;
   private touchPointerOrigin: { x: number; y: number } | null = null;
   private touchFollowOffset: { x: number; y: number } | null = null;
   private behaviorPointerHeldSeconds = 0;
@@ -911,6 +912,7 @@ export class SpineRenderer {
     this.interactionReady = false;
     this.eyeFollowHold = 0;
     this.interactionFollowWorld = null;
+    this.interactionFollowLocal = null;
     this.touchPointerOrigin = null;
     this.touchFollowOffset = null;
     this.talkIndex = 0;
@@ -1491,6 +1493,7 @@ export class SpineRenderer {
     this.introEventIndex = 0;
     this.eyeFollowHold = 0;
     this.interactionFollowWorld = null;
+    this.interactionFollowLocal = null;
     this.touchPointerOrigin = null;
     this.touchFollowOffset = null;
     if (mode === "interaction") {
@@ -1631,6 +1634,7 @@ export class SpineRenderer {
       bundle.touchTarget.baseY = bundle.touchTarget.bone.y;
     }
     this.interactionFollowWorld = null;
+    this.interactionFollowLocal = null;
     this.touchPointerOrigin = null;
     this.touchFollowOffset = null;
   }
@@ -1669,6 +1673,7 @@ export class SpineRenderer {
     this.talkFadeQueued = false;
     this.eyeFollowHold = 0;
     this.interactionFollowWorld = null;
+    this.interactionFollowLocal = null;
     this.interactionPressedTarget = null;
     this.interactionPressedTrigger = "hold";
     this.interactionPressOrigin = null;
@@ -1701,7 +1706,10 @@ export class SpineRenderer {
         target.bone.y = target.baseY;
       }
     }
-    if (!preserveLookFollow) this.interactionFollowWorld = null;
+    if (!preserveLookFollow) {
+      this.interactionFollowWorld = null;
+      this.interactionFollowLocal = null;
+    }
     this.touchPointerOrigin = null;
     this.touchFollowOffset = null;
     bundle?.skeleton.updateWorldTransform(Physics.pose);
@@ -1746,6 +1754,7 @@ export class SpineRenderer {
       || !this.compatibilityMachineCanExecute("$legacy-look-follow")) return;
     const profile = bundle.interaction.look;
     this.interactionState = "look";
+    this.interactionFollowLocal = null;
     this.interactionTrackName = profile?.start.main ?? null;
     if (profile) this.playOverlayPair(profile.start, 1, 2, false, false);
   }
@@ -1760,6 +1769,9 @@ export class SpineRenderer {
     const end = bundle.interaction.look?.end;
     // Keep the live target pose. It will be eased back after the release clip
     // is applied, rather than snapping to setup pose before LookEnd can play.
+    this.interactionFollowLocal = bundle.eyeTarget
+      ? { x: bundle.eyeTarget.bone.x, y: bundle.eyeTarget.bone.y }
+      : null;
     this.resetInteractionTargets(true, true);
     this.interactionState = "lookRelease";
     if (end) {
@@ -1831,6 +1843,7 @@ export class SpineRenderer {
     this.interactionTrackName = action.start.main;
     this.eyeFollowHold = 0;
     this.interactionFollowWorld = null;
+    this.interactionFollowLocal = null;
     const pointer = this.pointerWorld();
     this.touchPointerOrigin = pointer ? { x: pointer.x, y: pointer.y } : null;
     this.touchFollowOffset = null;
@@ -2123,6 +2136,7 @@ export class SpineRenderer {
     this.talkEventIndex = 0;
     this.eyeFollowHold = 0;
     this.interactionFollowWorld = null;
+    this.interactionFollowLocal = null;
     this.touchPointerOrigin = null;
     this.touchFollowOffset = null;
     this.sampledEditorFace = "";
@@ -2906,6 +2920,18 @@ export class SpineRenderer {
     const bundle = this.bundle;
     const eyeTarget = bundle?.eyeTarget;
     if (!bundle || !eyeTarget) return;
+    if (this.interactionState === "lookRelease") {
+      const desired = { x: eyeTarget.baseX, y: eyeTarget.baseY };
+      const current = this.interactionFollowLocal ?? { x: eyeTarget.bone.x, y: eyeTarget.bone.y };
+      const settled = Math.hypot(desired.x - current.x, desired.y - current.y) <= LOOK_FOLLOW_REST_EPSILON;
+      const smoothed = settled ? desired : smoothLookFollowPoint(current, desired, delta, bundle.lookFollow.smoothing);
+      this.interactionFollowLocal = smoothed;
+      this.interactionFollowWorld = null;
+      eyeTarget.bone.x = smoothed.x;
+      eyeTarget.bone.y = smoothed.y;
+      bundle.skeleton.updateWorldTransform(Physics.pose);
+      return;
+    }
     const base = eyeTarget.bone.parent
       ? eyeTarget.bone.parent.localToWorld(new Vector2(eyeTarget.baseX, eyeTarget.baseY))
       : new Vector2(eyeTarget.baseX + bundle.skeleton.x, eyeTarget.baseY + bundle.skeleton.y);

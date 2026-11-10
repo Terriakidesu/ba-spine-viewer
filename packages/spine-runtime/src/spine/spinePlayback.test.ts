@@ -147,6 +147,7 @@ function lookPlayback(endAnimation: string | null = "LookEnd_01_M") {
   data.animations.push(new Animation("Look_01_M", [], 1));
   if (endAnimation) data.animations.push(new Animation(endAnimation, [], 0.4));
   const skeleton = new Skeleton(data);
+  const rootBone = skeleton.bones[0]!;
   const eyeBone = skeleton.bones[1]!;
   eyeBone.x = 80;
   const eyeTarget = { bone: eyeBone, baseX: 0, baseY: 0, rangeX: 100, rangeY: 100 };
@@ -162,7 +163,7 @@ function lookPlayback(endAnimation: string | null = "LookEnd_01_M") {
       state,
       eyeTarget,
       touchTarget: null,
-      lookFollow: { smoothing: 10, allowX: true, allowY: true },
+      lookFollow: { enabled: true, smoothing: 10, allowX: true, allowY: true },
       interaction: {
         look: endAnimation ? {
           start: { main: "Look_01_M", face: null },
@@ -171,7 +172,7 @@ function lookPlayback(endAnimation: string | null = "LookEnd_01_M") {
       },
     },
   }) as SpineRenderer;
-  return { renderer, state, eyeBone };
+  return { renderer, state, skeleton, rootBone, eyeBone };
 }
 
 describe("Spine restart playback", () => {
@@ -233,6 +234,29 @@ describe("Spine restart playback", () => {
     runtime.finishInteractionState();
     expect(eyeBone.x).toBeCloseTo(0);
     expect(runtime.interactionState).toBe("idle");
+  });
+
+  test("look release settles in local space and accepts another trigger while its parent moves", () => {
+    const { renderer, state, skeleton, rootBone, eyeBone } = lookPlayback();
+    const runtime = renderer as any;
+
+    runtime.endLook();
+    state.getCurrent(1)!.trackTime = state.getCurrent(1)!.animation!.duration;
+    for (let index = 0; index < 120; index++) {
+      rootBone.x = index * 2;
+      rootBone.rotation = index * 0.5;
+      skeleton.updateWorldTransform(0 as never);
+      runtime.applyEyeFollow(1 / 60, null);
+      runtime.finishInteractionState();
+      if (runtime.interactionState === "idle") break;
+    }
+
+    expect(Math.abs(eyeBone.x)).toBeLessThanOrEqual(0.01);
+    expect(runtime.interactionState).toBe("idle");
+    expect(runtime.isInteractionBusy()).toBe(false);
+    runtime.beginLook();
+    expect(runtime.interactionState).toBe("look");
+    expect(runtime.isInteractionBusy()).toBe(true);
   });
 
   test("restarts the intro after the queued idle has already begun", () => {
