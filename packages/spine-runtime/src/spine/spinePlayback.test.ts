@@ -551,23 +551,36 @@ test("Talk requests cannot interrupt an active talk", () => {
     expect(renderer.isInteractionBusy()).toBe(false);
   });
 
-  test("pointer exit freezes captured motion, while cancel releases only the active pointer", () => {
+  test("pointer exit releases a captured interaction so later presses are not blocked", () => {
     const released: string[] = [];
     const captured = Object.assign(Object.create(SpineRenderer.prototype), {
       interactionMode: "interaction",
       interactionPointerId: 4,
       interactionPointerHeld: true,
       interactionPointer: { x: 20, y: 30 },
+      interactionPressedBehaviorRegionId: "head",
       pointerInside: true,
       eyeFollowHold: 0.5,
-      canvas: { hasPointerCapture: () => true },
+      interactionReady: false,
+      canvas: {
+        hasPointerCapture: () => true,
+        releasePointerCapture: (pointerId: number) => released.push(`capture-release:${pointerId}`),
+        setPointerCapture: (pointerId: number) => released.push(`capture-set:${pointerId}`),
+      },
+      dispatchBehaviorEvent: (event: string) => released.push(event),
       endGesture: () => released.push("gesture"),
       endLook: () => released.push("look"),
     }) as any;
     captured.handlePointerLeave({ pointerId: 4 });
     expect(captured.pointerInside).toBe(false);
     expect(captured.interactionPointer).toBeNull();
-    expect(released).toEqual(["look"]);
+    expect(captured.interactionPointerHeld).toBe(false);
+    expect(captured.interactionPointerId).toBeNull();
+    expect(released).toEqual(["pointer-leave", "gesture", "look", "capture-release:4"]);
+
+    captured.handlePointerDown({ button: 0, pointerId: 5 });
+    expect(captured.interactionPointerHeld).toBe(true);
+    expect(captured.interactionPointerId).toBe(5);
 
     const canceled = Object.assign(Object.create(SpineRenderer.prototype), {
       interactionMode: "interaction",
@@ -589,6 +602,56 @@ test("Talk requests cannot interrupt an active talk", () => {
     expect(canceled.interactionPointerHeld).toBe(false);
     expect(canceled.pointerInside).toBe(false);
     expect(released.slice(-3)).toEqual(["gesture", "look", "capture"]);
+  });
+
+  test("lost pointer capture cancels the held interaction so later presses are not blocked", () => {
+    const events: string[] = [];
+    const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
+      interactionMode: "interaction",
+      interactionPointerId: 12,
+      interactionPointerHeld: true,
+      interactionPointer: { x: 20, y: 30 },
+      interactionPressedBehaviorRegionId: "head",
+      behaviorPointerHeldSeconds: 1,
+      pointerInside: true,
+      canvas: { hasPointerCapture: () => false },
+      dispatchBehaviorEvent: (event: string) => events.push(event),
+      endGesture: () => events.push("gesture-end"),
+      endLook: () => events.push("look-end"),
+    }) as any;
+
+    renderer.handleLostPointerCapture({ pointerId: 12 });
+    expect(renderer.interactionPointerHeld).toBe(false);
+    expect(renderer.interactionPointerId).toBeNull();
+    expect(renderer.interactionPointer).toBeNull();
+    expect(renderer.pointerInside).toBe(false);
+    expect(events).toEqual(["pointer-cancel", "gesture-end", "look-end"]);
+
+    renderer.handlePointerUp({ pointerId: 12, clientX: 30, clientY: 30 });
+    expect(events).toHaveLength(3);
+  });
+
+  test("window blur cancels a held interaction and clears the camera drag", () => {
+    const events: string[] = [];
+    const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
+      interactionMode: "interaction",
+      interactionPointerId: 8,
+      interactionPointerHeld: true,
+      interactionPointer: { x: 20, y: 30 },
+      pointerInside: true,
+      dragging: true,
+      canvas: { hasPointerCapture: () => false },
+      dispatchBehaviorEvent: (event: string) => events.push(event),
+      endGesture: () => events.push("gesture-end"),
+      endLook: () => events.push("look-end"),
+    }) as any;
+
+    renderer.handleWindowBlur();
+    expect(renderer.interactionPointerHeld).toBe(false);
+    expect(renderer.interactionPointerId).toBeNull();
+    expect(renderer.pointerInside).toBe(false);
+    expect(renderer.dragging).toBe(false);
+    expect(events).toEqual(["pointer-cancel", "gesture-end", "look-end"]);
   });
 
   test("ignores a second pointer while one interaction gesture is held", () => {

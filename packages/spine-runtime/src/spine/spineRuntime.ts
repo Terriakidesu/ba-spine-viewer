@@ -2684,20 +2684,27 @@ export class SpineRenderer {
   private bindCameraControls() {
     this.canvas.addEventListener("pointerdown", this.onPointerDown);
     this.canvas.addEventListener("pointermove", this.onPointerMove);
-    this.canvas.addEventListener("pointerup", this.onPointerUp);
-    this.canvas.addEventListener("pointercancel", this.onPointerUp);
+    // A pointer can be released after it leaves the canvas (or its capture can
+    // be interrupted by the host window). Listen globally so the held state
+    // cannot block subsequent interactions.
+    window.addEventListener("pointerup", this.onPointerUp, true);
+    window.addEventListener("pointercancel", this.onPointerUp, true);
+    window.addEventListener("blur", this.onWindowBlur);
     this.canvas.addEventListener("pointerenter", this.onPointerEnter);
     this.canvas.addEventListener("pointerleave", this.onPointerLeave);
+    this.canvas.addEventListener("lostpointercapture", this.onLostPointerCapture);
     this.canvas.addEventListener("wheel", this.onWheel, { passive: false });
   }
 
   private unbindCameraControls() {
     this.canvas.removeEventListener("pointerdown", this.onPointerDown);
     this.canvas.removeEventListener("pointermove", this.onPointerMove);
-    this.canvas.removeEventListener("pointerup", this.onPointerUp);
-    this.canvas.removeEventListener("pointercancel", this.onPointerUp);
+    window.removeEventListener("pointerup", this.onPointerUp, true);
+    window.removeEventListener("pointercancel", this.onPointerUp, true);
+    window.removeEventListener("blur", this.onWindowBlur);
     this.canvas.removeEventListener("pointerenter", this.onPointerEnter);
     this.canvas.removeEventListener("pointerleave", this.onPointerLeave);
+    this.canvas.removeEventListener("lostpointercapture", this.onLostPointerCapture);
     this.canvas.removeEventListener("wheel", this.onWheel);
   }
 
@@ -2760,31 +2767,60 @@ export class SpineRenderer {
   };
 
   private onPointerUp = (event: PointerEvent) => this.handlePointerUp(event);
+  private onLostPointerCapture = (event: PointerEvent) => this.handleLostPointerCapture(event);
+  private onWindowBlur = () => this.handleWindowBlur();
 
   private handlePointerUp(event: PointerEvent) {
     if (this.interactionMode === "interaction") {
-      if (this.interactionPointerId !== null && this.interactionPointerId !== event.pointerId) return;
+      if (!this.interactionPointerHeld || this.interactionPointerId !== event.pointerId) return;
       const rect = this.canvas.getBoundingClientRect();
-      this.pointerInside = event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
-      const regionId = this.interactionPressedBehaviorRegionId ?? this.interactionPressedTarget?.regionId ?? null;
-      this.interactionPointer = null;
-      this.interactionPointerHeld = false;
-      this.dispatchBehaviorEvent(event.type === "pointercancel" ? "pointer-cancel" : "pointer-release", regionId);
-      this.behaviorPointerHeldSeconds = 0;
-      this.interactionPointerId = null;
-      this.interactionPressedTarget = null;
-      this.interactionPressedBehaviorRegionId = null;
-      this.behaviorPressDispatched = false;
-      this.interactionPressedTrigger = "hold";
-      this.interactionPressOrigin = null;
-      this.endGesture();
-      this.endLook();
-      if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+      const pointerInside = event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+      this.releaseInteractionPointer(event.type === "pointercancel" ? "pointer-cancel" : "pointer-release", pointerInside);
       return;
     }
     this.dragging = false;
     if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
-  };
+  }
+
+  private releaseInteractionPointer(event: "pointer-release" | "pointer-cancel" | "pointer-leave", pointerInside: boolean) {
+    const pointerId = this.interactionPointerId;
+    if (!this.interactionPointerHeld || pointerId === null) return;
+    const regionId = this.interactionPressedBehaviorRegionId ?? this.interactionPressedTarget?.regionId ?? null;
+    this.pointerInside = pointerInside;
+    this.interactionPointer = null;
+    this.interactionPointerHeld = false;
+    this.dispatchBehaviorEvent(event, regionId);
+    this.behaviorPointerHeldSeconds = 0;
+    this.interactionPointerId = null;
+    this.interactionPressedTarget = null;
+    this.interactionPressedBehaviorRegionId = null;
+    this.behaviorPressDispatched = false;
+    this.interactionPressedTrigger = "hold";
+    this.interactionPressOrigin = null;
+    this.endGesture();
+    this.endLook();
+    if (this.canvas.hasPointerCapture(pointerId)) this.canvas.releasePointerCapture(pointerId);
+  }
+
+  private handleLostPointerCapture(event: PointerEvent) {
+    if (this.interactionMode === "interaction" && this.interactionPointerHeld && this.interactionPointerId === event.pointerId) {
+      this.releaseInteractionPointer("pointer-cancel", false);
+    }
+    this.dragging = false;
+  }
+
+  private handleWindowBlur() {
+    this.dragging = false;
+    if (this.interactionMode !== "interaction") return;
+    if (this.interactionPointerHeld) {
+      this.releaseInteractionPointer("pointer-cancel", false);
+      return;
+    }
+    this.pointerInside = false;
+    this.interactionPointer = null;
+    this.eyeFollowHold = 0;
+    this.endLook();
+  }
 
   private onPointerEnter = (event: PointerEvent) => {
     if (this.interactionMode !== "interaction" || !this.interactionPointerHeld || this.interactionPointerId !== event.pointerId) return;
@@ -2795,12 +2831,10 @@ export class SpineRenderer {
 
   private handlePointerLeave(event: PointerEvent) {
     if (this.interactionMode !== "interaction" || !this.interactionPointerHeld || this.interactionPointerId !== event.pointerId) return;
-    this.pointerInside = false;
-    this.interactionPointer = null;
-    this.dispatchBehaviorEvent("pointer-leave", this.interactionPressedBehaviorRegionId);
-    this.eyeFollowHold = 0;
-    this.endLook();
-    if (!this.canvas.hasPointerCapture(event.pointerId)) this.endGesture();
+    // Leaving the canvas ends this interaction. Clear the held pointer even if
+    // capture was active; otherwise a missing pointerup can block every later
+    // press while the visible gesture has already ended.
+    this.releaseInteractionPointer("pointer-leave", false);
   };
 
   private updateInteractionPointer(event: PointerEvent) {

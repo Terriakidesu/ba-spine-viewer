@@ -36,14 +36,10 @@ const portableSuite = process.env.BA_SPINE_SUITE_ROOT
   })
   : null;
 const rememberedLibraryPath = await restoreLastLibraryPath(viewerLibraryPreferencePath);
-const developmentDefaultLibraryPath = process.env.BA_SPINE_WORKSPACE_ROOT
-  ? join(process.env.BA_SPINE_WORKSPACE_ROOT, "data")
-  : null;
 const initialPath = await firstRecognizableLibraryPath([
   process.env.BA_SPINE_DATA,
   rememberedLibraryPath,
   portableSuite?.dataPath,
-  portableSuite ? null : developmentDefaultLibraryPath,
 ]);
 let assetRoot: string | null = initialPath ? resolve(initialPath) : null;
 const EDITOR_DIRECTORIES = new Set([".editor", ".shittim-spine-editor"]);

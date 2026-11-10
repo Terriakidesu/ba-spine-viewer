@@ -427,7 +427,7 @@ a { color: var(--cyan); }
 .spine-character-option-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spine-lobby-thumbnail { display: grid; place-items: center; width: 48px; height: 27px; flex: none; overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-alt); }
 .spine-lobby-thumbnail.is-face-thumbnail { width: 38px; height: 38px; border-radius: 50%; }
-.spine-lobby-thumbnail img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.spine-lobby-thumbnail img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .spine-lobby-thumbnail.has-image { border-color: color-mix(in srgb, var(--cyan) 45%, var(--line)); }
 .spine-character-variants { display: grid; gap: 2px; padding: 2px 4px 7px 22px; }
 .spine-variant-row { display: flex; align-items: center; gap: 2px; min-width: 0; }

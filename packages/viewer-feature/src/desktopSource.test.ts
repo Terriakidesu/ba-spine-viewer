@@ -139,6 +139,26 @@ describe("viewer desktop asset source", () => {
     }
   });
 
+  test("preserves image MIME types when reading saved lobby thumbnails", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { __BA_SPINE_HOST_TOKEN__: "test-token" } });
+    globalThis.fetch = (async () => new Response(new Uint8Array([137, 80, 78, 71]), {
+      headers: { "content-type": "image/png", "x-ba-spine-file-mtime": "1234" },
+    })) as unknown as typeof fetch;
+    try {
+      const source = sourceFromDesktop("D:/fixture");
+      const image = await source.getFile("lobbies/Airi_home/thumbnail.png");
+      expect(image?.name).toBe("thumbnail.png");
+      expect(image?.type).toBe("image/png");
+      expect(image?.lastModified).toBe(1234);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
+  });
+
   test("uses the authenticated host bridge for fingerprinted thumbnail cache operations", async () => {
     const originalFetch = globalThis.fetch;
     const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");

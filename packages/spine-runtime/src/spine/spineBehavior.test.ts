@@ -70,7 +70,43 @@ describe("declarative behavior machines", () => {
     expect(actions).toContainEqual(expect.objectContaining({ type: "rotate-bone", targetBonePath: "root/HeadTarget", axis: "y", minimum: -12, maximum: 18 }));
     expect(look.activation).toMatchObject({ kind: "pointer-canvas", holdDelay: 0.5 });
     expect(look.transitions.find((transition) => transition.id === "look-follow-start")?.afterSeconds).toBe(0);
+    expect(look.transitions.find((transition) => transition.id === "look-follow-leave")).toMatchObject({
+      fromStateId: "following", toStateId: "returning", event: "pointer-leave",
+    });
+    expect(pat.transitions.find((transition) => transition.id === "pat-head-leave")).toMatchObject({
+      fromStateId: "active", toStateId: "releasing", event: "pointer-leave",
+    });
     expect(look.states.find((state) => state.id === "following")?.actions).toContainEqual(expect.objectContaining({ type: "pointer-follow", targetBonePath: "root/EyeTarget" }));
+  });
+
+  test("look-follow pointer exit returns to neutral and releases the gaze trigger", () => {
+    const look = migrateLegacyInteractionsToBehaviors([], {
+      ...DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS,
+      delay: 0.25,
+    }).find((item) => item.id === "look-follow")!;
+    const nextGaze = normalizeSpineBehaviorMachine({
+      ...machine("next-gaze", 5, "bone:eyes", "gaze"),
+      activation: { kind: "event", event: "manual" },
+      transitions: [{
+        id: "begin", fromStateId: "idle", toStateId: "active", event: "manual",
+        conditions: [], afterSeconds: 0, priority: 0, interruptPolicy: "allow",
+      }],
+    })!;
+    const runtime = new SpineBehaviorRuntime([look, nextGaze]);
+    const heldContext = { pointerHeld: true, regionId: null, heldSeconds: 0, dragDistance: 0, variables: {} };
+
+    runtime.dispatch("pointer-press", heldContext);
+    runtime.update(0.25, { ...heldContext, heldSeconds: 0.25 });
+    expect(runtime.getDebugSnapshot().find((item) => item.machineId === "look-follow")?.stateId).toBe("following");
+
+    runtime.dispatch("pointer-leave", { ...heldContext, pointerHeld: false });
+    expect(runtime.getDebugSnapshot().find((item) => item.machineId === "look-follow")?.stateId).toBe("returning");
+    runtime.notifyAnimationComplete("look-follow", { ...heldContext, pointerHeld: false });
+    expect(runtime.getDebugSnapshot().find((item) => item.machineId === "look-follow")?.stateId).toBe("neutral");
+
+    runtime.dispatch("manual");
+    expect(runtime.getDebugSnapshot().find((item) => item.machineId === "next-gaze")).toMatchObject({ stateId: "active", active: true });
+    runtime.dispose();
   });
 
   test("evaluates matching transitions by priority and stable id, with conditions and timers", () => {

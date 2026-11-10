@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { mcpConnectionFiles, removeMcpConnectionFile } from "../src/bun/mcpBridge";
-import { classifyEditorMcpError, createEditorMcpErrorEnvelope, createEditorMcpResultEnvelope, EDITOR_MCP_OPERATION_REGISTRY, EDITOR_MCP_REVISION_REQUIRED_COMMANDS, type EditorMcpCommand, type EditorMcpConnectionInfo, type EditorMcpErrorEnvelope, type EditorMcpProjectIdentity, type EditorMcpResultEnvelope, type EditorMcpState } from "@ba-spine/editor-feature/editorMcp";
+import { classifyEditorMcpError, createEditorMcpErrorEnvelope, createEditorMcpResultEnvelope, editorMcpErrorMessage, EDITOR_MCP_OPERATION_REGISTRY, EDITOR_MCP_REVISION_REQUIRED_COMMANDS, type EditorMcpCommand, type EditorMcpConnectionInfo, type EditorMcpErrorEnvelope, type EditorMcpProjectIdentity, type EditorMcpResultEnvelope, type EditorMcpState } from "@ba-spine/editor-feature/editorMcp";
 
 interface HostConnection extends EditorMcpConnectionInfo {
   baseUrl: string;
@@ -91,7 +91,7 @@ async function requestHost<T>(connection: HostConnection, path: string, init?: R
       signal: init?.signal ?? AbortSignal.timeout(35_000),
     });
   } catch (value) {
-    throw new HostUnavailableError(`Could not reach editor PID ${connection.pid} on port ${connection.port}: ${value instanceof Error ? value.message : String(value)}`);
+    throw new HostUnavailableError(`Could not reach editor PID ${connection.pid} on port ${connection.port}: ${editorMcpErrorMessage(value)}`);
   }
   const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok) {
@@ -123,7 +123,7 @@ async function hostRequest<T>(path: string, init?: RequestInit): Promise<T> {
     return await requestHost<T>(connection, path, init);
   } catch (value) {
     if (!(value instanceof HostUnavailableError)) throw value;
-    throw new Error(`${value instanceof Error ? value.message : String(value)} The selected Editor was not changed. Call editor_list_hosts and explicitly select another host if intended.`);
+    throw new Error(`${editorMcpErrorMessage(value)} The selected Editor was not changed. Call editor_list_hosts and explicitly select another host if intended.`);
   }
 }
 
@@ -285,7 +285,7 @@ async function waitForState(predicate: (state: EditorMcpState) => boolean, descr
       const state = await editorState();
       if (predicate(state)) return state;
     } catch (value) {
-      lastError = value instanceof Error ? value.message : String(value);
+      lastError = editorMcpErrorMessage(value);
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
   }
@@ -335,11 +335,11 @@ function result(value: unknown) {
 }
 
 function failed(value: unknown) {
-  const message = value instanceof Error ? value.message : String(value);
+  const classified = classifyEditorMcpError(value);
+  const message = classified.message;
   const attached = isRecord(value) && isRecord(value.envelope) && value.envelope.envelopeVersion === 1 && value.envelope.ok === false
     ? value.envelope as unknown as EditorMcpErrorEnvelope
     : null;
-  const classified = classifyEditorMcpError(value);
   const state = lastKnownEditorState;
   const identity = projectIdentity(state);
   const errorEnvelope = attached ?? createEditorMcpErrorEnvelope({
@@ -1199,13 +1199,17 @@ server.registerTool(trackToolName("editor_open_asset_root"), {
 
 server.registerTool(trackToolName("editor_select_asset_set"), {
   title: "Select asset set",
-  description: "Switch to a Spine set in the currently loaded root. Refuses if the current project has unsaved changes.",
+  description: "Switch to a Spine set in the currently loaded root and wait for its Editor project to initialize. Restores the active workspace; refuses if the current project has unsaved changes.",
   inputSchema: z.object({ directory: z.string().min(1), expectedDocumentRevision: z.number().int().nonnegative().optional() }).strict(),
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
 }, async ({ directory, expectedDocumentRevision }) => {
   try {
+    const previousWorkspace = (await editorState()).workspace;
     await sendCommand({ name: "select_asset_set", directory }, expectedDocumentRevision);
-    return result(await waitForState((state) => state.directory === directory && !state.assetLoading, `asset set ${directory} loading`));
+    return result(await waitForState((state) => state.directory === directory
+      && state.projectName !== null
+      && !state.assetLoading
+      && (previousWorkspace !== "timeline" || state.timeline !== null), `asset set ${directory} loading`));
   } catch (value) { return failed(value); }
 });
 

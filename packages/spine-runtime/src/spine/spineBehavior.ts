@@ -407,6 +407,10 @@ function legacyInteractionMachine(interaction: SpineAuthoredInteraction, index: 
       conditions: [], afterSeconds: 0, priority: 10, blendDuration: interaction.releaseMixDuration ?? 0.14, interruptPolicy: "allow",
     },
     {
+      id: `${interaction.id}-leave`, fromStateId: activeState, toStateId: releaseState, event: "pointer-leave",
+      conditions: [], afterSeconds: 0, priority: 10, blendDuration: interaction.releaseMixDuration ?? 0.14, interruptPolicy: "allow",
+    },
+    {
       id: `${interaction.id}-finish`, fromStateId: releaseState, toStateId: "idle", event: "animation-complete",
       conditions: [], afterSeconds: 0, priority: 0, blendDuration: interaction.releaseMixDuration ?? 0.14, interruptPolicy: "allow",
     },
@@ -475,6 +479,7 @@ function lookFollowMachine(settings: SpineLookFollowSettings, existingIds: Set<s
       { id: `${id}-start`, fromStateId: "neutral", toStateId: "following", event: "pointer-press", conditions: [{ type: "pointer-held", value: true }], afterSeconds: 0, priority: 10, blendDuration: 0.14, interruptPolicy: "allow" },
       { id: `${id}-release`, fromStateId: "following", toStateId: "returning", event: "pointer-release", conditions: [], afterSeconds: 0, priority: 0, blendDuration: 0.14, interruptPolicy: "allow" },
       { id: `${id}-cancel`, fromStateId: "following", toStateId: "returning", event: "pointer-cancel", conditions: [], afterSeconds: 0, priority: 10, blendDuration: 0.14, interruptPolicy: "allow" },
+      { id: `${id}-leave`, fromStateId: "following", toStateId: "returning", event: "pointer-leave", conditions: [], afterSeconds: 0, priority: 10, blendDuration: 0.14, interruptPolicy: "allow" },
       { id: `${id}-return`, fromStateId: "returning", toStateId: "neutral", event: "animation-complete", conditions: [], afterSeconds: 0, priority: 0, blendDuration: 0.14, interruptPolicy: "allow" },
     ],
   };

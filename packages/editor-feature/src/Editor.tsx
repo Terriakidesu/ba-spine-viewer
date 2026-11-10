@@ -71,7 +71,8 @@ import { persistRecoverySnapshot, readLegacyRecoveryRecord, readRecoveryRecord, 
 import { confirmProjectReplacement } from "./projectReplacement";
 import { isCommandPaletteShortcut, isTextEditingTarget } from "./editorKeyboard";
 import "./validationIssues.css";
-import { assertMcpTimelineLocksPreserved, editorDocumentFingerprint, type EditorMcpCommand, type EditorMcpState, type EditorMcpTimelineBridge, type EditorMcpTimelineSnapshot } from "./editorMcp";
+import { isEditorAssetSetReady } from "./editorAssetSet";
+import { assertMcpTimelineLocksPreserved, editorDocumentFingerprint, editorDocumentSaveState, editorMcpErrorMessage, type EditorMcpCommand, type EditorMcpState, type EditorMcpTimelineBridge, type EditorMcpTimelineSnapshot } from "./editorMcp";
 import { WaveformProfileRecorder } from "./waveformProfileDiagnostics";
 import type { AudioWaveformMeasurement } from "./AudioWaveform";
 import { DEFAULT_EDITOR_LAYOUT_PREFERENCES, EDITOR_LAYOUT_PREFERENCES_KEY, normalizeEditorLayoutPreferences, type WorkspaceLayoutPreset } from "./editorLayout";
@@ -581,6 +582,7 @@ export function Editor() {
   const workspaceRef = useRef<"interaction" | "timeline" | "camera">(workspace);
   const sourceRef = useRef<DesktopAssetSource | null>(source);
   const saveBaselineRef = useRef<{ rootPath: string; directory: string; versions: Record<string, string> } | null>(null);
+  const savedDocumentFingerprintRef = useRef<{ rootPath: string; directory: string; fingerprint: string } | null>(null);
   const projectSaveQueueRef = useRef(Promise.resolve());
   const pendingProjectRef = useRef<EditorProject | null>(null);
   const handledHandoffIdsRef = useRef(new Set<string>());
@@ -817,7 +819,7 @@ export function Editor() {
             let error: string | undefined;
             const expectedDocumentRevision = Number.isInteger(item.expectedDocumentRevision) && (item.expectedDocumentRevision as number) >= 0 ? item.expectedDocumentRevision as number : undefined;
             try { result = await mcpCommandRef.current(item.command as EditorMcpCommand, expectedDocumentRevision); }
-            catch (value) { error = value instanceof Error ? value.message : String(value); }
+            catch (value) { error = editorMcpErrorMessage(value); }
             await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
             await publishMcpSnapshotNow();
             await fetch("/__spine/mcp/ui-result", {
@@ -912,6 +914,11 @@ export function Editor() {
         : null;
       recoveryPromptRef.current = prompt;
       setRecoveryPrompt(prompt);
+      savedDocumentFingerprintRef.current = {
+        rootPath: sourceRef.current?.rootPath ?? "",
+        directory: directoryRef.current,
+        fingerprint: editorDocumentFingerprint(next),
+      };
       projectRef.current = next;
       setProject(next);
       setUndo(repair.repaired ? [loadedProject] : []);
@@ -1308,6 +1315,7 @@ export function Editor() {
       pendingProjectRef.current = await readSavedEditorProject(next, selectedDirectory, (message) => setError(message), () => setLegacyAspectRatioNotice(true));
     }
     const baselineProject = pendingProjectRef.current ?? createProject(selectedDirectory, [], []);
+    savedDocumentFingerprintRef.current = null;
     saveBaselineRef.current = {
       rootPath: next.rootPath,
       directory: selectedDirectory,
@@ -1586,9 +1594,9 @@ export function Editor() {
     }
   }
 
-  async function changeDirectory(next: string) {
+  async function changeDirectory(next: string, options: { skipConfirmation?: boolean; throwOnError?: boolean } = {}) {
     if (!next || next === directory) return;
-    if (!(await confirmOpen())) return;
+    if (!options.skipConfirmation && !(await confirmOpen())) return;
     try {
       setLegacyAspectRatioNotice(false);
       pendingProjectRef.current = source ? await readSavedEditorProject(source, next, (message) => setError(message), () => setLegacyAspectRatioNotice(true)) : null;
@@ -1600,6 +1608,7 @@ export function Editor() {
           versions: await captureEditorProjectBaseline(source, baselineProject),
         };
       }
+      savedDocumentFingerprintRef.current = null;
       timelineSaveRef.current = null;
       setDirectory(next);
       setSaveState("idle");
@@ -1610,8 +1619,39 @@ export function Editor() {
       setStatus(`Loading ${displayName(next)}…`);
     } catch (value) {
       pendingProjectRef.current = null;
-      setError(value instanceof Error ? value.message : String(value));
+      const message = editorMcpErrorMessage(value);
+      setError(message);
+      setAssetLoading(false);
+      if (options.throwOnError) throw new Error(message);
     }
+  }
+
+  async function waitForAssetSetLoaded(next: string) {
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      const snapshot = mcpSnapshotRef.current;
+      const error = snapshot?.directory === next ? snapshot.error : null;
+      if (error) throw new Error(error);
+      if (isEditorAssetSetReady({
+        directory: snapshot?.directory ?? null,
+        projectDirectory: projectRef.current?.assetDirectory ?? null,
+        assetLoading: snapshot?.assetLoading ?? true,
+        hasMeta: metaRef.current !== null,
+        initialized: initializedAssetRef.current.startsWith(`${next}:`),
+        error,
+      }, next)) return;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 40));
+    }
+    throw new Error(`Timed out while loading Spine asset set ${next}.`);
+  }
+
+  async function waitForWorkspaceMounted(next: "interaction" | "timeline" | "camera") {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      if (workspaceRef.current === next && (next !== "timeline" || mcpTimelineRef.current !== null)) return;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 16));
+    }
+    throw new Error(`The ${next} workspace did not finish mounting.`);
   }
 
   function synchronizeProjectAuthoring(previous: EditorProject, next: EditorProject): EditorProject {
@@ -1672,7 +1712,7 @@ export function Editor() {
     setRedo([]);
     projectRef.current = next;
     setProject(next);
-    setSaveState("dirty");
+    updateSaveStateForDocumentChange(current, next);
   }
 
   function live(mutator: (current: EditorProject) => EditorProject) {
@@ -1681,7 +1721,18 @@ export function Editor() {
     const next = synchronizeProjectAuthoring(current, mutator(cloneProject(current)));
     projectRef.current = next;
     setProject(next);
-    setSaveState("dirty");
+    updateSaveStateForDocumentChange(current, next);
+  }
+
+  function updateSaveStateForDocumentChange(previous: EditorProject, next: EditorProject) {
+    const previousFingerprint = editorDocumentFingerprint(previous);
+    const nextFingerprint = editorDocumentFingerprint(next);
+    if (previousFingerprint === nextFingerprint) return;
+    const baseline = savedDocumentFingerprintRef.current;
+    if (!baseline || baseline.rootPath !== sourceRef.current?.rootPath || baseline.directory !== directoryRef.current) return;
+    const nextState = editorDocumentSaveState(next, baseline.fingerprint);
+    saveStateRef.current = nextState;
+    setSaveState(nextState);
   }
 
   function updateProjectSelection(mutator: (current: EditorProject) => EditorProject) {
@@ -1735,7 +1786,7 @@ export function Editor() {
     const next = withCurrentViewSettings(previous);
     projectRef.current = next;
     setProject(next);
-    setSaveState("dirty");
+    updateSaveStateForDocumentChange(current, next);
   }
 
   function redoProject() {
@@ -1747,7 +1798,7 @@ export function Editor() {
     const applied = withCurrentViewSettings(next);
     projectRef.current = applied;
     setProject(applied);
-    setSaveState("dirty");
+    updateSaveStateForDocumentChange(current, applied);
   }
 
   async function saveProject(options: { rejectExternalChanges?: boolean } = {}) {
@@ -1809,8 +1860,12 @@ export function Editor() {
         const nextBaseline = { ...baseline };
         for (const file of writes) nextBaseline[file.path] = contentVersion(file.content);
         saveBaselineRef.current = { rootPath: saveSource.rootPath, directory: saveDirectory, versions: nextBaseline };
-        const unchangedSinceSave = projectRef.current === latest;
-        setSaveState(unchangedSinceSave ? "saved" : "dirty");
+        const savedFingerprint = editorDocumentFingerprint(latest);
+        savedDocumentFingerprintRef.current = { rootPath: saveSource.rootPath, directory: saveDirectory, fingerprint: savedFingerprint };
+        const currentProject = projectRef.current;
+        const unchangedSinceSave = currentProject !== null && editorDocumentFingerprint(currentProject) === savedFingerprint;
+        saveStateRef.current = unchangedSinceSave ? "saved" : "dirty";
+        setSaveState(saveStateRef.current);
         setLegacyAspectRatioNotice(false);
         if (unchangedSinceSave) setSavedAt(Date.now());
         saveResultRef.current = { ok: true, error: null, savedDocumentRevision, writtenPaths: writes.map((file) => file.path), verifiedVersions };
@@ -3008,9 +3063,28 @@ export function Editor() {
         if (saveStateRef.current === "dirty" || saveStateRef.current === "saving" || saveStateRef.current === "error" || recoveryPromptRef.current) throw new Error("Save the current project and resolve recovery before switching asset sets.");
         if (!sourceRef.current) throw new Error("Open an asset root first.");
         if (!directories.includes(command.directory)) throw new Error(`Asset set not found: ${command.directory}`);
+        const previousWorkspace = workspaceRef.current;
+        if (command.directory === directoryRef.current) {
+          await waitForAssetSetLoaded(command.directory);
+          return { directory: command.directory, status: "Asset set is already loaded." };
+        }
+        // The interaction renderer owns Spine asset initialization and project
+        // reconstruction. Stage the switch there, then restore the user's
+        // workspace only after the new set and its timeline renderer are ready.
+        if (previousWorkspace !== "interaction") {
+          setWorkspace("interaction");
+          await waitForWorkspaceMounted("interaction");
+        }
         setAssetLoading(true);
-        await changeDirectory(command.directory);
-        return { directory: command.directory, status: "Loading asset set." };
+        // The MCP command already rejects unsaved/error/recovery states above; do not
+        // re-run the UI's discard confirmation using a potentially stale render closure.
+        await changeDirectory(command.directory, { skipConfirmation: true, throwOnError: true });
+        await waitForAssetSetLoaded(command.directory);
+        if (previousWorkspace !== "interaction") {
+          setWorkspace(previousWorkspace);
+          await waitForWorkspaceMounted(previousWorkspace);
+        }
+        return { directory: command.directory, status: "Asset set loaded.", workspace: previousWorkspace };
       }
       case "set_workspace":
         if (command.workspace !== "interaction" && (!projectRef.current || !metaRef.current || !directoryRef.current)) throw new Error("Load a Spine asset before opening the timeline or camera workspace.");

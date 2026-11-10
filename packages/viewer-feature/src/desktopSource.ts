@@ -346,7 +346,10 @@ export function sourceFromDesktop(rootPath: string): DesktopAssetSource {
     if (!response) return null;
     const blob = await response.blob();
     const modifiedAt = Number(response.headers.get("x-ba-spine-file-mtime"));
-    return new File([blob], path.split("/").at(-1) ?? "asset", Number.isFinite(modifiedAt) && modifiedAt > 0 ? { lastModified: modifiedAt } : undefined);
+    return new File([blob], path.split("/").at(-1) ?? "asset", {
+      type: blob.type,
+      ...(Number.isFinite(modifiedAt) && modifiedAt > 0 ? { lastModified: modifiedAt } : {}),
+    });
   };
 
   const filesForSet = async (set: SpineSet, signal?: AbortSignal): Promise<SpineFiles> => {

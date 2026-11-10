@@ -40,7 +40,7 @@ bun run dev:viewer
 bun run dev:editor
 ```
 
-Choose your local asset-library folder when prompted. In development, a recognizable `./data/` folder can also be used.
+Choose your local asset-library folder when prompted. The Viewer does not automatically load the workspace `./data/` folder; set `BA_SPINE_DATA` to opt into a startup library. The Editor may still use a recognizable `./data/` folder in development.
 
 ### Build the portable suite
 

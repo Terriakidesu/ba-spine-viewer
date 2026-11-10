@@ -149,6 +149,10 @@ export function editorDocumentFingerprint(project: EditorProject): string {
   return JSON.stringify({ ...projectSettings, sequences: Object.fromEntries(Object.entries(sequences).sort(([left], [right]) => left.localeCompare(right))) });
 }
 
+export function editorDocumentSaveState(project: EditorProject, savedFingerprint: string): "saved" | "dirty" {
+  return editorDocumentFingerprint(project) === savedFingerprint ? "saved" : "dirty";
+}
+
 export type EditorMcpCommand =
   | { name: "get_project" }
   | { name: "validate_project" }
@@ -336,9 +340,24 @@ export function createEditorMcpErrorEnvelope(input: {
   };
 }
 
+export function editorMcpErrorMessage(value: unknown): string {
+  if (value instanceof Error) return value.message;
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (typeof record.message === "string") return record.message;
+    if (typeof record.error === "string") return record.error;
+    try {
+      const serialized = JSON.stringify(value);
+      if (serialized) return serialized;
+    } catch { /* Fall through for cyclic or otherwise non-serializable host errors. */ }
+  }
+  return String(value);
+}
+
 export function classifyEditorMcpError(value: unknown): { code: EditorMcpErrorCode; message: string; details?: unknown } {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
-  const message = value instanceof Error ? value.message : typeof record?.message === "string" ? record.message : String(value);
+  const message = editorMcpErrorMessage(value);
   const explicitCode = record?.code;
   const supportedCodes: EditorMcpErrorCode[] = ["stale_document_revision", "invalid_reference", "locked_entity", "renderer_unavailable", "external_conflict", "unsupported_capability", "invalid_command", "revision_required", "command_timeout", "bridge_unavailable", "editor_command_failed"];
   if (typeof explicitCode === "string" && supportedCodes.includes(explicitCode as EditorMcpErrorCode)) return { code: explicitCode as EditorMcpErrorCode, message, ...(record?.details === undefined ? {} : { details: record.details }) };

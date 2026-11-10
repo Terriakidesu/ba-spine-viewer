@@ -45,10 +45,11 @@ The standalone apps, shared runtime, asset-library access, library refresh/searc
 
 ## Active roadmap
 
-### Shared interaction parity and look-follow — completed 2026-11-08
+### Shared interaction parity and look-follow — completed 2026-11-09
 
 - Kept the shared interaction model and hit testing in `spine-runtime`; no wholesale re-extraction.
-- Preserved the Editor’s follow target, sensitivity, translation/rotation limits, axes, smoothing, and release-return controls. Editor test mode remains gesture-focused and shares the same motion evaluator as Viewer playback.
+- Added project-persisted look-follow enablement, target, delay, automatic or authored X/Y range, smoothing, axes, and optional Look/LookEnd animation overrides to the shared runtime contract. The Editor exposes a range gizmo and a pointer-held preview; Viewer playback and Editor preview use the same target, clamp, and smoothing behavior.
+- Preserved the Editor’s gesture follow target, sensitivity, translation/rotation limits, axes, smoothing, and release-return controls. Gesture test mode remains separate from the look-follow preview and shares the same motion evaluator as Viewer playback.
 - Opening intro playback gates gestures until the intro ends. Talk and gestures do not replace an active runtime interaction; authored Talk sequences suppress new gestures. Changing timeline sequences clears held input and overlay tracks.
 - Pointer exit drops the temporary follow pose without ending a captured gesture; only the active pointer can release/cancel it. Return-to-neutral and Editor/Viewer motion parity have focused coverage. Unsaved drafts continue through Viewer’s normal read-only project/runtime path.
 

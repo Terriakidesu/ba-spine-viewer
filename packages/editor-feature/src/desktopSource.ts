@@ -4,6 +4,7 @@ import { normalizeSpineManifest, type SpineManifestRecord } from "@ba-spine/spin
 import { parseHandoffMessage, parseSpineDraftSnapshot, type SpineDraftSnapshot, type SpineHandoffMessage } from "@ba-spine/platform-contracts/handoff";
 import { contentVersion } from "@ba-spine/platform-contracts/contentVersion";
 import { createResourceQueue } from "@ba-spine/spine-runtime/spine/resourceQueue";
+import { editorMcpErrorMessage } from "./editorMcp";
 
 declare global {
   interface Window {
@@ -53,11 +54,11 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   if (typeof window !== "undefined" && window.__BA_SPINE_HOST_TOKEN__) headers.set("x-ba-spine-token", window.__BA_SPINE_HOST_TOKEN__);
   const response = await fetch(path, { ...init, headers });
   if (!response.ok) {
-    const body = await response.json().catch(() => ({})) as { error?: string; currentVersions?: unknown };
+    const body = await response.json().catch(() => ({})) as { error?: unknown; currentVersions?: unknown };
     if (response.status === 409 && body.currentVersions && typeof body.currentVersions === "object" && !Array.isArray(body.currentVersions)) {
       throw new DesktopSaveConflictError(Object.fromEntries(Object.entries(body.currentVersions).filter((entry): entry is [string, string] => typeof entry[1] === "string")));
     }
-    throw new Error(body.error ?? `Desktop editor request failed (${response.status}).`);
+    throw new Error(body.error === undefined ? `Desktop editor request failed (${response.status}).` : editorMcpErrorMessage(body.error));
   }
   return response;
 }

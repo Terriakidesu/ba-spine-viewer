@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assertMcpTimelineLocksPreserved, classifyEditorMcpError, createEditorMcpErrorEnvelope, createEditorMcpResultEnvelope, EDITOR_MCP_OPERATION_REGISTRY, EDITOR_MCP_REVISION_REQUIRED_COMMANDS, editorDocumentFingerprint, normalizeEditorMcpCommand } from "./editorMcp";
+import { assertMcpTimelineLocksPreserved, classifyEditorMcpError, createEditorMcpErrorEnvelope, createEditorMcpResultEnvelope, EDITOR_MCP_OPERATION_REGISTRY, EDITOR_MCP_REVISION_REQUIRED_COMMANDS, editorDocumentFingerprint, editorDocumentSaveState, editorMcpErrorMessage, normalizeEditorMcpCommand } from "./editorMcp";
 import { createProject } from "./editorModel";
 import { switchSequence } from "./sequenceModel";
 
@@ -40,6 +40,8 @@ describe("editor MCP command validation", () => {
       saveState: "dirty",
     });
     expect(classifyEditorMcpError({ code: "stale_document_revision", message: "Stale", details: { expected: 4 } })).toEqual({ code: "stale_document_revision", message: "Stale", details: { expected: 4 } });
+    expect(editorMcpErrorMessage({ error: { code: "asset_root_unavailable", message: "Root unavailable" } })).toBe('{"error":{"code":"asset_root_unavailable","message":"Root unavailable"}}');
+    expect(editorMcpErrorMessage({ message: "Readable host error" })).toBe("Readable host error");
     expect(classifyEditorMcpError(new Error("Camera evaluation requires the Camera workspace."))).toMatchObject({ code: "renderer_unavailable" });
     expect(classifyEditorMcpError(new Error("Audio asset discovery is unavailable from this source."))).toMatchObject({ code: "unsupported_capability" });
     expect(classifyEditorMcpError(new Error("The editor UI is not connected yet."))).toMatchObject({ code: "bridge_unavailable" });
@@ -251,8 +253,9 @@ describe("editor MCP command validation", () => {
     expect(() => normalizeEditorMcpCommand({ name: "preview_subtitle_import", path: "C:/outside.json", policy: "replace-imported-cues" })).toThrow();
   });
 
-  test("document revision fingerprints ignore selection but retain authored edits", () => {
+  test("document fingerprints ignore selection and return to the saved state after undo", () => {
     const original = createProject("Aru_home", ["Idle"], []);
+    const savedFingerprint = editorDocumentFingerprint(original);
     const selected = structuredClone(original);
     selected.selectedInteractionId = "other-interaction";
     selected.selectedRegionId = "other-region";
@@ -260,9 +263,14 @@ describe("editor MCP command validation", () => {
     selected.timeline.selectedLayerId = "layer-2";
     selected.timeline.selectedCueId = "cue-2";
     expect(editorDocumentFingerprint(selected)).toBe(editorDocumentFingerprint(original));
+    expect(editorDocumentSaveState(selected, savedFingerprint)).toBe("saved");
 
-    selected.name = "Edited project";
-    expect(editorDocumentFingerprint(selected)).not.toBe(editorDocumentFingerprint(original));
+    const edited = structuredClone(selected);
+    edited.timeline.duration += 1;
+    expect(editorDocumentFingerprint(edited)).not.toBe(savedFingerprint);
+    expect(editorDocumentSaveState(edited, savedFingerprint)).toBe("dirty");
+    const undone = structuredClone(original);
+    expect(editorDocumentSaveState(undone, savedFingerprint)).toBe("saved");
   });
 
   test("document revision fingerprints are stable when selecting a cached sequence", () => {
