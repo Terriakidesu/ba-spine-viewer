@@ -15,9 +15,11 @@ bun run thumbnails:generate --root "D:/Misc/ba-spine" --directory Airi_home --fo
 Use `--browser <executable>` to select another Chromium-compatible executable.
 The generator uses a separate headless browser, not either running native app.
 
-- Each image is a **640×360 (16:9) PNG**, from **`Idle_01` at time zero**, framed
-  without stretching, against the Viewer background color.
-- Only the manifest's primary Spine set is loaded. Missing `Idle_01`, identity
+- Each image is a **640×360 (16:9) PNG**, from the **release idle at time zero**,
+  preferring `Idle_01`, then `Idle`, `Idle_1`, or another normal idle name. Dev,
+  intro and interaction clips are excluded. Images are framed without stretching,
+  against the Viewer background color. The selected animation is logged.
+- Only the manifest's primary Spine set is loaded. Missing release idles, identity
   mismatches, empty renders and invalid assets are reported rather than guessed.
 - Default batches include only `*_home` directories, not scene/background sets.
   `--directory` can explicitly target any single set.

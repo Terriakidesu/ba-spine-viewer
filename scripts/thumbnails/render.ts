@@ -1,9 +1,9 @@
 import { SpineRenderer, type SpineMeta } from "../../packages/spine-runtime/src/spine/spineRuntime";
-import { LOBBY_THUMBNAIL_HEIGHT, LOBBY_THUMBNAIL_WIDTH } from "../../packages/spine-runtime/src/spine/spineThumbnail";
+import { LOBBY_THUMBNAIL_HEIGHT, LOBBY_THUMBNAIL_WIDTH, thumbnailIdleAnimation } from "../../packages/spine-runtime/src/spine/spineThumbnail";
 
 declare global {
   interface Window {
-    renderLobbyThumbnail: (directory: string, names: string[]) => Promise<string>;
+    renderLobbyThumbnail: (directory: string, names: string[]) => Promise<{ image: string; animation: string }>;
   }
 }
 
@@ -31,9 +31,10 @@ window.renderLobbyThumbnail = async (directory, names) => {
     renderer.setPlaying(false);
     await renderer.load(files, directory);
     if (failure) throw failure;
-    if (!(meta as SpineMeta | null)?.animations.includes("Idle_01")) throw new Error("Missing release Idle_01 animation; no fallback was used.");
+    const idle = thumbnailIdleAnimation((meta as SpineMeta | null)?.animations ?? []);
+    if (!idle) throw new Error("No release idle animation was found; Dev, intro and interaction clips were not used.");
     renderer.setCameraMode("fit");
-    renderer.sampleEditorAnimation("Idle_01", "", 0, false);
+    renderer.sampleEditorAnimation(idle, "", 0, false);
     renderer.resetCamera();
     // Let the shared renderer settle its viewport/camera before the readback.
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
@@ -46,11 +47,11 @@ window.renderLobbyThumbnail = async (directory, names) => {
     // Refuse empty renders instead of saving an apparently valid blank PNG.
     context.drawImage(canvas, 0, 0, output.width, output.height);
     const pixels = context.getImageData(0, 0, output.width, output.height).data;
-    if (!pixels.some((value, index) => index % 4 === 3 && value > 0)) throw new Error("Idle_01 rendered no visible pixels.");
+    if (!pixels.some((value, index) => index % 4 === 3 && value > 0)) throw new Error(`${idle} rendered no visible pixels.`);
     context.globalCompositeOperation = "destination-over";
     context.fillStyle = "#102432";
     context.fillRect(0, 0, output.width, output.height);
-    return output.toDataURL("image/png").split(",")[1]!;
+    return { image: output.toDataURL("image/png").split(",")[1]!, animation: idle };
   } finally {
     renderer?.dispose();
     // This standalone canvas is never reused, so release its context explicitly.
