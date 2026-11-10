@@ -4786,8 +4786,9 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
               <div className="timeline-stage-wrap" ref={stageWrapRef} style={{ flex: `${previewShare} 1 0` }}>
            <div
              ref={stageRef}
-              className={`timeline-stage${stagePanning ? " is-panning" : ""}${cameraBoundDrawing ? " is-drawing-camera-bound" : ""}`}
-               role="application"
+             className={`timeline-stage${stagePanning ? " is-panning" : ""}${cameraBoundDrawing ? " is-drawing-camera-bound" : ""}`}
+             style={{ "--camera-aspect": cameraAspectValue(cameraTrack?.aspectRatio ?? "16:9") } as CSSProperties}
+              role="application"
                aria-label={cameraBoundDrawing ? "Timeline preview. Drag over the scene to draw a camera safe bound." : "Timeline preview canvas. Drag to pan and use the mouse wheel to zoom."}
                aria-haspopup="menu"
                aria-keyshortcuts="Shift+F10 ContextMenu"
@@ -4803,7 +4804,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                 <div className="timeline-stage-content" style={{ transform: `translate3d(${stageView.x}px, ${stageView.y}px, 0) scale(${stageView.scale})` }}>
                   <div className="timeline-visual-composition">
                       {displayVisualTracks.map((track) => track.kind === "spine"
-                       ? <SpineTimelineLayerCanvas key={`spine-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} currentTime={currentTime} mainAnimation={mainAnimation} mainAnimationTime={mainAnimationTime} mainAnimationLoop={mainAnimationLoop} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} effectsStrength={project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH} characterHidden={characterHidden} preserveDrawingBuffer onMarkers={(next) => setMarkers((old) => old.join() === next.join() ? old : next)} sharedCameraPose={sharedCameraPose} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={setSharedCameraPose} onAnimationDuration={onAnimationDuration} onRenderer={(id, renderer) => { if (renderer) spineRenderersRef.current.set(id, renderer); else spineRenderersRef.current.delete(id); setCameraProjectionRevision((value) => value + 1); }} onError={onError} />
+                       ? <SpineTimelineLayerCanvas key={`spine-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} currentTime={currentTime} mainAnimation={mainAnimation} mainAnimationTime={mainAnimationTime} mainAnimationLoop={mainAnimationLoop} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} effectsStrength={project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH} characterHidden={characterHidden} preserveDrawingBuffer cameraMode={cameraTrack?.enabled ? "authored" : "fit"} sharedCameraFrame={cameraTrack?.enabled ? solvedCamera?.frame ?? null : null} onMarkers={(next) => setMarkers((old) => old.join() === next.join() ? old : next)} sharedCameraPose={null} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={() => undefined} onAnimationDuration={onAnimationDuration} onRenderer={(id, renderer) => { if (renderer) spineRenderersRef.current.set(id, renderer); else spineRenderersRef.current.delete(id); setCameraProjectionRevision((value) => value + 1); }} onError={onError} />
                         : <TimelineColorLayerPreview key={`color-${track.layer.id}`} layer={track.layer} time={currentTime} />)}
                     {!displayVisualTracks.length && <div className="timeline-empty"><strong>No layers</strong><span>Add a Spine or Color layer from the Add menu.</span></div>}
                    </div>
