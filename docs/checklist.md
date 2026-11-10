@@ -78,8 +78,8 @@ Inventory of 284 character variants and multi-lobby entries from the current lib
 | Hibiki (Cheerleader) [CH0181] | CH0181_home | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Hifumi | Hihumi_home | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Hifumi (Racing) [CH0379] | CH0379_home | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Hifumi (Swimsuit) [CH0058] | CH0058_home | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ |
-| Hikari [CH0242] | CH0242_home | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Hifumi (Swimsuit) [CH0058] | CH0058_home | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Hikari [CH0242] | CH0242_home | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Himari (Battle) [CH0332] | CH0332_home | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Himari [CH0159] | CH0159_home | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Hina | Hina_home | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
