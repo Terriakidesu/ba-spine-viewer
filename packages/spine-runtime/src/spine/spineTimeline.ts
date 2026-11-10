@@ -418,6 +418,11 @@ export function timelineLayerSampleTime(layer: Pick<SpineTimelineLayer, "start" 
   return layer.loop ? value % animationDuration : Math.min(value, animationDuration);
 }
 
+/** Sample a follower from the sequence clock, without resetting at animation-clip boundaries. */
+export function timelineGlobalAnimationSampleTime(currentTime: number, animationOffset = 0): number {
+  return Math.max(0, currentTime) + Math.max(0, animationOffset);
+}
+
 /** Resolve the visible endpoint used by both timeline previews. */
 export function timelineLayerPlaybackEnd(layer: Pick<SpineTimelineLayer, "start" | "end" | "endMode" | "loop" | "animationOffset">, animationDuration: number): number {
   if (layer.loop || layer.endMode === "manual" || !Number.isFinite(animationDuration) || animationDuration <= 0) return layer.end;
