@@ -3559,6 +3559,7 @@ export function Spine() {
     });
   })();
   const recorderUsesFfmpeg = isDesktopHost() && desktopFfmpegFormats.includes(recorderSettings.format);
+  const activeExportUsesFfmpeg = activeExportRun?.useFfmpeg ?? recorderUsesFfmpeg;
   const activeRecordingSegment = activeExportRun?.plan?.segments?.[activeExportRun.segmentIndex];
   const recordingCueTimelines = useMemo(() => {
     if (!fullSequenceCompositionRecording || !activeExportRun?.plan || !selectedInteractionProject) return undefined;
@@ -3571,7 +3572,7 @@ export function Spine() {
   const activeExportProgress = activeExportRun?.plan
     ? videoRecordingProgress(activeExportRun.plan, videoRecorderDialog?.elapsed ?? 0)
     : null;
-  const sequencePreviewIsRendering = videoRecorderDialog?.phase === "recording" || videoRecorderDialog?.phase === "rendering";
+  const sequencePreviewIsRendering = activeExportUsesFfmpeg && videoRecorderDialog?.phase === "rendering";
   const recorderSegmentLabel = activeExportProgress?.segment
     ? activeExportProgress.segment.kind === "opening" ? t("spine.recorder.segment.opening")
       : activeExportProgress.segment.kind === "initial-idle" ? t("spine.recorder.segment.initialIdle")
@@ -3585,8 +3586,7 @@ export function Spine() {
     && videoRecorderDialog.phase !== "error"
     && videoRecorderDialog.phase !== "complete");
   const showRecorderSequencePreview = (videoRecorderDialog?.phase === "settings" && videoRecorderDialog.settings.mode === "full-sequence")
-    || (isExportProgressPhase && sequencePreviewIsRendering && activeExportRun?.settings.mode === "full-sequence");
-  const activeExportUsesFfmpeg = activeExportRun?.useFfmpeg ?? recorderUsesFfmpeg;
+    || (isExportProgressPhase && sequencePreviewIsRendering);
   const recorderOutputDimensions = videoRecordingDimensions(recorderSettings.resolution, recorderSettings.aspectRatio);
   const recorderStageItems = activeExportUsesFfmpeg
     ? [
@@ -4303,9 +4303,8 @@ export function Spine() {
           <div className="spine-recorder-body">
             {videoRecorderDialog.phase === "settings" ? <>
               <section className="spine-recorder-settings-section">
-                <h3>{t("spine.recorder.mode")}</h3>
                 <div className="spine-recorder-fields">
-                  <label><span className="spine-visually-hidden">{t("spine.recorder.mode")}</span><select aria-label={t("spine.recorder.mode")} value={videoRecorderDialog.settings.mode} onChange={(event) => updateVideoRecorderSettings({ mode: event.target.value as VideoRecordingSettings["mode"] })}>
+                  <label><span>{t("spine.recorder.mode")}</span><select aria-label={t("spine.recorder.mode")} value={videoRecorderDialog.settings.mode} onChange={(event) => updateVideoRecorderSettings({ mode: event.target.value as VideoRecordingSettings["mode"] })}>
                     <option value="full-sequence" disabled={!compositionActive || authoredTalkSequenceIds.length === 0}>{t("spine.recorder.mode.fullSequence")}</option>
                   <option value="opening-idle">{t("spine.recorder.mode.openingIdle")}</option>
                   <option value="idle-only">{t("spine.recorder.mode.idleOnly")}</option>
