@@ -19,6 +19,8 @@ The generator uses a separate headless browser, not either running native app.
   without stretching, against the Viewer background color.
 - Only the manifest's primary Spine set is loaded. Missing `Idle_01`, identity
   mismatches, empty renders and invalid assets are reported rather than guessed.
+- Default batches include only `*_home` directories, not scene/background sets.
+  `--directory` can explicitly target any single set.
 - One lobby is processed at a time. Its textures, images, context and page are
   released before processing the next lobby.
 - Existing images are skipped unless `--force` is supplied. Files are published

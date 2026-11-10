@@ -68,7 +68,7 @@ export async function saveThumbnail(root: string, path: string, bytes: Uint8Arra
 export async function thumbnailDirectories(root: string, selected?: string): Promise<string[]> {
   if (selected) { lobbyThumbnailPath(selected); return [selected]; }
   const lobbyRoot = await resolveExistingLibraryPath(root, "lobbies");
-  return (await readdir(lobbyRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  return (await readdir(lobbyRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory() && /_home$/i.test(entry.name)).map((entry) => entry.name).sort();
 }
 
 export async function checkedThumbnailRoot(path: string): Promise<string> {

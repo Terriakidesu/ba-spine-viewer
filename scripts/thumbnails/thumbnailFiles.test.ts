@@ -2,14 +2,16 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { checkedThumbnailRoot, saveThumbnail, thumbnailJob, validateThumbnailPng } from "./thumbnailFiles";
+import { checkedThumbnailRoot, saveThumbnail, thumbnailDirectories, thumbnailJob, validateThumbnailPng } from "./thumbnailFiles";
 import { lobbyThumbnailPath } from "../../packages/spine-runtime/src/spine/spineThumbnail";
 
 const fixtures: string[] = [];
 afterEach(async () => { for (const fixture of fixtures.splice(0)) await rm(fixture, { recursive: true, force: true }); });
 
 async function fixture() {
-  const root = await mkdtemp(join(process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Temp", "opencode") : tmpdir(), "thumbnail-test-"));
+  const temporaryRoot = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Temp", "opencode") : tmpdir();
+  await mkdir(temporaryRoot, { recursive: true });
+  const root = await mkdtemp(join(temporaryRoot, "thumbnail-test-"));
   fixtures.push(root);
   await mkdir(join(root, "lobbies", "Fixture", "spine"), { recursive: true });
   const manifest = { schemaVersion: 1, id: "Fixture", skeleton: "spine/Fixture.skel", atlas: "spine/Fixture.atlas" };
@@ -70,4 +72,13 @@ test("refuses thumbnail writes through escaping lobby junctions", async () => {
 
 test("refuses repository data before performing writes", async () => {
   await expect(checkedThumbnailRoot(resolve(import.meta.dir, "../../data"))).rejects.toThrow("repository data");
+});
+
+test("batch generation includes home lobbies only, with explicit targeting available", async () => {
+  const root = await fixture();
+  for (const name of ["Airi_home", "CH0264_home", "Aru_scene", "Airi_home_background", "akari_bg"]) {
+    await mkdir(join(root, "lobbies", name));
+  }
+  expect(await thumbnailDirectories(root)).toEqual(["Airi_home", "CH0264_home"]);
+  expect(await thumbnailDirectories(root, "Aru_scene")).toEqual(["Aru_scene"]);
 });

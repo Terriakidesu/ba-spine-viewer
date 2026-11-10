@@ -8,7 +8,7 @@ export async function generateLobbyThumbnails(args: string[]) {
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (arg === "--help") {
-      console.log("bun run thumbnails:generate --root <library> [--directory <lobby>] [--force] [--browser <executable>]\nWrites 640×360 Idle_01 PNGs to lobbies/<lobby>/thumbnail.png, one lobby at a time. Requires installed Edge/Chrome. Existing thumbnails are skipped unless --force is supplied.");
+      console.log("bun run thumbnails:generate --root <library> [--directory <lobby>] [--force] [--browser <executable>]\nWrites 640×360 Idle_01 PNGs to lobbies/<lobby>/thumbnail.png, one lobby at a time. Defaults to *_home lobbies only; --directory explicitly targets any set. Requires installed Edge/Chrome. Existing thumbnails are skipped unless --force is supplied.");
       return;
     }
     if (arg === "--force") { force = true; continue; }
