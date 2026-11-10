@@ -19,6 +19,7 @@ import { defaultDesktopWindowFrame, enforceDesktopWindowMinimum, readDesktopWind
 import { restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
 import { discoverPortableSuite, firstRecognizableLibraryPath } from "@ba-spine/desktop-host/portableSuite";
 import { installWindowsNativeWindowMinimum } from "@ba-spine/desktop-host/windowsWindowMinimum";
+import { onceDesktopHostShutdown } from "@ba-spine/desktop-host/desktopShutdown";
 import { saveVideoWithoutOverwrite } from "@ba-spine/desktop-host/videoExport";
 import { FfmpegVideoRecorder } from "@ba-spine/desktop-host/ffmpegVideoRecorder";
 import { downloadPortableSuiteUpdate, getPortableSuiteUpdateStatus, getStagedPortableSuiteUpdate, hasPortableSuiteUpdater, isNewerPortableSuiteVersion } from "@ba-spine/desktop-host/portableSuiteUpdate";
@@ -688,10 +689,12 @@ try {
   if (error instanceof CompanionAlreadyRunningError) process.exit(0);
   throw error;
 }
-process.on("exit", () => {
+const shutdownViewerHost = onceDesktopHostShutdown(() => {
   closeLibraryWatcher();
   companionRegistration.close();
+  server.stop(true);
 });
+process.once("exit", shutdownViewerHost);
 
 const viewerWindowStatePath = join(Utils.paths.appData, "BA Spine Suite", "Viewer", "window-state.json");
 function connectedDisplays(): WindowDisplay[] {
@@ -725,11 +728,10 @@ try {
 } catch (error) {
   try { (window as (BrowserWindow & { close(): void }) | null)?.close(); } catch { /* preserve the original native-window error */ }
   window = null;
-  closeLibraryWatcher();
-  companionRegistration.close();
-  server.stop(true);
+  shutdownViewerHost();
   throw error;
 }
+nativeWindow.on("close", shutdownViewerHost);
 const applyNativeMinimum = () => {
   enforceDesktopWindowMinimum(nativeWindow, connectedDisplays(), viewerMinimumWindowSize);
 };

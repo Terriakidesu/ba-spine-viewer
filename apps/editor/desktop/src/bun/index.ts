@@ -16,6 +16,7 @@ import { defaultDesktopWindowFrame, enforceDesktopWindowMinimum, readDesktopWind
 import { restoreLastLibraryPath, writeLastLibraryPath } from "@ba-spine/desktop-host/libraryPreference";
 import { discoverPortableSuite, firstRecognizableLibraryPath } from "@ba-spine/desktop-host/portableSuite";
 import { installWindowsNativeWindowMinimum } from "@ba-spine/desktop-host/windowsWindowMinimum";
+import { onceDesktopHostShutdown } from "@ba-spine/desktop-host/desktopShutdown";
 import { downloadPortableSuiteUpdate, getPortableSuiteUpdateStatus, getStagedPortableSuiteUpdate, hasPortableSuiteUpdater, isNewerPortableSuiteVersion } from "@ba-spine/desktop-host/portableSuiteUpdate";
 import { hasLiveEditorSuiteUpdateChanges, writeEditorSuiteUpdateState } from "@ba-spine/desktop-host/portableSuiteUpdateState";
 
@@ -422,11 +423,21 @@ try {
   if (error instanceof CompanionAlreadyRunningError) process.exit(0);
   throw error;
 }
-process.on("exit", () => companionRegistration.close());
-const mcpConnectionFile = await mcpBridge.start(server.port);
+const shutdownEditorHost = onceDesktopHostShutdown(() => {
+  companionRegistration.close();
+  mcpBridge.cleanup();
+  server.stop(true);
+});
+process.once("exit", shutdownEditorHost);
+let mcpConnectionFile: string | null;
+try {
+  mcpConnectionFile = await mcpBridge.start(server.port);
+} catch (error) {
+  shutdownEditorHost();
+  throw error;
+}
 if (mcpConnectionFile) {
   console.log(`[ba-spine-editor] MCP enabled; start its stdio server with bun run mcp (connection file ${mcpConnectionFile})`);
-  process.on("exit", () => mcpBridge.cleanup());
 }
 
 const editorWindowStatePath = join(Utils.paths.appData, "BA Spine Suite", "Editor", "window-state.json");
@@ -471,11 +482,10 @@ try {
   console.error("[ba-spine-editor] native window failed", value);
   try { (window as (BrowserWindow & { close(): void }) | null)?.close(); } catch { /* preserve the original native-window error */ }
   window = null;
-  companionRegistration.close();
-  server.stop();
-  mcpBridge.cleanup();
+  shutdownEditorHost();
   throw value;
 }
+nativeWindow.on("close", shutdownEditorHost);
 
 startDesktopWindowStatePersistence(nativeWindow, editorWindowStatePath, connectedDisplays, (error) => console.warn("[ba-spine-editor] could not save window state", error));
 
