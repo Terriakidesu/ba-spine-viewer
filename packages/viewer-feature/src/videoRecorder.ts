@@ -1,4 +1,4 @@
-import { timelineForSequence, type SpineTimeline, type SpineTimelineProject } from "@ba-spine/spine-runtime/spine/spineTimeline";
+import { timelineForSequence, timelineSubtitleText, type SpineTimeline, type SpineTimelineProject } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import type { SpineCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 
 export type VideoRecordingMode = "full-sequence" | "opening-idle" | "idle-only";
@@ -73,6 +73,15 @@ export interface VideoRecordingSegment {
 export interface VideoRecordingTimelineOffset {
   timeline: SpineTimeline;
   start: number;
+  duration: number;
+}
+
+export interface VideoRecordingSubtitleSpan {
+  id: string;
+  text: string;
+  start: number;
+  end: number;
+  row: number;
 }
 
 export interface VideoRecordingAudioSchedule {
@@ -244,13 +253,42 @@ export function videoRecordingTimelineOffsets(plan: VideoRecordingPlan, project:
   const offsets: VideoRecordingTimelineOffset[] = [];
   let start = 0;
   for (const segment of plan.segments) {
+    const duration = Math.max(0, Number.isFinite(segment.duration) ? segment.duration : 0);
     if ((segment.kind === "opening" || segment.kind === "talk") && segment.sequenceId) {
       const timeline = timelineForSequence(project, segment.sequenceId);
-      if (timeline) offsets.push({ timeline, start });
+      if (timeline) offsets.push({ timeline, start, duration });
     }
-    start += segment.duration;
+    start += duration;
   }
   return offsets;
+}
+
+/** Resolve enabled subtitle cues onto the selected export plan's continuous clock. */
+export function videoRecordingSubtitleSpans(plan: VideoRecordingPlan, project: SpineTimelineProject): VideoRecordingSubtitleSpan[] {
+  if (!plan.segments || plan.totalDuration <= 0) return [];
+  const spans = videoRecordingTimelineOffsets(plan, project).flatMap(({ timeline, start, duration }) => timeline.subtitles.flatMap((cue) => {
+    if (!cue.enabled || duration <= 0) return [];
+    const cueStart = Number.isFinite(cue.start) ? Math.max(0, cue.start) : 0;
+    const cueEnd = Number.isFinite(cue.end) ? Math.max(0, cue.end) : 0;
+    const localStart = Math.min(duration, cueStart);
+    const localEnd = Math.min(duration, cueEnd);
+    const text = timelineSubtitleText(cue, timeline.language).trim();
+    if (localEnd <= localStart || !text) return [];
+    return [{
+      id: `${timeline.sequenceId}:${cue.id}:${start}`,
+      text,
+      start: start + localStart,
+      end: start + localEnd,
+    }];
+  })).sort((a, b) => a.start - b.start || a.end - b.end || a.id.localeCompare(b.id));
+
+  const rowEnds: number[] = [];
+  return spans.map((span) => {
+    let row = rowEnds.findIndex((end) => end <= span.start);
+    if (row < 0) row = rowEnds.length;
+    rowEnds[row] = span.end;
+    return { ...span, row };
+  });
 }
 
 export function videoRecordingProgress(plan: VideoRecordingPlan, elapsedSeconds: number): VideoRecordingProgress {

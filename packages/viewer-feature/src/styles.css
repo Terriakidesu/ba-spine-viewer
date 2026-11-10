@@ -707,17 +707,18 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-background { display: contents; }
 .spine-recorder-backdrop { position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 12px; background: #071018c9; backdrop-filter: blur(6px); }
 .spine-recorder-dialog { display: flex; width: min(1480px, 100%); min-width: 0; max-height: min(960px, calc(100dvh - 24px)); flex-direction: column; overflow: hidden; box-sizing: border-box; padding: 22px 26px; border: 1px solid color-mix(in srgb, var(--cyan) 35%, var(--line)); border-top: 3px solid var(--cyan); border-radius: 9px; background: var(--surface); color: var(--text); box-shadow: 0 24px 80px #0008; }
-.spine-recorder-dialog.is-progress { width: min(1480px, 100%); max-height: min(960px, calc(100dvh - 24px)); padding: 20px 26px 16px; }
+.spine-recorder-dialog.is-progress { width: min(1600px, 100%); max-height: min(960px, calc(100dvh - 24px)); padding: 20px 26px 16px; }
 .spine-recorder-heading { display: flex; flex: none; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 17px; }
 .spine-recorder-heading > div > span { color: var(--cyan); font-size: 9px; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
 .spine-recorder-heading h2 { margin: 5px 0 0; font-size: 21px; }
 .spine-recorder-heading > button { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-alt); color: var(--muted); }
 .spine-recorder-heading > button svg { width: 16px; height: 16px; }
 .spine-recorder-content { display: grid; min-width: 0; min-height: 0; flex: 1 1 auto; overflow-x: hidden; overflow-y: auto; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 20px; align-items: start; overscroll-behavior: contain; scrollbar-gutter: stable; }
-.spine-recorder-content.is-progress { grid-template-columns: minmax(0, .82fr) minmax(0, 1.18fr); gap: 18px; align-items: start; overflow-x: hidden; overflow-y: auto; }
+.spine-recorder-content.is-progress { grid-template-columns: minmax(0, .94fr) minmax(0, 1.06fr); gap: 18px; align-items: stretch; overflow: hidden; }
 .spine-recorder-visual, .spine-recorder-body { min-width: 0; }
-.spine-recorder-content.is-progress .spine-recorder-visual { display: flex; min-height: 0; flex-direction: column; }
-.spine-recorder-content.is-progress .spine-recorder-preview { flex: 0 0 auto; }
+.spine-recorder-content.is-progress .spine-recorder-visual { display: flex; min-height: 0; align-items: center; justify-content: center; }
+.spine-recorder-content.is-progress .spine-recorder-preview { max-height: 100%; flex: 0 1 auto; }
+.spine-recorder-content.is-progress .spine-recorder-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .spine-recorder-content.is-progress .spine-recorder-summary { margin-top: 10px; padding: 10px 11px; }
 .spine-recorder-content.is-progress .spine-recorder-summary h3 { margin-bottom: 8px; }
 .spine-recorder-content.is-progress .spine-recorder-summary dl { gap: 7px 12px; }
@@ -770,16 +771,22 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-sequence-legend i.is-opening { background: var(--cyan); }
 .spine-recorder-sequence-legend i.is-talk { background: var(--pink); }
 .spine-recorder-sequence-legend i.is-idle { background: var(--gold); }
-.spine-recorder-timeline-visual { position: relative; min-width: 0; padding: 3px 0; }
-.spine-recorder-timeline-track { display: flex; width: 100%; height: 14px; gap: 3px; margin: 0; padding: 0; overflow: hidden; border-radius: 3px; list-style: none; }
-.spine-recorder-timeline-segment { min-width: 6px; flex: 0 1 0; overflow: hidden; border-radius: 2px; outline-offset: 2px; }
+.spine-recorder-sequence-legend i.is-subtitle { background: var(--pink); }
+.spine-recorder-timeline-visual { position: relative; display: grid; min-width: 0; gap: 3px; padding: 3px 0; }
+.spine-recorder-timeline-track { position: relative; display: block; width: 100%; height: 14px; margin: 0; padding: 0; overflow: hidden; border-radius: 3px; list-style: none; }
+.spine-recorder-timeline-segment { position: absolute; top: 0; bottom: 0; min-width: 0; box-sizing: border-box; overflow: hidden; border-radius: 2px; outline-offset: 2px; }
 .spine-recorder-timeline-segment.is-opening { background: color-mix(in srgb, var(--cyan) 82%, var(--surface-alt)); }
 .spine-recorder-timeline-segment.is-idle { background: color-mix(in srgb, var(--gold) 82%, var(--surface-alt)); }
 .spine-recorder-timeline-segment.is-talk { background: color-mix(in srgb, var(--pink) 82%, var(--surface-alt)); }
 .spine-recorder-timeline-segment.is-complete { filter: saturate(.65) brightness(.72); }
 .spine-recorder-timeline-segment.is-current { z-index: 1; filter: brightness(1.3); box-shadow: inset 0 0 0 1px #fff; }
-.spine-recorder-timeline-playhead { position: absolute; z-index: 2; top: 0; bottom: 0; width: 2px; background: #fff; box-shadow: 0 0 4px #000, 0 0 5px var(--cyan); pointer-events: none; transform: translateX(-1px); transition: left 100ms linear; }
-.spine-recorder-timeline-segment:focus-visible { position: relative; z-index: 1; outline: 2px solid var(--text); }
+.spine-recorder-subtitle-lane { position: relative; min-width: 0; overflow: visible; }
+.spine-recorder-subtitle-span { position: absolute; z-index: 1; display: block; box-sizing: border-box; height: 11px; border: 1px solid color-mix(in srgb, var(--pink) 82%, white); border-right-width: 2px; border-left-width: 2px; border-radius: 2px; background: color-mix(in srgb, var(--pink) 34%, transparent); outline-offset: 2px; }
+.spine-recorder-subtitle-span::after { position: absolute; z-index: 7; bottom: calc(100% + 5px); left: 50%; display: none; width: max-content; max-width: min(360px, 70vw); padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); box-shadow: 0 4px 14px #0006; color: var(--text); content: attr(data-tooltip); font-size: 10px; font-weight: 700; line-height: 1.4; white-space: normal; transform: translateX(-50%); pointer-events: none; }
+.spine-recorder-subtitle-span:hover, .spine-recorder-subtitle-span:focus-visible { z-index: 6; background: color-mix(in srgb, var(--pink) 72%, transparent); }
+.spine-recorder-subtitle-span:hover::after, .spine-recorder-subtitle-span:focus-visible::after { display: block; }
+.spine-recorder-timeline-playhead { position: absolute; z-index: 4; top: 3px; bottom: 3px; width: 2px; background: #fff; box-shadow: 0 0 4px #000, 0 0 5px var(--cyan); pointer-events: none; transform: translateX(-1px); transition: left 100ms linear; }
+.spine-recorder-timeline-segment:focus-visible { z-index: 1; outline: 2px solid var(--text); }
 .spine-recorder-sequence-preview > .spine-recorder-note { margin: 0; }
 .spine-recorder-estimate { margin: 0; padding: 9px 11px; border-left: 2px solid var(--cyan); background: var(--surface-alt); color: var(--text); font-size: 11px; font-weight: 800; }
 .spine-recorder-note, .spine-recorder-fallback-note { margin: 10px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
@@ -822,7 +829,8 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-progress.is-indeterminate > span { width: 32%; animation: spine-load-sweep 1.2s ease-in-out infinite; }
 @media (max-width: 760px) {
   .spine-recorder-content:not(.is-progress) { grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  .spine-recorder-content.is-progress { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .spine-recorder-content.is-progress { grid-template-columns: minmax(0, 1fr); gap: 10px; overflow-x: hidden; overflow-y: auto; }
+  .spine-recorder-content.is-progress .spine-recorder-body { overflow: visible; }
   .spine-recorder-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .spine-recorder-preview { width: min(100%, 440px); justify-self: center; }
 }
@@ -836,7 +844,7 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
   .spine-recorder-summary dl { grid-template-columns: minmax(0, 1fr); }
   .spine-recorder-complete-details { grid-template-columns: minmax(0, 1fr); }
   .spine-recorder-metrics.is-frame-export { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .spine-recorder-content.is-progress { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 7px; }
+  .spine-recorder-content.is-progress { gap: 7px; }
   .spine-recorder-content.is-progress .spine-recorder-metric { padding: 7px; }
   .spine-recorder-content.is-progress .spine-recorder-metric > strong { font-size: 10px; }
   .spine-recorder-stages { gap: 1px; margin-top: 10px; }
@@ -844,6 +852,13 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
   .spine-recorder-percent { font-size: 25px; }
   .spine-recorder-sequence-preview-header { align-items: flex-start; flex-direction: column; gap: 7px; }
   .spine-recorder-sequence-legend { justify-content: flex-start; gap: 10px; }
+}
+@media (max-height: 760px) {
+  .spine-recorder-dialog.is-progress { padding: 13px 20px 10px; }
+  .spine-recorder-dialog.is-progress .spine-recorder-heading { margin-bottom: 9px; }
+  .spine-recorder-progress-top { margin: -1px 0 8px; }
+  .spine-recorder-stages { margin: 8px 0 6px; }
+  .spine-recorder-dialog.is-progress .spine-recorder-footer { margin-top: 8px; padding-top: 8px; }
 }
 
 /* Recruitment simulator -------------------------------------------------- */

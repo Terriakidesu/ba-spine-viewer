@@ -547,6 +547,8 @@ export const en = {
   "spine.recorder.aspectRatio": "Aspect ratio",
   "spine.recorder.sequencePreview": "Sequence preview",
   "spine.recorder.sequenceLegend": "Sequence segment colors",
+  "spine.recorder.subtitleTrack": "Subtitle cues",
+  "spine.recorder.subtitleSpan": "{text} · {start}–{end}s",
   "spine.recorder.sequenceLegend.opening": "Opening",
   "spine.recorder.sequenceLegend.talk": "Talk",
   "spine.recorder.sequenceLegend.idle": "Idle",

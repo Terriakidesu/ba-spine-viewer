@@ -531,6 +531,8 @@ export const ko: Record<keyof typeof en, string> = {
   "spine.recorder.aspectRatio": "화면 비율",
   "spine.recorder.sequencePreview": "시퀀스 미리보기",
   "spine.recorder.sequenceLegend": "시퀀스 구간 색상",
+  "spine.recorder.subtitleTrack": "자막 구간",
+  "spine.recorder.subtitleSpan": "{text} · {start}–{end}초",
   "spine.recorder.sequenceLegend.opening": "오프닝",
   "spine.recorder.sequenceLegend.talk": "대화",
   "spine.recorder.sequenceLegend.idle": "대기",

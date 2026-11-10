@@ -531,6 +531,8 @@ export const ja: Record<keyof typeof en, string> = {
   "spine.recorder.aspectRatio": "アスペクト比",
   "spine.recorder.sequencePreview": "シーケンスのプレビュー",
   "spine.recorder.sequenceLegend": "シーケンス区間の色",
+  "spine.recorder.subtitleTrack": "字幕キュー",
+  "spine.recorder.subtitleSpan": "{text} · {start}～{end}秒",
   "spine.recorder.sequenceLegend.opening": "オープニング",
   "spine.recorder.sequenceLegend.talk": "会話",
   "spine.recorder.sequenceLegend.idle": "待機",

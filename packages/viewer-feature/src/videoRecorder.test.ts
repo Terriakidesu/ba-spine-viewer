@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, normalizeVideoRecordingQuality, readVideoRecordingQuality, VIDEO_RECORDING_QUALITY_STORAGE_KEY, VIDEO_RECORDING_SUBTITLE_SELECTOR, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingTimelineOffsets, writeVideoRecordingQuality } from "./videoRecorder";
+import { createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, normalizeVideoRecordingQuality, readVideoRecordingQuality, VIDEO_RECORDING_QUALITY_STORAGE_KEY, VIDEO_RECORDING_SUBTITLE_SELECTOR, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingSubtitleSpans, videoRecordingTimelineOffsets, writeVideoRecordingQuality } from "./videoRecorder";
 
 describe("Viewer video quality preference", () => {
   test("defaults safely and persists a validated quality preset", () => {
@@ -98,6 +98,50 @@ describe("Viewer video recording plans", () => {
       ["opening", 0],
       ["talk-1", 6],
       ["talk-2", 10],
+    ]);
+  });
+
+  test("maps enabled subtitles from selected Opening and Talk segments and stacks overlaps", () => {
+    const opening = {
+      sequenceId: "opening",
+      language: "en",
+      subtitles: [
+        { id: "opening-cue", start: 0.25, end: 1.25, enabled: true, text: { en: "Opening", ja: "", ko: "" } },
+        { id: "disabled-cue", start: 1, end: 2, enabled: false, text: { en: "Hidden", ja: "", ko: "" } },
+      ],
+    } as never;
+    const talk1 = {
+      sequenceId: "talk-1",
+      language: "ja",
+      subtitles: [
+        { id: "talk-a", start: 0.5, end: 2, enabled: true, text: { en: "First talk", ja: "", ko: "" } },
+        { id: "talk-b", start: 1, end: 2.5, enabled: true, text: { en: "Overlapping talk", ja: "", ko: "" } },
+        { id: "talk-tail", start: 2.8, end: 9, enabled: true, text: { en: "Clipped talk", ja: "", ko: "" } },
+      ],
+    } as never;
+    const plan = createFullSequenceRecordingPlan({
+      openingDuration: 4,
+      idleDuration: 2,
+      openingSequenceId: "opening",
+      idleSequenceId: "opening",
+      includeOpening: true,
+      initialIdleLoops: 1,
+      betweenTalkIdleSeconds: 0.5,
+      finalIdleLoops: 1,
+      talks: [{ sequenceId: "talk-1", duration: 3 }, { sequenceId: "talk-2", duration: 4 }],
+      selectedTalkSequenceIds: ["talk-1"],
+    });
+
+    const spans = videoRecordingSubtitleSpans(plan, {
+      timeline: opening,
+      sequences: { "talk-1": talk1, "talk-2": { sequenceId: "talk-2", language: "en", subtitles: [{ id: "unselected", start: 0, end: 1, enabled: true, text: { en: "Unselected", ja: "", ko: "" } }] } as never },
+    });
+
+    expect(spans).toMatchObject([
+      { text: "Opening", start: 0.25, end: 1.25, row: 0 },
+      { text: "First talk", start: 6.5, end: 8, row: 0 },
+      { text: "Overlapping talk", start: 7, end: 8.5, row: 1 },
+      { text: "Clipped talk", start: 8.8, end: 9, row: 0 },
     ]);
   });
 
