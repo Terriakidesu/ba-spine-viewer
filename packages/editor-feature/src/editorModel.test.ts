@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SpineEditorBone } from "@ba-spine/spine-runtime/spine/spineRuntime";
+import { createEmptySpineComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
 import {
   createProject,
   compositionDirectories,
@@ -72,6 +73,15 @@ test("project Light FX strength defaults, clamps, and survives normalization", (
   expect(normalizeProject(JSON.parse(JSON.stringify(project)), "Airi_home")?.effectsStrength).toBe(0.85);
   expect(normalizeProject({ ...project, effectsStrength: 4 }, "Airi_home")?.effectsStrength).toBe(1);
   expect(normalizeProject({ ...project, effectsStrength: -2 }, "Airi_home")?.effectsStrength).toBe(0);
+});
+
+test("supported compositions survive project normalization while unknown/malformed versions are refused", () => {
+  const project = createProject("Airi_home", [], []);
+  const composition = createEmptySpineComposition("composition-1", "Unified timeline", 8, 30);
+  const normalized = normalizeProject({ ...project, composition }, "Airi_home");
+  expect(normalized?.composition).toEqual(composition);
+  expect(normalizeProject({ ...project, composition: { ...composition, schemaVersion: 2 } }, "Airi_home")).toBeNull();
+  expect(normalizeProject({ ...project, composition: { schemaVersion: 1, id: "bad" } }, "Airi_home")).toBeNull();
 });
 
 test("look-follow settings migrate from legacy projects and survive normalization", () => {

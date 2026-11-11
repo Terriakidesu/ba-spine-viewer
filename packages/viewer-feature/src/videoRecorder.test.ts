@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, normalizeVideoRecordingQuality, readVideoRecordingQuality, VIDEO_RECORDING_QUALITY_STORAGE_KEY, VIDEO_RECORDING_SUBTITLE_SELECTOR, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingSubtitleSpans, videoRecordingTimelineOffsets, writeVideoRecordingQuality } from "./videoRecorder";
+import { createFullSequenceRecordingPlan, createUnifiedCompositionRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, normalizeVideoRecordingQuality, readVideoRecordingQuality, VIDEO_RECORDING_QUALITY_STORAGE_KEY, VIDEO_RECORDING_SUBTITLE_SELECTOR, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingCompositionSubtitleSpans, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingSubtitleSpans, videoRecordingTimelineOffsets, writeVideoRecordingQuality } from "./videoRecorder";
+import { createEmptySpineComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
 
 describe("Viewer video quality preference", () => {
   test("defaults safely and persists a validated quality preset", () => {
@@ -73,6 +74,19 @@ describe("Viewer video recording plans", () => {
     expect(videoRecordingGlobalTime(plan, 2, 0.25)).toBe(7.25);
     expect(videoRecordingGlobalTime(plan, 3, 0)).toBe(17);
     expect(videoRecordingGlobalTime(plan, 2, 8)).toBe(15);
+  });
+
+  test("uses the canonical composition duration instead of rebuilding a legacy arrangement", () => {
+    const plan = createUnifiedCompositionRecordingPlan(12.5);
+    expect(plan).toEqual({
+      mode: "full-sequence",
+      openingDuration: 12.5,
+      idleDuration: 0.01,
+      idleLoops: 1,
+      totalDuration: 12.5,
+      segments: [{ kind: "composition", sequenceId: "__unified-composition__", duration: 12.5 }],
+    });
+    expect(videoRecordingSegmentAt(plan, 8)).toMatchObject({ index: 0, segment: { kind: "composition" }, elapsed: 8 });
   });
 
   test("maps Opening and Talk cue timelines onto one clock without replaying idle cues", () => {
@@ -198,9 +212,25 @@ describe("Viewer video recording plans", () => {
   });
 
   test("keeps authored audio timestamps and clips segments at the video endpoint", () => {
-    expect(videoRecordingAudioSchedule(2.25, 8, 0.65, 5)).toEqual({ start: 2.25, duration: 2.75, volume: 0.65 });
-    expect(videoRecordingAudioSchedule(-1, 2, 1.5, 4)).toEqual({ start: 0, duration: 2, volume: 1 });
+    expect(videoRecordingAudioSchedule(2.25, 8, 0.65, 5)).toEqual({ start: 2.25, duration: 2.75, volume: 0.65, sourceOffset: 0 });
+    expect(videoRecordingAudioSchedule(-1, 2, 1.5, 4)).toEqual({ start: 0, duration: 2, volume: 1, sourceOffset: 1 });
+    expect(videoRecordingAudioSchedule(0.5, 2.5, 0.8, 4, 3)).toEqual({ start: 0.5, duration: 2, volume: 0.8, sourceOffset: 3 });
     expect(videoRecordingAudioSchedule(5, 6, 1, 5)).toBeNull();
+  });
+
+  test("maps canonical subtitle cues into the authored range and stacks overlaps", () => {
+    const composition = createEmptySpineComposition("canonical", "Canonical", 4);
+    composition.subtitles = [
+      { id: "first", start: 0.5, end: 2, enabled: true, text: { en: "First", ja: "最初", ko: "첫 번째" } },
+      { id: "second", start: 1, end: 3, enabled: true, text: { en: "Second", ja: "二番目", ko: "두 번째" } },
+      { id: "tail", start: 3.5, end: 5, enabled: true, text: { en: "Tail", ja: "末尾", ko: "끝" } },
+      { id: "disabled", start: 0, end: 1, enabled: false, text: { en: "Hidden", ja: "", ko: "" } },
+    ];
+    expect(videoRecordingCompositionSubtitleSpans(composition, "ja")).toEqual([
+      { id: "canonical:first", text: "最初", start: 0.5, end: 2, row: 0 },
+      { id: "canonical:second", text: "二番目", start: 1, end: 3, row: 1 },
+      { id: "canonical:tail", text: "末尾", start: 3.5, end: 4, row: 0 },
+    ]);
   });
 
   test("keeps a final Talk audio tail on the global export clock", () => {
@@ -225,6 +255,7 @@ describe("Viewer video recording plans", () => {
       start: 6,
       duration: 2,
       volume: 1,
+      sourceOffset: 0,
     });
   });
 

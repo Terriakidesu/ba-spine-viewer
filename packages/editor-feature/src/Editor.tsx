@@ -13,6 +13,7 @@ import { normalizeSpineLookFollowSettings, type SpineLookFollowSettings } from "
 import type { SpineBehaviorDebugMachine } from "@ba-spine/spine-runtime/spine/spineBehaviorRuntime";
 import { behaviorMachineWithLegacyInteraction, behaviorMachineWithLookFollowSettings, findLookFollowBehaviorMachine, projectBehaviorMachinesToLegacyInteractions, spineLookFollowSettingsFromBehaviorMachines, synchronizeLegacyBehaviorMachines, type SpineBehaviorEvent } from "@ba-spine/spine-runtime/spine/spineBehavior";
 import { spineAudioPathCandidates } from "@ba-spine/spine-runtime/spine/spineAudio";
+import { evaluateComposition, evaluateLayerTransforms, validateComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
 import { hasLegacySquareCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import {
   blankInteraction,
@@ -74,6 +75,7 @@ import "./validationIssues.css";
 import { isEditorAssetSetReady } from "./editorAssetSet";
 import { assertMcpTimelineLocksPreserved, editorDocumentFingerprint, editorDocumentSaveState, editorMcpErrorMessage, type EditorMcpCommand, type EditorMcpState, type EditorMcpTimelineBridge, type EditorMcpTimelineSnapshot } from "./editorMcp";
 import { WaveformProfileRecorder } from "./waveformProfileDiagnostics";
+import { migrateEditorProjectComposition } from "./editorCompositionMigration";
 import type { AudioWaveformMeasurement } from "./AudioWaveform";
 import { DEFAULT_EDITOR_LAYOUT_PREFERENCES, EDITOR_LAYOUT_PREFERENCES_KEY, normalizeEditorLayoutPreferences, type WorkspaceLayoutPreset } from "./editorLayout";
 import { IconAlert, IconAxis, IconBone, IconCheck, IconChevronDown, IconClose, IconEye, IconEyeOff, IconExpand, IconFile, IconFolder, IconHand, IconHelp, IconLink, IconMenu, IconMessage, IconMore, IconPause, IconPlay, IconPlus, IconSave, IconSearch, IconSliders, IconSound, IconTarget, IconText } from "@ba-spine/app-ui/icons";
@@ -2265,6 +2267,7 @@ export function Editor() {
 
   function prepareMcpChangeSet(current: EditorProject, operations: EditorMcpCommand[]): { project: EditorProject; warnings: string[]; diff: Array<{ domain: string; before: unknown; after: unknown }> } {
     let draft = cloneProject(current);
+    const warnings: string[] = [];
     const loadedMeta = metaRef.current;
     const assertKnownSequence = (sequenceId: string) => {
       if (!sequenceIdsForProject(draft, loadedMeta?.animations ?? []).includes(sequenceId)) throw new Error(`Sequence not found: ${sequenceId}`);
@@ -2343,6 +2346,20 @@ export function Editor() {
           if (!loadedMeta) throw new Error("Load a Spine skeleton before adding sequences in a change set.");
           next = addTalkSequence(draft, loadedMeta.animations, directories);
           break;
+        case "migrate_legacy_composition": {
+          if (draft.composition) throw new Error("This project already has a unified composition. Migration does not replace existing composition data.");
+          const knownSequenceIds = new Set([draft.timeline.sequenceId ?? "legacy", ...Object.keys(draft.sequences ?? {})]);
+          for (const entry of operation.schedule) {
+            if (entry.sequenceId && !knownSequenceIds.has(entry.sequenceId)) throw new Error(`Migration schedule references unknown sequence ${entry.sequenceId}.`);
+          }
+          const migrated = migrateEditorProjectComposition(draft, operation);
+          const errors = migrated.report.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+          if (errors.length > 0) throw new Error(`Composition migration schedule is invalid: ${errors.map((item) => `${item.code}: ${item.message}`).join("; ")}`);
+          next = { ...draft, composition: migrated.composition };
+          warnings.push(...migrated.report.assumptions.map((assumption) => `Migration assumption: ${assumption}`));
+          warnings.push(...migrated.report.diagnostics.filter((item) => item.severity === "warning").map((item) => `${item.code}: ${item.message}`));
+          break;
+        }
         case "delete_sequence":
           if (!loadedMeta) throw new Error("Load a Spine skeleton before deleting sequences in a change set.");
           assertKnownSequence(operation.sequenceId);
@@ -2392,6 +2409,7 @@ export function Editor() {
       const { timeline: _timeline, sequences: _sequences, ...settings } = authored;
       return {
         settings: { name: settings.name, entrySequence: settings.entrySequence ?? null, talkMixDuration: settings.talkMixDuration, effectsStrength: settings.effectsStrength },
+        composition: settings.composition ?? null,
         interactions: authored.interactions,
         lookFollow: authored.lookFollow,
         behaviors: { machines: authored.behaviorMachines ?? [], graphLayouts: authored.behaviorGraphLayouts },
@@ -2404,7 +2422,6 @@ export function Editor() {
     const diff = Object.keys(before).flatMap((domain) => JSON.stringify(before[domain as keyof typeof before]) === JSON.stringify(after[domain as keyof typeof after])
       ? []
       : [{ domain, before: before[domain as keyof typeof before], after: after[domain as keyof typeof after] }]);
-    const warnings: string[] = [];
     if (current.entrySequence && current.entrySequence !== draft.entrySequence && !sequenceIdsForProject(draft, loadedMeta?.animations ?? []).includes(current.entrySequence)) warnings.push(`Entry sequence ${current.entrySequence} was removed; the project model selected ${draft.entrySequence ?? "runtime intro"} instead.`);
     const removedMachineIds = (current.behaviorMachines ?? []).filter((machine) => !(draft.behaviorMachines ?? []).some((candidate) => candidate.id === machine.id)).map((machine) => machine.id);
     if (removedMachineIds.length) warnings.push(`Behavior machines removed by the reviewed changes: ${removedMachineIds.join(", ")}.`);
@@ -2418,6 +2435,23 @@ export function Editor() {
       if (actual !== expectedDocumentRevision) throw new Error(`MCP_STALE_DOCUMENT_REVISION: expected document revision ${expectedDocumentRevision}, but the Editor is now at ${actual}. Re-read editor_state and review the change before retrying.`);
     }
     switch (command.name) {
+      case "evaluate_composition": {
+        const current = projectRef.current;
+        if (!current?.composition) throw new Error("This project has no unified composition. Run an explicit legacy migration first.");
+        const evaluation = evaluateComposition(current.composition, { compositionTime: command.seconds });
+        const transforms = evaluateLayerTransforms(current.composition, evaluation);
+        return {
+          seconds: command.seconds,
+          activeSectionIds: evaluation.activeSectionIds,
+          properties: Object.fromEntries(evaluation.properties),
+          layerTransforms: Object.fromEntries(transforms),
+          activeAnimationClips: evaluation.activeAnimationClips.map(({ clip, sourceTime, weight }) => ({ clipId: clip.id, layerId: clip.layerId, animation: clip.animation, faceAnimation: clip.faceAnimation ?? null, sourceTime, weight })),
+          activeAudioIds: evaluation.activeAudio.map((clip) => clip.id),
+          activeSubtitleIds: evaluation.activeSubtitles.map((cue) => cue.id),
+          activeColorClipIds: evaluation.activeColorClips.map(({ clip }) => clip.id),
+          diagnostics: evaluation.diagnostics,
+        };
+      }
       case "preview_change_set": {
         const current = projectRef.current;
         const currentSource = sourceRef.current;
@@ -2567,6 +2601,24 @@ export function Editor() {
         const createdId = next.timeline.sequenceId ?? "";
         mutate(() => next);
         return { sequenceId: createdId, sequenceOrder: next.sequenceOrder ?? [] };
+      }
+      case "migrate_legacy_composition": {
+        const current = projectRef.current;
+        if (!current) throw new Error("Load a project before migrating its legacy timelines.");
+        if (current.composition) throw new Error("This project already has a unified composition. Migration does not replace existing composition data.");
+        const migrated = migrateEditorProjectComposition(current, command);
+        const errors = migrated.report.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+        if (errors.length > 0) throw new Error(`Composition migration was not applied because the explicit schedule is invalid: ${errors.map((item) => `${item.code}: ${item.message}`).join("; ")}`);
+        mutate((value) => ({ ...value, composition: migrated.composition }));
+        return {
+          compositionId: migrated.composition.id,
+          compositionDuration: migrated.composition.duration,
+          sectionCount: migrated.composition.sections.length,
+          layerCount: migrated.composition.layers.length,
+          report: migrated.report,
+          applied: true,
+          saved: false,
+        };
       }
       case "delete_sequence": {
         const current = projectRef.current;
@@ -2952,6 +3004,14 @@ export function Editor() {
           if (findings.length >= maximumFindings) { truncated = true; return; }
           findings.push(finding);
         };
+        if (current.composition) {
+          for (const diagnostic of validateComposition(current.composition)) addFinding({
+            code: `composition_${diagnostic.code.replaceAll("-", "_")}`,
+            severity: diagnostic.severity,
+            message: diagnostic.message,
+            ...(diagnostic.targetId ? { entityId: diagnostic.targetId } : {}),
+          });
+        }
         const sequenceIds = new Set(sequences.keys());
         if (current.entrySequence && !sequenceIds.has(current.entrySequence)) addFinding({ code: "missing_entry_sequence", severity: "error", message: `Entry sequence ${current.entrySequence} does not exist.` });
         const ordered = current.sequenceOrder ?? [];
@@ -3041,7 +3101,7 @@ export function Editor() {
         for (const file of missingFiles) if (!file.exists) addFinding({ code: "missing_audio_asset", severity: "error", message: `Audio asset is missing or outside the selected root: ${file.path}.`, entityId: file.path });
         const revisionAfter = currentMcpDocumentRevision();
         if (revisionAfter !== validationRevision) addFinding({ code: "project_changed_during_validation", severity: "warning", message: `The authored project changed during validation (revision ${validationRevision} to ${revisionAfter}). Re-run validation for the latest document.` });
-        return { scope: "project", assetRoot: currentSource.rootPath, directory: current.assetDirectory, documentRevision: validationRevision, documentRevisionAfter: revisionAfter, scannedSequenceCount: sequences.size, scannedInteractionCount: current.interactions.length, scannedBehaviorMachineCount: machines.length, checkedAudioPaths: sourceFilePaths.length, count: findings.length, truncated, findings };
+        return { scope: "project", assetRoot: currentSource.rootPath, directory: current.assetDirectory, documentRevision: validationRevision, documentRevisionAfter: revisionAfter, scannedSequenceCount: sequences.size, scannedInteractionCount: current.interactions.length, scannedBehaviorMachineCount: machines.length, compositionPresent: Boolean(current.composition), checkedAudioPaths: sourceFilePaths.length, count: findings.length, truncated, findings };
       }
       case "undo":
         if (undo.length === 0) throw new Error("There is no project edit to undo.");

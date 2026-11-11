@@ -6,8 +6,9 @@ import { normalizeSpineCameraTrack, type SpineCameraTrack } from "@ba-spine/spin
 import { DEFAULT_EFFECTS_STRENGTH } from "@ba-spine/spine-runtime/spine/spineEffects";
 import { migrateLegacyInteractionsToBehaviors, normalizeSpineBehaviorMachines, projectBehaviorMachinesToLegacyInteractions, spineLookFollowSettingsFromBehaviorMachines, synchronizeLegacyBehaviorMachines, type SpineBehaviorMachine } from "@ba-spine/spine-runtime/spine/spineBehavior";
 import { normalizeBehaviorGraphLayouts, type BehaviorGraphLayouts } from "./behaviorGraph";
+import { normalizeSpineComposition, type SpineComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
 
-export const EDITOR_SCHEMA_VERSION = 8;
+export const EDITOR_SCHEMA_VERSION = 9;
 export const LEGACY_EDITOR_SCHEMA_VERSION = 1;
 
 export type EditorTrigger = "press" | "hold" | "drag";
@@ -140,6 +141,8 @@ export interface EditorTimeline {
 }
 
 export interface EditorProject {
+  /** Optional v1 unified composition. Added only by an explicit migration/authoring action. */
+  composition?: SpineComposition;
   sequences?: Record<string, EditorTimeline>;
   /** Authored display/playback order; Opening is always normalized to index zero. */
   sequenceOrder?: string[];
@@ -689,6 +692,9 @@ export function normalizeProject(value: unknown, directory: string): EditorProje
   if (!Array.isArray(project.interactions)) return null;
   const schemaVersion = Number(project.schemaVersion);
   if (Number.isFinite(schemaVersion) && schemaVersion > EDITOR_SCHEMA_VERSION) return null;
+  const composition = project.composition === undefined ? undefined : normalizeSpineComposition(project.composition);
+  // Never silently strip a malformed or newer composition when opening/saving a project.
+  if (project.composition !== undefined && !composition) return null;
   // Talk auto-duration was introduced in schema 3. Do not re-migrate schema 3
   // projects when later editor schema versions add unrelated timeline fields.
   const migrateTalkDurationMode = !Number.isFinite(schemaVersion) || schemaVersion < 3;
@@ -720,6 +726,7 @@ export function normalizeProject(value: unknown, directory: string): EditorProje
     : selectedInteraction?.regions[0]?.id ?? null;
   return {
     schemaVersion: EDITOR_SCHEMA_VERSION,
+    ...(composition ? { composition } : {}),
     name: typeof project.name === "string" ? project.name : `${directory} interactions`,
     assetDirectory: directory,
     talkMixDuration: Math.min(2, finiteNumber(project.talkMixDuration, DEFAULT_TALK_MIX_DURATION, 0)),

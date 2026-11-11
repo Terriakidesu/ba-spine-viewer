@@ -1,4 +1,5 @@
 import { normalizeSpineTimeline, type SpineTimeline } from "./spineTimeline";
+import { normalizeSpineComposition, type SpineComposition } from "./spineComposition";
 import { DEFAULT_EFFECTS_STRENGTH } from "./spineEffects";
 import { migrateLegacyInteractionsToBehaviors, normalizeSpineBehaviorMachines, projectBehaviorMachinesToLegacyInteractions, spineLookFollowSettingsFromBehaviorMachines, synchronizeLegacyBehaviorMachines, type SpineBehaviorMachine } from "./spineBehavior";
 
@@ -195,6 +196,8 @@ export interface SpineInteractionProject {
   sequences?: Record<string, SpineTimeline>;
   sequenceOrder?: string[];
   deletedSequenceIds?: string[];
+  /** Optional unified timeline authored by the Editor's explicit migration flow. */
+  composition?: SpineComposition;
 }
 
 export interface SpineInteractionBundle {
@@ -308,6 +311,8 @@ export function normalizeSpineInteractionProject(value: unknown, directory?: str
   const project = value as Partial<SpineInteractionProject>;
   const assetDirectory = directory ?? stringValue(project.assetDirectory);
   if (!assetDirectory || !Array.isArray(project.interactions)) return null;
+  const composition = project.composition === undefined ? undefined : normalizeSpineComposition(project.composition);
+  if (project.composition !== undefined && !composition) return null;
   const timeline = "timeline" in project ? normalizeSpineTimeline(project.timeline) : null;
   const sequences = project.sequences && typeof project.sequences === "object"
     ? Object.fromEntries(Object.entries(project.sequences)
@@ -329,6 +334,7 @@ export function normalizeSpineInteractionProject(value: unknown, directory?: str
     schemaVersion: Math.max(1, Math.trunc(finiteNumber(project.schemaVersion, 1))),
     ...(typeof project.name === "string" ? { name: project.name } : {}),
     assetDirectory,
+    ...(composition ? { composition } : {}),
     ...(project.entrySequence === null || typeof project.entrySequence === "string" ? { entrySequence: project.entrySequence } : {}),
     talkMixDuration: normalizeAnimationMixDuration(project.talkMixDuration, DEFAULT_TALK_MIX_DURATION),
     effectsStrength: Math.max(0, Math.min(1, finiteNumber(project.effectsStrength, DEFAULT_EFFECTS_STRENGTH))),

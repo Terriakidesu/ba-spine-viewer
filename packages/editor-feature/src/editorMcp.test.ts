@@ -6,12 +6,16 @@ import { switchSequence } from "./sequenceModel";
 describe("editor MCP command validation", () => {
   test("shares typed operation policy, revision requirements, and stable result/error envelopes", () => {
     const getProject = EDITOR_MCP_OPERATION_REGISTRY.get_project;
+    const evaluateComposition = EDITOR_MCP_OPERATION_REGISTRY.evaluate_composition;
     const deleteInteraction = EDITOR_MCP_OPERATION_REGISTRY.delete_interaction;
+    const migrateComposition = EDITOR_MCP_OPERATION_REGISTRY.migrate_legacy_composition;
     expect(getProject.inputSchema({ name: "get_project" })).toEqual({ name: "get_project" });
     expect(() => getProject.inputSchema({ name: "get_project", extra: true })).toThrow();
     expect(getProject).toMatchObject({ mutation: "none", revisionRequired: false, domain: "project", workspace: "any", handler: "editor", resultShape: "EditorMcpResultEnvelope<unknown>" });
+    expect(evaluateComposition).toMatchObject({ mutation: "none", revisionRequired: false, workspace: "any", handler: "editor" });
     expect(deleteInteraction).toMatchObject({ mutation: "authored", revisionRequired: true, domain: "interaction" });
     expect(EDITOR_MCP_REVISION_REQUIRED_COMMANDS.has(deleteInteraction.name)).toBe(true);
+    expect(migrateComposition).toMatchObject({ mutation: "authored", revisionRequired: true, domain: "project", workspace: "any", handler: "editor" });
 
     const identity = { hostPid: 123, assetRoot: "D:/assets", directory: "Aru_home", projectName: "Aru" };
     expect(createEditorMcpResultEnvelope({
@@ -56,10 +60,26 @@ describe("editor MCP command validation", () => {
 
   test("accepts project inspection commands without allowing extra fields", () => {
     expect(normalizeEditorMcpCommand({ name: "get_project" })).toEqual({ name: "get_project" });
+    expect(normalizeEditorMcpCommand({ name: "evaluate_composition", seconds: 2.5 })).toEqual({ name: "evaluate_composition", seconds: 2.5 });
+    expect(() => normalizeEditorMcpCommand({ name: "evaluate_composition", seconds: Number.NaN })).toThrow();
     expect(() => normalizeEditorMcpCommand({ name: "get_project", project: true })).toThrow();
     expect(normalizeEditorMcpCommand({ name: "undo" })).toEqual({ name: "undo" });
     expect(normalizeEditorMcpCommand({ name: "redo" })).toEqual({ name: "redo" });
     expect(() => normalizeEditorMcpCommand({ name: "undo", revision: 4 })).toThrow();
+  });
+
+  test("requires an explicit, typed legacy migration schedule", () => {
+    const schedule = [{ id: "opening-range", kind: "opening" as const, sequenceId: "opening", start: 0, duration: 8, sourceStart: 0 }];
+    expect(normalizeEditorMcpCommand({
+      name: "migrate_legacy_composition", schedule, frameRate: 30,
+      persistentTimeMapping: "continuous-output", persistentBackgrounds: true,
+    })).toEqual({
+      name: "migrate_legacy_composition", schedule, frameRate: 30,
+      persistentTimeMapping: "continuous-output", persistentBackgrounds: true,
+    });
+    expect(() => normalizeEditorMcpCommand({ name: "migrate_legacy_composition", schedule: [], frameRate: 30, persistentTimeMapping: "continuous-output" })).toThrow();
+    expect(() => normalizeEditorMcpCommand({ name: "migrate_legacy_composition", schedule: [{ ...schedule[0], surprise: true }], frameRate: 30, persistentTimeMapping: "continuous-output" })).toThrow();
+    expect(() => normalizeEditorMcpCommand({ name: "migrate_legacy_composition", schedule, frameRate: 0, persistentTimeMapping: "continuous-output" })).toThrow();
   });
 
   test("accepts supported timeline and color edits", () => {

@@ -85,6 +85,8 @@ export interface SpineTimelineAudio {
   path: string;
   start: number;
   end: number;
+  /** Optional source offset for trimmed clips; older timelines default to zero. */
+  sourceOffset?: number;
   enabled: boolean;
   volume: number;
 }
@@ -692,6 +694,7 @@ function normalizeAudio(value: unknown, index: number, duration: number): SpineT
     path,
     start,
     end: Math.max(start + 0.01, finiteNumber(clip.end, Math.min(duration, start + 2))),
+    ...(typeof clip.sourceOffset === "number" && Number.isFinite(clip.sourceOffset) ? { sourceOffset: nonNegative(clip.sourceOffset, 0) } : {}),
     enabled: clip.enabled !== false,
     volume: Math.max(0, Math.min(1, finiteNumber(clip.volume, 1))),
   };

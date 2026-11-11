@@ -55,15 +55,18 @@ import {
   type SpineVoiceLine,
 } from "@ba-spine/spine-runtime/spine/spineVoicelines";
 import { SpineCompositionViewport, type SpineCompositionViewportHandle } from "@ba-spine/spine-runtime/ui/SpineCompositionViewport";
+import { evaluateCompositionFrame } from "@ba-spine/spine-runtime/spine/spineComposition";
+import { compositionFrameToTimeline } from "@ba-spine/spine-runtime/spine/spineCompositionTimeline";
 import { timelineAuthoredCueEnd, timelineForSequence, timelineLastDefinedCameraTrack, timelinePlaybackDuration, timelineSequenceIds, timelineSubtitleText, timelineTalkInProgress, timelineTalkSequenceIds, type SpineTimeline } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import { hasLegacySquareCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import { hasLegacyViewerAspectRatio, readViewerAspectRatio, writeViewerAspectRatio, type ViewerAspectRatio } from "./viewerPresentation";
-import { createCanvasFrameCapture, createCanvasRecordingCapture, createFullSequenceRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, readVideoRecordingQuality, videoFilenameStem, videoRecordingAudioSchedule, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingSubtitleSpans, videoRecordingTimelineOffsets, writeVideoRecordingQuality, type AudioRecordingCapture, type CanvasFrameCapture, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
+import { createCanvasFrameCapture, createCanvasRecordingCapture, createFullSequenceRecordingPlan, createUnifiedCompositionRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, readVideoRecordingQuality, videoFilenameStem, videoRecordingAudioSchedule, videoRecordingCompositionSubtitleSpans, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingSubtitleSpans, videoRecordingTimelineOffsets, writeVideoRecordingQuality, type AudioRecordingCapture, type CanvasFrameCapture, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
 
 type ViewerDraftPreview = Omit<SpineDraftSnapshot, "project"> & { project: SpineInteractionProject };
 
 const bundledCharacterIndex = characterIndexJson as CharacterIndex;
 const MAX_CONCURRENT_VOICE_PRELOADS = 4;
+const UNIFIED_COMPOSITION_SEQUENCE_ID = "__unified-composition__";
 
 function projectTimelineDuration(timeline: SpineTimeline, project: SpineInteractionProject | null): number {
   const talkMix = normalizeAnimationMixDuration(project?.talkMixDuration, DEFAULT_TALK_MIX_DURATION);
@@ -221,7 +224,7 @@ interface VideoRecordingRun {
   desktopSessionId: string | null;
   desktopStream: DesktopFfmpegVideoStream | null;
   desktopFrameCapture: CanvasFrameCapture | null;
-  desktopAudioTracks: Array<{ file: File; start: number; duration: number; volume: number; extension: string; sequenceId: string }>;
+  desktopAudioTracks: Array<{ file: File; start: number; duration: number; volume: number; sourceOffset: number; extension: string; sequenceId: string }>;
   runtimeSubtitleSegments: Array<{ start: number; end: number; clipIndex: number }>;
   lastRuntimeSubtitleClip: number | null;
   desktopFrameTask: Promise<void> | null;
@@ -244,6 +247,7 @@ interface VideoRecordingRun {
   segmentTimelineStart: number;
   lastGlobalElapsed: number;
   activeSequenceId: string | null;
+  unifiedComposition: boolean;
   lastPreviewAt: number;
   lastUiUpdate: number;
   source: "composition" | "runtime";
@@ -1081,18 +1085,30 @@ export function Spine() {
     setEffectsStrength(selectedInteractionProject?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH);
   }, [selectedDirectoryName, selectedInteractionProject]);
   const compositionSequenceIds = selectedInteractionProject ? timelineSequenceIds(selectedInteractionProject) : [];
+  const hasUnifiedComposition = Boolean(selectedInteractionProject?.composition);
+  const unifiedCompositionSelected = selectedSequenceId === UNIFIED_COMPOSITION_SEQUENCE_ID && hasUnifiedComposition;
   const compositionPreloadTimelines = useMemo(
     () => selectedInteractionProject
       ? timelineSequenceIds(selectedInteractionProject).map((id) => timelineForSequence(selectedInteractionProject, id)).filter((item): item is SpineTimeline => item !== null)
       : [],
     [selectedInteractionProject],
   );
-  const compositionSequenceSignature = compositionSequenceIds.join("\u001f");
-  const compositionSequenceId = selectedSequenceId && compositionSequenceIds.includes(selectedSequenceId)
+  const compositionSequenceSignature = `${compositionSequenceIds.join("\u001f")}\u001e${selectedInteractionProject?.composition?.id ?? ""}`;
+  const compositionSequenceId = !unifiedCompositionSelected && selectedSequenceId && compositionSequenceIds.includes(selectedSequenceId)
     ? selectedSequenceId
     : "";
-  const compositionTimeline = selectedInteractionProject ? timelineForSequence(selectedInteractionProject, compositionSequenceId) : null;
-  const compositionActive = Boolean(compositionTimeline);
+  const compositionFallbackTimeline = useMemo(() => {
+    const composition = selectedInteractionProject?.composition;
+    if (!composition) return null;
+    const frame = evaluateCompositionFrame(composition, { compositionTime: 0, transportTime: 0 });
+    return compositionFrameToTimeline(composition, frame, 0, selectedInteractionProject.timeline?.language ?? "en");
+  }, [selectedInteractionProject?.composition, selectedInteractionProject?.timeline?.language]);
+  const compositionTimeline = selectedInteractionProject
+    ? unifiedCompositionSelected
+      ? selectedInteractionProject.timeline ?? compositionPreloadTimelines[0] ?? compositionFallbackTimeline
+      : timelineForSequence(selectedInteractionProject, compositionSequenceId)
+    : null;
+  const compositionActive = Boolean(compositionTimeline && (unifiedCompositionSelected || compositionSequenceId));
   const activeExportRun = videoRecordingRunRef.current;
   const authoredTalkSequenceIds = selectedInteractionProject ? timelineTalkSequenceIds(selectedInteractionProject) : [];
   const fullSequenceCompositionRecording = activeExportRun?.source === "composition" && activeExportRun.settings.mode === "full-sequence";
@@ -1127,7 +1143,10 @@ export function Spine() {
     return ids.map((id) => timelineForSequence(selectedInteractionProject, id)).filter((item): item is SpineTimeline => item !== null);
   }, [activeExportRun?.plan, activeExportRun?.segmentIndex, compositionSequenceId, fullSequenceCompositionRecording, selectedInteractionProject]);
   const recordingCameraSource = useMemo(() => timelineLastDefinedCameraTrack(recordingCameraHistoryTimelines), [recordingCameraHistoryTimelines]);
-  const compositionCameraTrack = recordingCameraSource?.track ?? (compositionTimeline?.camera?.enabled ? compositionTimeline.camera : null);
+  const selectedCompositionCamera = unifiedCompositionSelected
+    ? selectedInteractionProject?.composition?.camera
+    : compositionTimeline?.camera;
+  const compositionCameraTrack = recordingCameraSource?.track ?? (selectedCompositionCamera?.enabled ? selectedCompositionCamera : null);
   const cameraRecordingSegment = activeExportRun?.plan?.segments?.[activeExportRun.segmentIndex];
   const shouldHoldLastCameraShot = Boolean(recordingCameraSource && (
     recordingCameraSource.sequenceId !== compositionTimeline?.sequenceId
@@ -1159,7 +1178,8 @@ export function Spine() {
     ? videoRecorderDialog.settings.aspectRatio
     : aspectRatio;
   const authoredTalkAutoplayAvailable = Boolean(
-    selectedInteractionProject
+    !unifiedCompositionSelected
+      && selectedInteractionProject
       && authoredTalkSequenceIds.length > 0
       && timelineForSequence(selectedInteractionProject, "opening"),
   );
@@ -1195,9 +1215,9 @@ export function Spine() {
   useEffect(() => {
     const nextMode: SpineCameraMode = interactionMode === "free"
       ? "artwork"
-      : compositionTimeline?.camera?.enabled ? "authored" : "fit";
+      : selectedCompositionCamera?.enabled ? "authored" : "fit";
     if (cameraMode !== nextMode) setCameraMode(nextMode);
-  }, [cameraMode, compositionSequenceId, interactionMode, selectedDirectoryName, selectedInteractionProject]);
+  }, [cameraMode, compositionSequenceId, interactionMode, selectedCompositionCamera, selectedDirectoryName]);
   const draftSessionId = draftPreview?.sessionId ?? null;
   useEffect(() => {
     if (!draftSessionId || !isDesktopHost()) return;
@@ -1297,7 +1317,11 @@ export function Spine() {
     const sequenceIds = selectedInteractionProject ? timelineSequenceIds(selectedInteractionProject) : [];
     const pendingHandoff = pendingHandoffRef.current;
     const handoffSequence = pendingHandoff?.lobbyId === selectedDirectoryName ? pendingHandoff.sequenceId : undefined;
-    const currentSequence = sequenceIds.includes(selectedSequenceId) ? selectedSequenceId : "";
+    const currentSequence = sequenceIds.includes(selectedSequenceId)
+      ? selectedSequenceId
+      : selectedSequenceId === UNIFIED_COMPOSITION_SEQUENCE_ID && selectedInteractionProject?.composition
+        ? UNIFIED_COMPOSITION_SEQUENCE_ID
+        : "";
     const initialSequence = handoffSequence && sequenceIds.includes(handoffSequence)
       ? handoffSequence
       : !pendingHandoff && currentSequence
@@ -1312,10 +1336,13 @@ export function Spine() {
         ? "persistent"
         : "none");
     setSelectedSequenceId(sequenceToSelect);
-    const initialTimeline = selectedInteractionProject && sequenceToSelect ? timelineForSequence(selectedInteractionProject, sequenceToSelect) : null;
+    const initialTimeline = selectedInteractionProject && sequenceToSelect && sequenceToSelect !== UNIFIED_COMPOSITION_SEQUENCE_ID
+      ? timelineForSequence(selectedInteractionProject, sequenceToSelect)
+      : null;
+    const compositionDuration = sequenceToSelect === UNIFIED_COMPOSITION_SEQUENCE_ID ? selectedInteractionProject?.composition?.duration ?? 0 : 0;
     setProgress({
       time: videoRestore?.progress.time ?? 0,
-      duration: videoRestore?.progress.duration ?? (initialTimeline ? projectTimelineDuration(initialTimeline, selectedInteractionProject) : 0),
+      duration: videoRestore?.progress.duration ?? (initialTimeline ? projectTimelineDuration(initialTimeline, selectedInteractionProject) : compositionDuration),
       animation: videoRestore?.progress.animation ?? null,
     });
   }, [compositionSequenceSignature, selectedDirectoryName, selectedInteractionProject?.entrySequence, selectedSequenceId]);
@@ -2288,6 +2315,15 @@ export function Spine() {
     if (videoRecordingRunRef.current) return;
     if (value === interactionMode) return;
     stopVoice();
+    if (value === "interaction" && unifiedCompositionSelected && selectedInteractionProject) {
+      const sequenceIds = timelineSequenceIds(selectedInteractionProject);
+      const sequenceId = selectedInteractionProject.entrySequence && sequenceIds.includes(selectedInteractionProject.entrySequence)
+        ? selectedInteractionProject.entrySequence
+        : sequenceIds.includes("opening") ? "opening" : "";
+      const sequenceTimeline = sequenceId ? timelineForSequence(selectedInteractionProject, sequenceId) : null;
+      setSelectedSequenceId(sequenceId);
+      setProgress({ time: 0, duration: sequenceTimeline ? projectTimelineDuration(sequenceTimeline, selectedInteractionProject) : 0, animation: null });
+    }
     if (value === "interaction") {
       freePlaying.current = playing;
       freeLoop.current = loop;
@@ -2461,8 +2497,8 @@ export function Spine() {
   const prepareDesktopAudioTracks = async (run: VideoRecordingRun, metrics: { openingDuration?: number; introMarkers?: number[] }) => {
     const plan = run.plan;
     if (!plan || !run.settings.includeAudio || (run.settings.mode !== "opening-idle" && run.settings.mode !== "full-sequence") || !source) return;
-    const addTrack = (file: File, start: number, end: number, volume: number, sequenceId: string) => {
-      const schedule = videoRecordingAudioSchedule(start, end, volume, plan.totalDuration);
+    const addTrack = (file: File, start: number, end: number, volume: number, sequenceId: string, sourceOffset = 0) => {
+      const schedule = videoRecordingAudioSchedule(start, end, volume, plan.totalDuration, sourceOffset);
       if (!schedule) return;
       const extension = recordingAudioExtension(file);
       if (!extension) throw new Error(t("spine.recorder.audioFormat", { name: file.name }));
@@ -2470,6 +2506,15 @@ export function Spine() {
     };
 
     if (run.source === "composition" && selectedInteractionProject) {
+      if (run.unifiedComposition && selectedInteractionProject.composition) {
+        for (const clip of selectedInteractionProject.composition.audio) {
+          if (!clip.enabled) continue;
+          const file = await loadRecordingAudioFile(source, clip.path);
+          if (!file) continue;
+          addTrack(file, clip.start, clip.end, clip.volume, selectedInteractionProject.composition.id, clip.sourceOffset);
+        }
+        return;
+      }
       if (run.settings.mode === "full-sequence" && plan.segments) {
         let offset = 0;
         for (const segment of plan.segments) {
@@ -2479,7 +2524,7 @@ export function Spine() {
               if (!clip.enabled) continue;
               const file = await loadRecordingAudioFile(source, clip.path);
               if (!file) continue;
-              addTrack(file, offset + clip.start, offset + clip.end, clip.volume, segment.sequenceId ?? "opening");
+              addTrack(file, offset + clip.start, offset + clip.end, clip.volume, segment.sequenceId ?? "opening", clip.sourceOffset ?? 0);
             }
           }
           offset += segment.duration;
@@ -2490,7 +2535,7 @@ export function Spine() {
         if (!clip.enabled || clip.start >= plan.totalDuration) continue;
         const file = await loadRecordingAudioFile(source, clip.path);
         if (!file) continue;
-        addTrack(file, clip.start, clip.end, clip.volume, compositionTimeline?.sequenceId ?? "opening");
+        addTrack(file, clip.start, clip.end, clip.volume, compositionTimeline?.sequenceId ?? "opening", clip.sourceOffset ?? 0);
       }
       return;
     }
@@ -2828,6 +2873,19 @@ export function Spine() {
     }
 
     if (run.settings.mode === "full-sequence" && sourceKind === "composition" && run.plan.segments) {
+      if (run.unifiedComposition) {
+        const elapsed = Math.max(run.lastGlobalElapsed, Math.min(run.plan.totalDuration, next.time));
+        run.lastGlobalElapsed = elapsed;
+        const globalProgress = { ...next, time: elapsed, duration: run.plan.totalDuration };
+        progressRef.current = globalProgress;
+        setProgress(globalProgress);
+        if (now - run.lastUiUpdate >= 180 || elapsed >= run.plan.totalDuration) {
+          run.lastUiUpdate = now;
+          setVideoRecorderDialog((current) => current ? { ...current, elapsed } : current);
+        }
+        if (elapsed >= run.plan.totalDuration) stopVideoRecording(true);
+        return;
+      }
       if (run.useFfmpeg) {
         run.lastGlobalElapsed = Math.max(run.lastGlobalElapsed, Math.min(run.plan.totalDuration, next.time));
         const globalProgress = { ...next, time: run.lastGlobalElapsed, duration: run.plan.totalDuration };
@@ -2912,16 +2970,17 @@ export function Spine() {
   };
 
   const openVideoRecorder = () => {
-    if (interactionMode !== "interaction") return;
+    if (interactionMode !== "interaction" && !unifiedCompositionSelected) return;
     videoRecorderCameraPoseRef.current = activeViewport()?.getCameraPose() ?? null;
     clearVideoRecorderPreview();
-    const settings = videoRecorderTalkSelectionInitialized
+    const baseSettings = videoRecorderTalkSelectionInitialized
       ? videoRecorderSettings
       : { ...videoRecorderSettings, talkSequenceIds: authoredTalkSequenceIds, aspectRatio: outputAspectRatio };
+    const settings = unifiedCompositionSelected ? { ...baseSettings, mode: "full-sequence" as const } : baseSettings;
     if (!videoRecorderTalkSelectionInitialized) {
       setVideoRecorderTalkSelectionInitialized(true);
-      setVideoRecorderSettings(settings);
     }
+    setVideoRecorderSettings(settings);
     setVideoRecorderDialog({ phase: "settings", settings, elapsed: 0 });
   };
 
@@ -2949,15 +3008,18 @@ export function Spine() {
     const segments = plan?.segments;
     const segment = segments?.[index];
     if (!plan || !segments || !segment) return;
-    const targetSequenceId = segment.sequenceId ?? run.activeSequenceId ?? compositionSequenceId;
+    const unifiedComposition = run.unifiedComposition || segment.kind === "composition";
+    const targetSequenceId = unifiedComposition
+      ? UNIFIED_COMPOSITION_SEQUENCE_ID
+      : segment.sequenceId ?? run.activeSequenceId ?? compositionSequenceId;
     const sequenceChanged = Boolean(targetSequenceId && targetSequenceId !== run.activeSequenceId);
-    const idleSegment = segment.kind !== "opening" && segment.kind !== "talk";
+    const idleSegment = !unifiedComposition && segment.kind !== "opening" && segment.kind !== "talk";
     run.segmentIndex = index;
     run.segmentStartedAt = run.startedAt === null ? null : performance.now();
     run.segmentTimelineStart = videoRecordingSegmentStart(plan, index);
     run.lastGlobalElapsed = Math.max(run.lastGlobalElapsed, run.segmentTimelineStart);
     run.activeSequenceId = targetSequenceId || null;
-    run.phase = segment.kind === "opening" ? "opening" : "idle";
+    run.phase = unifiedComposition || segment.kind === "opening" ? "opening" : "idle";
     if (sequenceChanged && targetSequenceId) setSelectedSequenceId(targetSequenceId);
     setIdleMode(idleSegment ? "persistent" : "none");
     setProgress({
@@ -2968,7 +3030,7 @@ export function Spine() {
   };
 
   const startVideoRecording = async () => {
-    if (interactionMode !== "interaction") return;
+    if (interactionMode !== "interaction" && !unifiedCompositionSelected) return;
     if (!videoRecorderDialog || videoRecorderDialog.phase !== "settings") return;
     const settings = videoRecorderDialog.settings;
     const selectedFormat = videoRecorderFormats.find((item) => item.format === settings.format);
@@ -2976,7 +3038,7 @@ export function Spine() {
       setVideoRecorderDialog({ ...videoRecorderDialog, phase: "error", error: t("spine.recorder.unsupported") });
       return;
     }
-    if (settings.mode === "full-sequence" && (!selectedInteractionProject || !compositionActive)) {
+    if (settings.mode === "full-sequence" && (!selectedInteractionProject || !compositionActive || (!unifiedCompositionSelected && authoredTalkSequenceIds.length === 0))) {
       setVideoRecorderDialog({ ...videoRecorderDialog, phase: "error", error: t("spine.recorder.fullSequenceUnavailable") });
       return;
     }
@@ -3046,6 +3108,7 @@ export function Spine() {
       segmentTimelineStart: 0,
       lastGlobalElapsed: 0,
       activeSequenceId: selectedSequenceId || null,
+      unifiedComposition: unifiedCompositionSelected,
       lastPreviewAt: 0,
       lastUiUpdate: 0,
       source: recordingUsesComposition ? "composition" : "runtime",
@@ -3070,17 +3133,23 @@ export function Spine() {
     setLoop(true);
 
     if (recordingUsesComposition) {
-      const sequenceId = compositionSequenceIds.includes("opening") ? "opening" : compositionSequenceId;
+      const sequenceId = unifiedCompositionSelected
+        ? UNIFIED_COMPOSITION_SEQUENCE_ID
+        : compositionSequenceIds.includes("opening") ? "opening" : compositionSequenceId;
       const timeline = selectedInteractionProject && sequenceId ? timelineForSequence(selectedInteractionProject, sequenceId) : compositionTimeline;
       run.activeSequenceId = sequenceId || null;
       setSelectedSequenceId(sequenceId);
-      const startsWithOpening = settings.mode === "opening-idle"
+      const startsWithOpening = run.unifiedComposition || (settings.mode === "opening-idle"
         ? Boolean(meta?.introAnimation && sequenceId === "opening")
         : settings.mode === "full-sequence"
           ? settings.includeOpening && sequenceId === "opening"
-          : false;
+          : false);
       setIdleMode(settings.mode === "idle-only" || (settings.mode === "full-sequence" && !startsWithOpening) ? "persistent" : "none");
-      setProgress({ time: 0, duration: timeline ? projectTimelineDuration(timeline, selectedInteractionProject) : 0, animation: null });
+      setProgress({
+        time: 0,
+        duration: run.unifiedComposition ? selectedInteractionProject?.composition?.duration ?? 0 : timeline ? projectTimelineDuration(timeline, selectedInteractionProject) : 0,
+        animation: null,
+      });
     } else if (settings.mode === "idle-only" || !meta?.introAnimation) {
       const idleAnimation = meta?.idleAnimation || animation;
       setAnimation(idleAnimation);
@@ -3117,12 +3186,14 @@ export function Spine() {
         run.preparationStarted = false;
         return;
       }
-      if (!metrics || metrics.idleDuration <= 0) throw new Error(t("spine.recorder.noIdle"));
+      if (!metrics || (!run.unifiedComposition && metrics.idleDuration <= 0)) throw new Error(t("spine.recorder.noIdle"));
       const selectedFormat = videoRecorderFormats.find((item) => item.format === run.settings.format);
       if (!selectedFormat) throw new Error(t("spine.recorder.unsupported"));
-      run.plan = run.settings.mode === "full-sequence"
-        ? selectedInteractionProject
-           ? fullSequenceRecordingPlan(
+       run.plan = run.settings.mode === "full-sequence"
+         ? run.unifiedComposition && selectedInteractionProject?.composition
+           ? createUnifiedCompositionRecordingPlan(selectedInteractionProject.composition.duration)
+           : selectedInteractionProject
+            ? fullSequenceRecordingPlan(
              selectedInteractionProject,
              run.settings,
              metrics,
@@ -3304,6 +3375,12 @@ export function Spine() {
   const restartPlayback = () => {
     stopVoice();
     setPlaying(true);
+    if (unifiedCompositionSelected && selectedInteractionProject?.composition) {
+      setIdleMode("none");
+      setProgress({ time: 0, duration: selectedInteractionProject.composition.duration, animation: null });
+      compositionRef.current?.restartPlayback();
+      return;
+    }
     if (compositionActive && selectedInteractionProject && timelineForSequence(selectedInteractionProject, "opening")) {
       setIdleMode("none");
       setSelectedSequenceId("opening");
@@ -3317,6 +3394,11 @@ export function Spine() {
   const restartOpening = () => {
     stopVoice();
     setPlaying(true);
+    if (unifiedCompositionSelected && selectedInteractionProject?.composition) {
+      setProgress({ time: 0, duration: selectedInteractionProject.composition.duration, animation: null });
+      compositionRef.current?.seek(0);
+      return;
+    }
     const opening = selectedInteractionProject ? timelineForSequence(selectedInteractionProject, "opening") : null;
     if (opening && selectedInteractionProject) {
       const alreadyOpening = compositionSequenceId === "opening";
@@ -3479,7 +3561,7 @@ export function Spine() {
   const showAspectRatioControl = interactionMode === "interaction";
   const viewportCameraMode: SpineCameraMode = savedCameraForRecording ? "fit" : interactionMode === "free" ? "artwork" : "fit";
   const hasOpeningSequence = Boolean(selectedInteractionProject && compositionSequenceIds.includes("opening"));
-  const canRestartOpening = hasOpeningSequence || (!compositionActive && Boolean(meta?.introAnimation && meta.idleAnimation));
+  const canRestartOpening = !unifiedCompositionSelected && (hasOpeningSequence || (!compositionActive && Boolean(meta?.introAnimation && meta.idleAnimation)));
   const recorderSettings = videoRecorderDialog?.settings ?? videoRecorderSettings;
   const recorderMetrics = compositionActive ? compositionRef.current?.getRecordingMetrics() : viewportRef.current?.getRecordingMetrics();
   const openingTimelineForRecording = selectedInteractionProject ? timelineForSequence(selectedInteractionProject, "opening") : null;
@@ -3508,15 +3590,17 @@ export function Spine() {
     };
   }) : [];
   const selectedMissingTalks = recorderTalkOptions.filter((talk) => recorderSettings.talkSequenceIds.includes(talk.sequenceId) && talk.missingReason);
-  const estimatedFullSequencePlan = selectedInteractionProject && fullSequenceMetrics?.ready && fullSequenceMetrics.idleDuration > 0
-    ? fullSequenceRecordingPlan(
-      selectedInteractionProject,
-      recorderSettings,
-      fullSequenceMetrics,
-      (targetTimeline) => compositionRef.current?.getTimelinePlaybackDuration(targetTimeline)
-        ?? projectTimelineDuration(targetTimeline, selectedInteractionProject),
-    )
-    : null;
+  const estimatedFullSequencePlan = unifiedCompositionSelected && selectedInteractionProject?.composition
+    ? createUnifiedCompositionRecordingPlan(selectedInteractionProject.composition.duration)
+    : selectedInteractionProject && fullSequenceMetrics?.ready && fullSequenceMetrics.idleDuration > 0
+      ? fullSequenceRecordingPlan(
+        selectedInteractionProject,
+        recorderSettings,
+        fullSequenceMetrics,
+        (targetTimeline) => compositionRef.current?.getTimelinePlaybackDuration(targetTimeline)
+          ?? projectTimelineDuration(targetTimeline, selectedInteractionProject),
+      )
+      : null;
   const recorderEstimate = videoRecorderDialog?.phase === "settings"
     ? recorderSettings.mode === "full-sequence"
       ? estimatedFullSequencePlan
@@ -3529,15 +3613,22 @@ export function Spine() {
   const recorderSubtitleExportEnabled = activeExportRun?.settings.includeSubtitles ?? recorderSettings.includeSubtitles;
   const recorderSubtitleSpans = useMemo(() => {
     if (!recorderSubtitleExportEnabled || !recorderTimelinePlan || !selectedInteractionProject) return [];
+    if (unifiedCompositionSelected && selectedInteractionProject.composition) {
+      return videoRecordingCompositionSubtitleSpans(
+        selectedInteractionProject.composition,
+        selectedInteractionProject.timeline?.language ?? "en",
+      );
+    }
     return videoRecordingSubtitleSpans(recorderTimelinePlan, selectedInteractionProject);
-  }, [recorderSubtitleExportEnabled, recorderTimelinePlan, selectedInteractionProject]);
+  }, [recorderSubtitleExportEnabled, recorderTimelinePlan, selectedInteractionProject, unifiedCompositionSelected]);
   const recorderSubtitleRowCount = recorderSubtitleSpans.reduce((count, span) => Math.max(count, span.row + 1), 0);
   const recorderTimelineSegments = (() => {
     const segments = recorderTimelinePlan?.segments ?? [];
     if (segments.length === 0) return [];
     let elapsed = 0;
     return segments.map((segment, index) => {
-      const label = segment.kind === "opening" ? t("spine.recorder.segment.opening")
+      const label = segment.kind === "composition" ? t("spine.recorder.segment.composition")
+        : segment.kind === "opening" ? t("spine.recorder.segment.opening")
         : segment.kind === "initial-idle" ? t("spine.recorder.segment.initialIdle")
           : segment.kind === "between-idle" ? t("spine.recorder.segment.betweenIdle")
             : segment.kind === "talk" ? t("spine.recorder.segment.talk", { n: segment.talkNumber ?? index, total: segment.talkCount ?? 0 })
@@ -3550,7 +3641,7 @@ export function Spine() {
       return {
         key: `${segment.kind}:${segment.sequenceId ?? "idle"}:${index}`,
         index,
-        kind: segment.kind === "opening" ? "opening" : segment.kind === "talk" ? "talk" : "idle",
+        kind: segment.kind === "opening" || segment.kind === "composition" ? "opening" : segment.kind === "talk" ? "talk" : "idle",
         label,
         duration,
         start,
@@ -3562,19 +3653,20 @@ export function Spine() {
   const activeExportUsesFfmpeg = activeExportRun?.useFfmpeg ?? recorderUsesFfmpeg;
   const activeRecordingSegment = activeExportRun?.plan?.segments?.[activeExportRun.segmentIndex];
   const recordingCueTimelines = useMemo(() => {
-    if (!fullSequenceCompositionRecording || !activeExportRun?.plan || !selectedInteractionProject) return undefined;
+    if (!fullSequenceCompositionRecording || activeExportRun?.unifiedComposition || !activeExportRun?.plan || !selectedInteractionProject) return undefined;
     return videoRecordingTimelineOffsets(activeExportRun.plan, selectedInteractionProject)
       .map(({ timeline, start }) => ({ timeline, start }));
   }, [activeExportRun?.plan, fullSequenceCompositionRecording, selectedInteractionProject]);
   const recordingIdleOverride = activeExportRun?.source === "composition"
     && activeExportRun.settings.mode === "full-sequence"
-    && Boolean(activeRecordingSegment && activeRecordingSegment.kind !== "opening" && activeRecordingSegment.kind !== "talk");
+    && Boolean(activeRecordingSegment && activeRecordingSegment.kind !== "composition" && activeRecordingSegment.kind !== "opening" && activeRecordingSegment.kind !== "talk");
   const activeExportProgress = activeExportRun?.plan
     ? videoRecordingProgress(activeExportRun.plan, videoRecorderDialog?.elapsed ?? 0)
     : null;
   const sequencePreviewIsRendering = activeExportUsesFfmpeg && videoRecorderDialog?.phase === "rendering";
   const recorderSegmentLabel = activeExportProgress?.segment
-    ? activeExportProgress.segment.kind === "opening" ? t("spine.recorder.segment.opening")
+    ? activeExportProgress.segment.kind === "composition" ? t("spine.recorder.segment.composition")
+      : activeExportProgress.segment.kind === "opening" ? t("spine.recorder.segment.opening")
       : activeExportProgress.segment.kind === "initial-idle" ? t("spine.recorder.segment.initialIdle")
         : activeExportProgress.segment.kind === "between-idle" ? t("spine.recorder.segment.betweenIdle")
           : activeExportProgress.segment.kind === "talk" ? t("spine.recorder.segment.talk", { n: activeExportProgress.segment.talkNumber ?? 0, total: activeExportProgress.segment.talkCount ?? 0 })
@@ -4016,7 +4108,8 @@ export function Spine() {
                 ref={compositionRef}
                 source={source}
                 timeline={compositionTimeline}
-                preloadTimelines={compositionPreloadTimelines}
+                preloadTimelines={unifiedCompositionSelected ? [] : compositionPreloadTimelines}
+                composition={unifiedCompositionSelected ? selectedInteractionProject?.composition : undefined}
                interactionMode={interactionMode}
                interactionProject={selectedInteractionProject}
                showInteractionPoints={showInteractionPoints}
@@ -4109,7 +4202,7 @@ export function Spine() {
               {interactionMode === "free" && <button className="spine-tool-button" type="button" disabled={!meta} onClick={fitAllArtwork} aria-label={t("spine.fitAllArtwork")} title={t("spine.fitAllArtwork")}><IconTarget /><span>{t("spine.fitAllArtwork")}</span></button>}
               {interactionReady && meta?.interaction.talkCount ? <button className="spine-tool-button" type="button" onClick={() => playTalk()} aria-label={t("spine.talkAria")} title={t("spine.talkAria")}><IconMessage /><span>{t("spine.talk")}</span><small>{meta.interaction.talkCount}</small></button> : null}
               {interactionReady && (voiceLines.length > 0 || authoredTalkAutoplayAvailable) ? <button className={`spine-tool-button${talkAutoplay ? " is-active" : ""}`} type="button" onClick={toggleTalkAutoplay} aria-pressed={talkAutoplay} aria-label={t(talkAutoplay ? "spine.autoplayStop" : "spine.autoplayStart")} title={t(talkAutoplay ? "spine.autoplayStop" : "spine.autoplayStart")}><span>{talkAutoplay ? <IconPause /> : <IconPlay />}</span><span>{t("spine.autoplay")}</span></button> : null}
-              {interactionMode === "interaction" && <button className="spine-tool-button spine-record-video-button" type="button" disabled={!meta || videoRecorderFormats.length === 0} onClick={openVideoRecorder} aria-label={t("spine.recorder.open")} title={t(videoRecorderFormats.length ? "spine.recorder.open" : "spine.recorder.unsupported")}><IconDot /><span>{t("spine.recorder.open")}</span></button>}
+              {(interactionMode === "interaction" || unifiedCompositionSelected) && <button className="spine-tool-button spine-record-video-button" type="button" disabled={!meta || videoRecorderFormats.length === 0} onClick={openVideoRecorder} aria-label={t("spine.recorder.open")} title={t(videoRecorderFormats.length ? "spine.recorder.open" : "spine.recorder.unsupported")}><IconDot /><span>{t("spine.recorder.open")}</span></button>}
               <button className={`spine-tool-button${showOptions ? " is-active" : ""}`} type="button" aria-expanded={showOptions} aria-controls="spine-options" onClick={() => setShowOptions((shown) => !shown)}><IconSliders /><span>{t("spine.options")}</span></button>
                 <details className="spine-shortcut-help">
                   <summary className="spine-tool-button" aria-label={t("spine.shortcuts")} title={t("spine.shortcuts")}><IconHelp /><span>{t("spine.shortcuts")}</span></summary>
@@ -4172,8 +4265,21 @@ export function Spine() {
                   </select></label>}
                   {interactionMode === "free" && !compositionActive && <label className="spine-check"><input type="checkbox" checked={loop} onChange={(event) => setLoop(event.target.checked)} />{t("spine.loop")}</label>}
                   {!compositionActive && <label className="spine-check"><input type="checkbox" checked={skipIntro} onChange={(event) => toggleSkipIntro(event.target.checked)} />{t("spine.skipIntro")}</label>}
-                  {selectedInteractionProject && compositionSequenceIds.length > 0 && <label className="spine-setting-field"><span>{t("spine.sequence")}</span><select value={compositionSequenceId || "__runtime-intro__"} onChange={(event) => { if (videoRecordingRunRef.current) return; const next = event.target.value === "__runtime-intro__" ? "" : event.target.value; const nextTimeline = next ? timelineForSequence(selectedInteractionProject, next) : null; stopVoice(); setIdleMode("none"); setProgress({ time: 0, duration: nextTimeline ? projectTimelineDuration(nextTimeline, selectedInteractionProject) : 0, animation: null }); setSelectedSequenceId(next); }} aria-label={t("spine.sequenceAria")}>
-                    {!compositionSequenceId && <option value="__runtime-intro__">Runtime intro</option>}
+                  {selectedInteractionProject && (compositionSequenceIds.length > 0 || hasUnifiedComposition) && <label className="spine-setting-field"><span>{t("spine.sequence")}</span><select value={unifiedCompositionSelected ? UNIFIED_COMPOSITION_SEQUENCE_ID : compositionSequenceId || "__runtime-intro__"} onChange={(event) => {
+                    if (videoRecordingRunRef.current) return;
+                    const next = event.target.value === "__runtime-intro__" ? "" : event.target.value;
+                    const nextTimeline = next && next !== UNIFIED_COMPOSITION_SEQUENCE_ID ? timelineForSequence(selectedInteractionProject, next) : null;
+                    const nextDuration = next === UNIFIED_COMPOSITION_SEQUENCE_ID
+                      ? selectedInteractionProject.composition?.duration ?? 0
+                      : nextTimeline ? projectTimelineDuration(nextTimeline, selectedInteractionProject) : 0;
+                    stopVoice();
+                    setIdleMode("none");
+                    setProgress({ time: 0, duration: nextDuration, animation: null });
+                    setSelectedSequenceId(next);
+                    if (next === UNIFIED_COMPOSITION_SEQUENCE_ID) selectInteractionMode("free");
+                  }} aria-label={t("spine.sequenceAria")}>
+                    {hasUnifiedComposition && <option value={UNIFIED_COMPOSITION_SEQUENCE_ID}>{t("spine.sequenceUnified")}</option>}
+                    {!compositionSequenceId && !unifiedCompositionSelected && <option value="__runtime-intro__">Runtime intro</option>}
                     {compositionSequenceIds.map((id) => <option key={id} value={id}>{id === "opening" ? t("spine.sequenceOpening") : id.match(/^talk-(\d+)$/)?.[1] ? t("spine.sequenceTalk", { n: id.match(/^talk-(\d+)$/)![1]! }) : id}</option>)}
                   </select></label>}
                   {interactionMode === "free" && !compositionActive && meta?.introAnimation && meta.idleAnimation && <button className="spine-settings-action" type="button" onClick={() => { setAnimation(INTRO_ANIMATION); setProgress((current) => ({ ...current, time: 0 })); viewportRef.current?.replayIntro(); }}><IconRotate /><span>{t("spine.replayIntro")}</span></button>}
@@ -4304,15 +4410,17 @@ export function Spine() {
             {videoRecorderDialog.phase === "settings" ? <>
               <section className="spine-recorder-settings-section">
                 <div className="spine-recorder-fields">
-                  <label><span>{t("spine.recorder.mode")}</span><select aria-label={t("spine.recorder.mode")} value={videoRecorderDialog.settings.mode} onChange={(event) => updateVideoRecorderSettings({ mode: event.target.value as VideoRecordingSettings["mode"] })}>
-                    <option value="full-sequence" disabled={!compositionActive || authoredTalkSequenceIds.length === 0}>{t("spine.recorder.mode.fullSequence")}</option>
-                  <option value="opening-idle">{t("spine.recorder.mode.openingIdle")}</option>
-                  <option value="idle-only">{t("spine.recorder.mode.idleOnly")}</option>
-                  </select></label>
+                  {unifiedCompositionSelected
+                    ? <label><span>{t("spine.recorder.mode")}</span><strong>{t("spine.recorder.mode.unifiedComposition")}</strong></label>
+                    : <label><span>{t("spine.recorder.mode")}</span><select aria-label={t("spine.recorder.mode")} value={videoRecorderDialog.settings.mode} onChange={(event) => updateVideoRecorderSettings({ mode: event.target.value as VideoRecordingSettings["mode"] })}>
+                      <option value="full-sequence" disabled={!compositionActive || authoredTalkSequenceIds.length === 0}>{t("spine.recorder.mode.fullSequence")}</option>
+                      <option value="opening-idle">{t("spine.recorder.mode.openingIdle")}</option>
+                      <option value="idle-only">{t("spine.recorder.mode.idleOnly")}</option>
+                    </select></label>}
                   {videoRecorderDialog.settings.mode !== "full-sequence" && <label><span>{t("spine.recorder.idleLoops")}</span><input type="number" min="1" max="20" step="1" value={videoRecorderDialog.settings.idleLoops} onChange={(event) => updateVideoRecorderSettings({ idleLoops: Math.max(1, Math.min(20, Math.floor(Number(event.target.value) || 1))) })} />
                   </label>}
                 </div>
-                {videoRecorderDialog.settings.mode === "full-sequence" && <>
+                {videoRecorderDialog.settings.mode === "full-sequence" && !unifiedCompositionSelected && <>
                   <div className="spine-recorder-full-options">
                     {hasOpeningSequence
                       ? <label><input type="checkbox" checked={videoRecorderDialog.settings.includeOpening} onChange={(event) => updateVideoRecorderSettings({ includeOpening: event.target.checked })} />{t("spine.recorder.includeOpening")}</label>
@@ -4342,6 +4450,7 @@ export function Spine() {
               <p className="spine-recorder-estimate">{recorderEstimate
                 ? t("spine.recorder.estimate", { duration: recorderEstimate.totalDuration.toFixed(1), frames: recorderEstimateFrames })
                 : t("spine.recorder.estimateLoading")}</p>
+              {unifiedCompositionSelected && <p className="spine-recorder-note">{t("spine.recorder.unifiedCompositionRange")}</p>}
               <p className="spine-recorder-note">{t("spine.recorder.note")}</p>
               {!recorderUsesFfmpeg && <p className="spine-recorder-fallback-note">{t("spine.recorder.fallback")}</p>}
               {videoRecorderFormats.length === 0 && <p className="spine-recorder-error" role="alert">{t("spine.recorder.unsupported")}</p>}
@@ -4374,7 +4483,7 @@ export function Spine() {
         <div className="spine-recorder-footer">
           {videoRecorderDialog.phase === "settings" && <div className="spine-recorder-actions">
             <button type="button" className="spine-recorder-secondary" onClick={() => setVideoRecorderDialog(null)}>{t("spine.recorder.cancel")}</button>
-            <button type="button" className="spine-recorder-primary" disabled={!videoRecorderFormats.length || !meta || !recorderMetrics?.ready || (videoRecorderDialog.settings.mode === "full-sequence" && (!compositionActive || !selectedInteractionProject || !fullSequenceMetrics?.ready || authoredTalkSequenceIds.length === 0 || selectedMissingTalks.length > 0))} onClick={() => void startVideoRecording()}>{t("spine.recorder.start")}</button>
+            <button type="button" className="spine-recorder-primary" disabled={!videoRecorderFormats.length || !meta || !recorderMetrics?.ready || (videoRecorderDialog.settings.mode === "full-sequence" && (!compositionActive || !selectedInteractionProject || (unifiedCompositionSelected ? !hasUnifiedComposition : !fullSequenceMetrics?.ready || authoredTalkSequenceIds.length === 0 || selectedMissingTalks.length > 0)))} onClick={() => void startVideoRecording()}>{t("spine.recorder.start")}</button>
           </div>}
           {videoRecorderDialog.phase === "error" && <div className="spine-recorder-actions">
             <button type="button" className="spine-recorder-secondary" onClick={() => setVideoRecorderDialog({ phase: "settings", settings: videoRecorderSettings, elapsed: 0 })}>{t("spine.recorder.recordAgain")}</button>

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createProject, EDITOR_SCHEMA_VERSION } from "./editorModel";
+import { createEmptySpineComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
 import { captureEditorProjectBaseline, editorProjectDraftValue, pendingProjectForDirectory, prepareEditorProjectSave, readSavedEditorProject, saveManifestEditorProject, type SavedEditorProjectSource, type WritableEditorProjectSource } from "./editorProject";
 import { manifestPath, type SpineManifestRecord } from "@ba-spine/spine-runtime/spine/spineManifest";
 import { normalizeSpineInteractionProject } from "@ba-spine/spine-runtime/spine/spineInteraction";
@@ -48,6 +49,7 @@ test("asset-set switching restores the saved .editor project", async () => {
 
 test("graph layout metadata survives a complete non-manifest save and reload", async () => {
   const project = createProject("GraphFixture", ["Pat_01_M", "Pat_02_M"], []);
+  project.composition = createEmptySpineComposition("GraphFixture-composition", "GraphFixture composition", 8, 30);
   const machine = project.behaviorMachines!.find((item) => item.name === "Patting")!;
   const originalMachines = structuredClone(project.behaviorMachines);
   const previous = project.behaviorGraphLayouts[machine.id]!;
@@ -71,6 +73,7 @@ test("graph layout metadata survives a complete non-manifest save and reload", a
     statePositions: { active: { x: 712, y: 308 } },
   });
   expect(reopened?.behaviorMachines).toEqual(originalMachines);
+  expect(reopened?.composition).toEqual(project.composition);
 });
 
 test("draft preview converts the live project to a Viewer snapshot without invoking persistence", () => {
@@ -151,8 +154,9 @@ test("legacy square camera projects visibly fall back in memory without changing
 });
 
 test("editor restores manifest sequences and keeps the explicit entry sequence separate", async () => {
+  const composition = createEmptySpineComposition("manifest-composition", "Manifest composition", 12, 30);
   const source = sourceFromFiles({
-    "lobbies/Airi_home/interactions.json": JSON.stringify({ interactions: [], sequenceOrder: ["talk-5", "opening"], deletedSequenceIds: ["talk-2"] }),
+    "lobbies/Airi_home/interactions.json": JSON.stringify({ interactions: [], composition, sequenceOrder: ["talk-5", "opening"], deletedSequenceIds: ["talk-2"] }),
     "lobbies/Airi_home/sequences/opening.json": JSON.stringify({ sequenceId: "opening", duration: 12, layers: [], subtitles: [], audio: [] }),
     "lobbies/Airi_home/sequences/talk-5.json": JSON.stringify({ sequenceId: "talk-5", duration: 19, durationMode: "manual", layers: [], subtitles: [], audio: [] }),
     ".editor/Airi_home.workspace.json": JSON.stringify({ selectedSequenceId: "talk-5", name: "Workspace name" }),
@@ -180,6 +184,7 @@ test("editor restores manifest sequences and keeps the explicit entry sequence s
   expect(project?.name).toBe("Workspace name");
   expect(project?.sequenceOrder).toEqual(["opening", "talk-5"]);
   expect(project?.deletedSequenceIds).toEqual(["talk-2"]);
+  expect(project?.composition).toEqual(composition);
 });
 
 test("manifest saves sequence order and removes intentionally deleted sequence references", async () => {
@@ -206,6 +211,7 @@ test("manifest saves sequence order and removes intentionally deleted sequence r
     getManifest: async () => record,
   };
   const project = createProject("Airi_home", [], []);
+  project.composition = createEmptySpineComposition("Airi-composition", "Airi composition", 8, 30);
   project.timeline.sequenceId = "opening";
   project.sequences = { "talk-2": { ...project.timeline, sequenceId: "talk-2" } };
   project.sequenceOrder = ["opening", "talk-3", "talk-1"];
@@ -224,6 +230,7 @@ test("manifest saves sequence order and removes intentionally deleted sequence r
     mode: "manual",
     statePositions: { [initialMachine.initialStateId]: { x: 420, y: 180 } },
   });
+  expect(JSON.parse(writes["lobbies/Airi_home/interactions.json"]!).composition).toEqual(project.composition);
   expect(writes["lobbies/Airi_home/sequences/talk-2.json"]).toBeUndefined();
 });
 

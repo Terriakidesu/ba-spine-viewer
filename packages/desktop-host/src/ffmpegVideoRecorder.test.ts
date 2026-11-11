@@ -149,9 +149,16 @@ describe("FFmpeg timestamped audio mixing", () => {
     ], 5);
 
     expect(mix).toEqual({
-      graph: "[1:a:0]atrim=start=0:duration=1.500000,asetpts=PTS-STARTPTS,volume=0.6500,adelay=2250:all=1[a0];[2:a:0]atrim=start=0:duration=4.000000,asetpts=PTS-STARTPTS,volume=1.0000,adelay=0:all=1[a1];[a0][a1]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,apad,atrim=duration=5.000000[aout]",
+      graph: "[1:a:0]atrim=start=0.000000:duration=1.500000,asetpts=PTS-STARTPTS,volume=0.6500,adelay=2250:all=1[a0];[2:a:0]atrim=start=0.000000:duration=4.000000,asetpts=PTS-STARTPTS,volume=1.0000,adelay=0:all=1[a1];[a0][a1]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,apad,atrim=duration=5.000000[aout]",
       output: "[aout]",
     });
+  });
+
+  test("trims source audio at its authored offset before placing it on the export clock", () => {
+    const mix = ffmpegAudioMixFilterGraph([
+      { start: 2, duration: 1.5, volume: 0.7, sourceOffset: 4.25 },
+    ], 5);
+    expect(mix?.graph).toContain("atrim=start=4.250000:duration=1.500000");
   });
 
   test("does not add an audio stream when no audio tracks were scheduled", () => {

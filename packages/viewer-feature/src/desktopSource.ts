@@ -210,6 +210,7 @@ export async function addDesktopFfmpegAudioTrack(sessionId: string, track: {
   start: number;
   duration: number;
   volume: number;
+  sourceOffset: number;
   extension: string;
   file: Blob;
 }): Promise<void> {
@@ -221,6 +222,7 @@ export async function addDesktopFfmpegAudioTrack(sessionId: string, track: {
       "x-ba-spine-audio-start": String(track.start),
       "x-ba-spine-audio-duration": String(track.duration),
       "x-ba-spine-audio-volume": String(track.volume),
+      "x-ba-spine-audio-source-offset": String(track.sourceOffset),
       "x-ba-spine-audio-extension": track.extension,
     },
     body: track.file,

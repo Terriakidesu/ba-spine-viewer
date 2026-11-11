@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { Physics } from "@esotericsoftware/spine-core";
 import { SpineRenderer, type SpineCameraFrame, type SpineCameraMode, type SpineCameraPose, type SpineFiles, type SpineInteractionOverlay, type SpineLoadProgress, type SpineMeta } from "./spineRuntime";
 import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration, type SpineInteractionProject } from "./spineInteraction";
 import { timelineActiveAnimationClip, timelineAnimationClipPlaybackEnd, timelineAnimationClipSampleTime, timelineBlendModeCss, timelineFaceAnimation, timelineGlobalAnimationSampleTime, timelineIdleAnimation, timelineTalkIdleStart, timelineAnimationNeedsIdleUnderlay, timelineLayerAnimation, timelineLayerAnimationClips, timelineLayerPlaybackEnd, timelineLayerSampleTime, timelineLayerTransform, type SpineTimeline, type SpineTimelineLayer } from "./spineTimeline";
+import { evaluateCompositionFrame, runFixedStepPreroll, type EvaluatedCompositionLayer, type SpineComposition } from "./spineComposition";
 
 export interface SpineTimelineLayerCanvasProps {
   layer: SpineTimelineLayer;
@@ -9,6 +11,9 @@ export interface SpineTimelineLayerCanvasProps {
   currentTime: number;
   mainAnimation?: string;
   mainCharacterTransform?: Pick<SpineTimelineLayer, "x" | "y" | "rotation" | "scale"> | null;
+  composition?: SpineComposition;
+  compositionSample?: EvaluatedCompositionLayer;
+  compositionSamplingManaged?: boolean;
   idleAnimationTime?: number;
   recordingIdleOverride?: boolean;
   openingMode?: SpineTimeline["openingMode"];
@@ -55,7 +60,7 @@ export interface SpineTimelineLayerCanvasProps {
  * interaction preservation, and visibility in this component. The two UIs
  * should provide state and callbacks, not fork playback rules.
  */
-export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimation, mainCharacterTransform, idleAnimationTime, recordingIdleOverride = false, openingMode = "direct", sequenceId = "legacy", idleMode = "none", talkMixDuration = DEFAULT_TALK_MIX_DURATION, talkBlendOutStart, characterHidden = false, preserveDrawingBuffer = false, interactionEnabled = false, cameraControlsEnabled = false, interactionProject = null, showInteractionPoints = false, effectsStrength, resolutionScale = 1, resetCameraSignal = 0, cameraMode, sharedCameraFrame, sharedCameraPose, referenceCamera, onMeta, onCameraPose, onAnimationDuration, onMarkers, onInteractionPoints, onRenderer, onTalk, onTalkClip, onIntro, onIntroClip, onBehaviorAudio, onBehaviorSubtitle, onRendererLoading, onLoadProgress, onError }: SpineTimelineLayerCanvasProps) {
+export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimation, mainCharacterTransform, composition, compositionSample, compositionSamplingManaged = false, idleAnimationTime, recordingIdleOverride = false, openingMode = "direct", sequenceId = "legacy", idleMode = "none", talkMixDuration = DEFAULT_TALK_MIX_DURATION, talkBlendOutStart, characterHidden = false, preserveDrawingBuffer = false, interactionEnabled = false, cameraControlsEnabled = false, interactionProject = null, showInteractionPoints = false, effectsStrength, resolutionScale = 1, resetCameraSignal = 0, cameraMode, sharedCameraFrame, sharedCameraPose, referenceCamera, onMeta, onCameraPose, onAnimationDuration, onMarkers, onInteractionPoints, onRenderer, onTalk, onTalkClip, onIntro, onIntroClip, onBehaviorAudio, onBehaviorSubtitle, onRendererLoading, onLoadProgress, onError }: SpineTimelineLayerCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<SpineRenderer | null>(null);
   const [meta, setMeta] = useState<SpineMeta | null>(null);
@@ -198,7 +203,10 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
     ? meta?.animations.find((name) => name.toLocaleLowerCase() === mainAnimation.toLocaleLowerCase()) ?? ""
     : "";
   const followedContinuation = Boolean(followedAnimation);
-  const authoredAnimation = meta ? followedAnimation || timelineLayerAnimation(layer, meta, mainAnimation, currentTime, sequenceId, openingMode, introDuration, idleMode !== "none", forceCharacterIdle) : "";
+  const compositionPrimaryClip = compositionSample?.animationClips.at(-1);
+  const authoredAnimation = compositionSample
+    ? compositionPrimaryClip?.clip.animation ?? ""
+    : meta ? followedAnimation || timelineLayerAnimation(layer, meta, mainAnimation, currentTime, sequenceId, openingMode, introDuration, idleMode !== "none", forceCharacterIdle) : "";
   const authoredDuration = authoredAnimation ? rendererRef.current?.getEditorAnimationInfo(authoredAnimation).duration ?? 0 : 0;
   const talkLayer = sequenceId.startsWith("talk-") && (layer.role === "character" || layer.role === "background");
   const talkAnimation = latestTalkClip?.animation || (talkLayer && /^talk/i.test(authoredAnimation) ? authoredAnimation : "");
@@ -214,13 +222,19 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
   const talkAlpha = Math.min(talkFadeInAlpha, talkFadeOutAlpha);
   const idleTail = talkLayer && currentTime >= fadeOutStart + talkMix;
   const followsMainGlobalClock = layer.followMainAnimation === true;
-  const idle = forceCharacterIdle || idleMode !== "none" && !continuedClip && !followedContinuation && !followsMainGlobalClock || idleTail;
-  const animation = talkBlendActive ? talkAnimation : meta ? idle ? timelineIdleAnimation(meta) : authoredAnimation : "";
+  const idle = compositionSample ? false : forceCharacterIdle || idleMode !== "none" && !continuedClip && !followedContinuation && !followsMainGlobalClock || idleTail;
+  const animation = compositionSample
+    ? compositionPrimaryClip?.clip.animation ?? ""
+    : talkBlendActive ? talkAnimation : meta ? idle ? timelineIdleAnimation(meta) : authoredAnimation : "";
   const animationDuration = animation ? rendererRef.current?.getEditorAnimationInfo(animation).duration ?? 0 : 0;
   const clipDuration = activeClip?.animation ? rendererRef.current?.getEditorAnimationInfo(activeClip.animation).duration ?? 0 : 0;
   const talkCharacter = sequenceId.startsWith("talk-") && layer.role === "character" && layer.endMode !== "manual";
-  const effectiveLoop = idle || continuedClip || (talkCharacter ? false : activeClip?.loop ?? layer.loop);
-  const time = idle
+  const effectiveLoop = compositionSample
+    ? compositionPrimaryClip?.clip.loop ?? false
+    : idle || continuedClip || (talkCharacter ? false : activeClip?.loop ?? layer.loop);
+  const time = compositionSample
+    ? compositionPrimaryClip?.sourceTime ?? currentTime
+    : idle
     ? idleAnimationTime ?? (idleTail && idleMode === "none" ? Math.max(0, currentTime - (fadeOutStart + talkMix)) : currentTime)
     : talkBlendActive
       ? latestTalkClip
@@ -234,16 +248,44 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
 
   useEffect(() => {
     const renderer = rendererRef.current;
-    if (!renderer || !meta || !animation || !meta.animations.some((name) => name === animation)) return;
+    if (compositionSample || !renderer || !meta || !animation || !meta.animations.some((name) => name === animation)) return;
     renderer.setAnimation(animation, true);
-  }, [animation, meta]);
+  }, [animation, compositionSample, meta]);
 
   useLayoutEffect(() => {
-    if (!meta || !animation) return;
+    if (!meta || (!compositionSample && !animation)) return;
+    if (compositionSample && compositionSamplingManaged) return;
     const renderer = rendererRef.current;
-    renderer?.sampleEditorAnimation(animation, idle ? "" : talkBlendActive ? talkFace : timelineFaceAnimation(layer, activeClip), time, effectiveLoop, talkBlendActive || timelineAnimationNeedsIdleUnderlay(animation), interactionEnabled, talkBlendActive ? talkAlpha : 1, talkBlendActive ? talkAlpha : 1, idleAnimationTime ?? currentTime, sequenceId);
-    if (referenceCamera) onMarkersRef.current?.(renderer?.getEditorAnimationInfo(animation).markers ?? []);
-  }, [activeClip, animation, currentTime, effectiveLoop, idle, idleAnimationTime, interactionEnabled, layer, meta, referenceCamera, sequenceId, talkAlpha, talkBlendActive, talkFace, time]);
+    if (!renderer) return;
+    if (compositionSample) {
+      const sampleAt = (sampleTime: number, physics: Physics) => {
+        const frame = composition ? evaluateCompositionFrame(composition, { compositionTime: sampleTime }) : null;
+        const layerFrame = frame?.layers.find((item) => item.layer.id === layer.id) ?? compositionSample;
+        return renderer.sampleEditorComposition(
+          layerFrame.animationClips,
+          layerFrame.skeletalOverrides,
+          layerFrame.layer.id,
+          layerFrame.layer.assetIdentity,
+          interactionEnabled,
+          physics,
+        );
+      };
+      if (composition && renderer.hasPhysicsConstraints()) {
+        const result = runFixedStepPreroll(
+          currentTime,
+          composition.physicsSampling,
+          () => undefined,
+          (sampleTime, deltaSeconds) => sampleAt(sampleTime, deltaSeconds === 0 ? Physics.reset : Physics.update),
+        );
+        if (!result) onErrorRef.current(`Composition physics preroll at ${currentTime.toFixed(3)}s exceeds the configured step limit.`);
+      } else {
+        sampleAt(currentTime, Physics.reset);
+      }
+    } else {
+      renderer.sampleEditorAnimation(animation, idle ? "" : talkBlendActive ? talkFace : timelineFaceAnimation(layer, activeClip), time, effectiveLoop, talkBlendActive || timelineAnimationNeedsIdleUnderlay(animation), interactionEnabled, talkBlendActive ? talkAlpha : 1, talkBlendActive ? talkAlpha : 1, idleAnimationTime ?? currentTime, sequenceId);
+    }
+    if (referenceCamera && animation) onMarkersRef.current?.(renderer.getEditorAnimationInfo(animation).markers ?? []);
+  }, [activeClip, animation, composition, compositionSample, compositionSamplingManaged, currentTime, effectiveLoop, idle, idleAnimationTime, interactionEnabled, layer, meta, referenceCamera, sequenceId, talkAlpha, talkBlendActive, talkFace, time]);
 
   useEffect(() => {
     if (animationDuration > 0 && animation) onAnimationDurationRef.current(layer.id, animation, animationDuration);
@@ -275,18 +317,22 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
     ? timelineAnimationClipPlaybackEnd(talkCharacter && !Array.isArray(layer.animationClips) ? { ...activeClip, loop: false } : activeClip, clipDuration)
     : timelineLayerPlaybackEnd(talkCharacter ? { ...layer, loop: false } : layer, animationDuration);
   const clipDriven = Array.isArray(layer.animationClips) || sequenceId === "opening";
-  const visible = layer.enabled
-    && !(layer.role === "character" && characterHidden)
-    && (idle ? layer.role === "character" || layer.role === "background" : clipDriven ? Boolean(activeClip) || followedContinuation || talkBlendActive : currentTime >= layer.start && (talkLayer || currentTime <= layerEnd));
-  const transform = timelineLayerTransform(layer, mainCharacterTransform);
+  const visible = compositionSample
+    ? compositionSample.visible && !(layer.role === "character" && characterHidden)
+    : layer.enabled
+      && !(layer.role === "character" && characterHidden)
+      && (idle ? layer.role === "character" || layer.role === "background" : clipDriven ? Boolean(activeClip) || followedContinuation || talkBlendActive : currentTime >= layer.start && (talkLayer || currentTime <= layerEnd));
+  const transform = compositionSample?.transform ?? timelineLayerTransform(layer, mainCharacterTransform);
+  const scaleX = "scaleX" in transform ? transform.scaleX : transform.scale;
+  const scaleY = "scaleY" in transform ? transform.scaleY : transform.scale;
   const style: CSSProperties = {
     position: "absolute",
     inset: 0,
     zIndex: layer.order,
-    opacity: visible ? layer.opacity : 0,
-    mixBlendMode: timelineBlendModeCss(layer.blendMode ?? "normal"),
+    opacity: visible ? compositionSample?.transform.opacity ?? layer.opacity : 0,
+    mixBlendMode: timelineBlendModeCss(compositionSample?.blendMode ?? layer.blendMode ?? "normal"),
     visibility: visible || cameraControlsEnabled ? "visible" : "hidden",
-    transform: `translate(${transform.x}px, ${transform.y}px) rotate(${transform.rotation}deg) scale(${transform.scale})`,
+    transform: `translate(${transform.x}px, ${transform.y}px) rotate(${transform.rotation}deg) scale(${scaleX}, ${scaleY})`,
     transformOrigin: "center center",
     pointerEvents: cameraControlsEnabled || (interactionEnabled && visible) ? "auto" : "none",
   };

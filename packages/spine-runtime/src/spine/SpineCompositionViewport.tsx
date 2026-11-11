@@ -1,4 +1,5 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Physics } from "@esotericsoftware/spine-core";
 import { SpineRenderer, type SpineCameraFrame, type SpineCameraMode, type SpineCameraPose, type SpineFiles, type SpineInteractionMode, type SpineInteractionOverlay, type SpineLoadProgress, type SpineMeta, type SpineProgress } from "./spineRuntime";
 import type { AssetSource } from "./spineAssets";
 import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration, type SpineInteractionProject } from "./spineInteraction";
@@ -6,6 +7,8 @@ import { spineAudioPathCandidates } from "./spineAudio";
 import { advanceSpineTimeline, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineIdleAnimation, timelineLayerAnimation, timelineLayerAnimationClips, timelineLayerAnimationPlaybackEnd, timelineLayerTransform, timelineMainAnimation, timelineOpeningContinuationStart, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer, type SpineTimelineAudioPreloadState } from "./spineTimeline";
 import { SpineTimelineLayerCanvas } from "./SpineTimelineLayerCanvas";
 import { cameraAspectValue, changeSpineCameraAspectRatio, evaluateSpineCameraTrack, type SpineCameraAspectRatio, type SpineCameraTrack } from "./spineCameraMotion";
+import { evaluateCompositionFrame, runFixedStepPreroll, type SpineComposition } from "./spineComposition";
+import { compositionFrameToTimeline } from "./spineCompositionTimeline";
 
 export interface SpineCompositionRecordingCueTimeline {
   timeline: SpineTimeline;
@@ -41,6 +44,8 @@ function SpineColorLayer({ layer, time }: { layer: NonNullable<SpineTimeline["co
 interface SpineCompositionViewportProps {
   source: AssetSource;
   timeline: SpineTimeline;
+  /** Optional canonical timeline. When present, it drives this shared Viewer/Camera renderer. */
+  composition?: SpineComposition;
   preloadTimelines?: readonly SpineTimeline[];
   interactionMode: SpineInteractionMode;
   interactionProject: SpineInteractionProject | null;
@@ -75,11 +80,11 @@ interface SpineCompositionViewportProps {
   onBehaviorSubtitle?: (machineId: string, cueId: string, visible: boolean) => void;
 }
 
-export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandle, SpineCompositionViewportProps>(function SpineCompositionViewport({ source, timeline, preloadTimelines = [], interactionMode, interactionProject, showInteractionPoints, currentTime, playing, speed, effectsStrength, cameraMode = "fit", aspectRatio = "16:9", idleMode = "none", recordingIdleOverride = false, recordingClock = false, recordingCameraTrack, recordingCameraTime, recordingIdleOffset, recordingCueTimelines, recordingCueAudioEnabled = true, recordingCueSubtitlesEnabled = true, preserveDrawingBuffer = false, onMeta, onProgress, onLoading, onLoadProgress, onError, onFinished, onTalk, onTalkClip, onIntro, onIntroClip, onBehaviorAudio, onBehaviorSubtitle }, ref) {
+export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandle, SpineCompositionViewportProps>(function SpineCompositionViewport({ source, timeline: authoredTimeline, composition, preloadTimelines = [], interactionMode, interactionProject, showInteractionPoints, currentTime, playing, speed, effectsStrength, cameraMode = "fit", aspectRatio = "16:9", idleMode = "none", recordingIdleOverride = false, recordingClock = false, recordingCameraTrack, recordingCameraTime, recordingIdleOffset, recordingCueTimelines, recordingCueAudioEnabled = true, recordingCueSubtitlesEnabled = true, preserveDrawingBuffer = false, onMeta, onProgress, onLoading, onLoadProgress, onError, onFinished, onTalk, onTalkClip, onIntro, onIntroClip, onBehaviorAudio, onBehaviorSubtitle }, ref) {
   const stageRef = useRef<HTMLDivElement>(null);
   const currentTimeRef = useRef(currentTime);
   const idleAnimationTimeRef = useRef(0);
-  const phaseRef = useRef<{ timeline: SpineTimeline | null; idleMode: "none" | "persistent" | "bridge" }>({ timeline: null, idleMode: "none" });
+  const phaseRef = useRef<{ timeline: object | null; idleMode: "none" | "persistent" | "bridge" }>({ timeline: null, idleMode: "none" });
   const finishedRef = useRef(false);
   const onProgressRef = useRef(onProgress);
   const onFinishedRef = useRef(onFinished);
@@ -113,6 +118,16 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   onLoadProgressRef.current = onLoadProgress;
   onErrorRef.current = onError;
 
+  const compositionTime = recordingClock ? currentTimeRef.current : currentTime;
+  const compositionFrame = composition ? evaluateCompositionFrame(composition, {
+    compositionTime,
+    transportTime: recordingClock ? currentTimeRef.current : currentTime,
+  }) : null;
+  const timeline = composition && compositionFrame
+    ? compositionFrameToTimeline(composition, compositionFrame, compositionTime, authoredTimeline.language)
+    : authoredTimeline;
+  const compositionLayerFrames = new Map(compositionFrame?.layers.map((layer) => [layer.layer.id, layer]) ?? []);
+  const timelineIdentity = composition ?? authoredTimeline;
   const layers = useMemo(() => [...timeline.layers].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)), [timeline.layers]);
   const visualLayers = useMemo(() => timelineVisualLayers(timeline), [timeline.layers, timeline.colorLayers]);
   const cameraTrack = recordingCameraTrack === undefined ? timeline.camera ?? null : recordingCameraTrack;
@@ -180,8 +195,8 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   // every layer has a renderer/meta would skip a short editor-authored intro.
   const compositionReady = layers.every((layer) => Boolean(files[layer.directory] && metas[layer.id]));
   const compositionLoading = filesLoading || (layers.length > 0 && !compositionReady) || loadingLayers.size > 0;
-  const allTimelines = useMemo(() => [...new Map([timeline, ...preloadTimelines].map((item) => [item.sequenceId, item])).values()]
-    .sort((a, b) => a.sequenceId.localeCompare(b.sequenceId)), [preloadTimelines, timeline]);
+  const allTimelines = useMemo(() => [...new Map([timeline, ...(composition ? [] : preloadTimelines)].map((item) => [item.sequenceId, item])).values()]
+    .sort((a, b) => a.sequenceId.localeCompare(b.sequenceId)), [composition, preloadTimelines, timeline]);
   const preloadLayers = useMemo(() => allTimelines.flatMap((item) => item.layers), [allTimelines]);
   const allAudioEntries = useMemo(() => [...new Map(allTimelines
     .flatMap((item) => item.audio.map((clip) => [`${item.sequenceId}:${clip.id}`, { key: `${item.sequenceId}:${clip.id}`, sequenceId: item.sequenceId, clip }] as const))).values()], [allTimelines]);
@@ -222,6 +237,40 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   useEffect(() => {
     onLoadingRef.current(compositionLoading);
   }, [compositionLoading]);
+
+  useLayoutEffect(() => {
+    if (!composition || !compositionFrame || !compositionReady) return;
+    const renderers = [...layerRenderersRef.current.entries()];
+    if (renderers.length === 0) return;
+    const sampleAt = (sampleTime: number, physics: Physics) => {
+      const frame = sampleTime === compositionTime
+        ? compositionFrame
+        : evaluateCompositionFrame(composition, { compositionTime: sampleTime, transportTime: sampleTime });
+      for (const layerFrame of frame.layers) {
+        const renderer = layerRenderersRef.current.get(layerFrame.layer.id);
+        if (!renderer) continue;
+        renderer.sampleEditorComposition(
+          layerFrame.animationClips,
+          layerFrame.skeletalOverrides,
+          layerFrame.layer.id,
+          layerFrame.layer.assetIdentity,
+          interactionMode === "interaction",
+          physics,
+        );
+      }
+    };
+    if (renderers.some(([, renderer]) => renderer.hasPhysicsConstraints())) {
+      const result = runFixedStepPreroll(
+        compositionTime,
+        composition.physicsSampling,
+        () => undefined,
+        (sampleTime, deltaSeconds) => sampleAt(sampleTime, deltaSeconds === 0 ? Physics.reset : Physics.update),
+      );
+      if (!result) onErrorRef.current(new Error(`Composition physics preroll at ${compositionTime.toFixed(3)}s exceeds the configured step limit.`));
+    } else {
+      sampleAt(compositionTime, Physics.reset);
+    }
+  }, [composition, compositionFrame, compositionReady, compositionTime, interactionMode]);
 
   useEffect(() => {
     const loaded = timeline.audio.filter((clip) => currentAudioPreloadStates[clip.id] !== undefined && currentAudioPreloadStates[clip.id] !== "loading").length;
@@ -326,7 +375,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
 
   useEffect(() => {
     const previous = phaseRef.current;
-    const timelineChanged = previous.timeline !== timeline;
+    const timelineChanged = previous.timeline !== timelineIdentity;
     const modeChanged = previous.idleMode !== idleMode;
     const idle = idleMode !== "none";
     let report = false;
@@ -347,14 +396,14 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
       report = true;
     }
 
-    phaseRef.current = { timeline, idleMode };
+    phaseRef.current = { timeline: timelineIdentity, idleMode };
     if (report && !recordingClock) {
       const time = idleMode === "persistent"
         ? Math.min(playbackDuration, Math.max(openingIdleStart, currentTimeRef.current))
         : Math.min(playbackDuration, Math.max(0, currentTimeRef.current));
       onProgressRef.current({ time, duration: playbackDuration, animation: progressAnimation });
     }
-  }, [currentTime, idleMode, openingIdleStart, playbackDuration, progressAnimation, recordingClock, timeline, timelineClockTime]);
+  }, [currentTime, idleMode, openingIdleStart, playbackDuration, progressAnimation, recordingClock, timeline, timelineClockTime, timelineIdentity]);
 
   useEffect(() => {
     if (recordingClock) return;
@@ -417,7 +466,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
         }
         audio.volume = cue.clip.volume;
         audio.playbackRate = speed;
-        const localTime = Math.max(0, currentTime - cue.start);
+        const localTime = Math.max(0, currentTime - cue.start) + (cue.clip.sourceOffset ?? 0);
         if (decision.seek || Math.abs(audio.currentTime - localTime) > 0.08) audio.currentTime = localTime;
         if (decision.play) void audio.play().catch(() => undefined);
         else audio.pause();
@@ -456,7 +505,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
         audio.pause();
         continue;
       }
-      const local = Math.max(0, effectiveCurrentTime - clip.start);
+      const local = Math.max(0, effectiveCurrentTime - clip.start) + (clip.sourceOffset ?? 0);
       if (decision.seek || Math.abs(audio.currentTime - local) > 0.08) audio.currentTime = local;
       if (decision.play) void audio.play().catch(() => undefined);
       else audio.pause();
@@ -625,6 +674,9 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
               key={`spine-${entry.layer.id}`}
               layer={entry.layer}
               files={files[entry.layer.directory] ?? null}
+              composition={composition}
+              compositionSample={compositionLayerFrames.get(entry.layer.id)}
+              compositionSamplingManaged={Boolean(composition)}
               interactionEnabled={interactionMode === "interaction" && entry.layer.id === referenceLayerId}
               cameraControlsEnabled={interactionMode === "free" && entry.layer.id === referenceLayerId}
               interactionProject={entry.layer.id === referenceLayerId ? interactionProject : null}

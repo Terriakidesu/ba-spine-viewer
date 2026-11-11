@@ -92,6 +92,7 @@ export function editorProjectDraftValue(project: EditorProject): Record<string, 
   const canonical = canonicalBehaviorData(project);
   return {
     schemaVersion: project.schemaVersion,
+    ...(project.composition ? { composition: project.composition } : {}),
     name: project.name,
     assetDirectory: project.assetDirectory,
     entrySequence: project.entrySequence ?? null,
@@ -181,6 +182,7 @@ export async function prepareManifestEditorProjectSave(source: SavedEditorProjec
     schemaVersion: 1,
     id: project.assetDirectory,
     assetDirectory: project.assetDirectory,
+    ...(project.composition ? { composition: project.composition } : {}),
     talkMixDuration: project.talkMixDuration,
     effectsStrength: project.effectsStrength,
     lookFollow: canonical.lookFollow,

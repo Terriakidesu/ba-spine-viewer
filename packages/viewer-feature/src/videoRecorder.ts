@@ -1,5 +1,7 @@
 import { timelineForSequence, timelineSubtitleText, type SpineTimeline, type SpineTimelineProject } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import type { SpineCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
+import { createLegacyCompositionSchedule } from "@ba-spine/spine-runtime/spine/spineCompositionMigration";
+import type { SpineComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
 
 export type VideoRecordingMode = "full-sequence" | "opening-idle" | "idle-only";
 export type VideoRecordingFormat = "webm" | "mp4";
@@ -63,11 +65,24 @@ export interface VideoRecordingPlan {
 }
 
 export interface VideoRecordingSegment {
-  kind: "opening" | "initial-idle" | "between-idle" | "talk" | "final-idle" | "idle";
+  kind: "composition" | "opening" | "initial-idle" | "between-idle" | "talk" | "final-idle" | "idle";
   duration: number;
   sequenceId?: string;
   talkNumber?: number;
   talkCount?: number;
+}
+
+/** Export the canonical composition's authored range without rebuilding a legacy arrangement. */
+export function createUnifiedCompositionRecordingPlan(duration: number): VideoRecordingPlan {
+  const safeDuration = Number.isFinite(duration) ? Math.max(0.01, duration) : 0.01;
+  return {
+    mode: "full-sequence",
+    openingDuration: safeDuration,
+    idleDuration: 0.01,
+    idleLoops: 1,
+    totalDuration: safeDuration,
+    segments: [{ kind: "composition", sequenceId: "__unified-composition__", duration: safeDuration }],
+  };
 }
 
 export interface VideoRecordingTimelineOffset {
@@ -88,6 +103,7 @@ export interface VideoRecordingAudioSchedule {
   start: number;
   duration: number;
   volume: number;
+  sourceOffset: number;
 }
 
 export interface VideoRecordingProgress {
@@ -176,36 +192,30 @@ export function createFullSequenceRecordingPlan(options: {
   const safeLoops = (value: number) => Math.max(1, Math.min(20, Math.floor(Number.isFinite(value) ? value : 1)));
   const initialIdleLoops = safeLoops(options.initialIdleLoops);
   const finalIdleLoops = safeLoops(options.finalIdleLoops);
-  const betweenDuration = Number.isFinite(options.betweenTalkIdleSeconds)
-    ? Math.max(0, Math.min(30, options.betweenTalkIdleSeconds))
-    : 0;
   const selected = new Set(options.selectedTalkSequenceIds);
   const talks = options.talks
     .filter((talk) => selected.has(talk.sequenceId) && Number.isFinite(talk.duration) && talk.duration > 0);
-  const segments: VideoRecordingSegment[] = [];
-  if (options.includeOpening && options.openingSequenceId && openingDuration > 0) {
-    segments.push({ kind: "opening", sequenceId: options.openingSequenceId, duration: openingDuration });
-  }
   const idleSequenceId = options.idleSequenceId ?? options.openingSequenceId ?? talks[0]?.sequenceId;
-  const initialDuration = idleDuration * initialIdleLoops;
-  segments.push({ kind: "initial-idle", ...(idleSequenceId ? { sequenceId: idleSequenceId } : {}), duration: initialDuration });
-  talks.forEach((talk, index) => {
-    segments.push({
-      kind: "talk",
-      sequenceId: talk.sequenceId,
-      talkNumber: index + 1,
-      talkCount: talks.length,
-      duration: talk.duration,
-    });
-    if (index < talks.length - 1 && betweenDuration > 0) {
-      segments.push({ kind: "between-idle", ...(idleSequenceId ? { sequenceId: idleSequenceId } : {}), duration: betweenDuration });
-    }
+  const schedule = createLegacyCompositionSchedule({
+    openingDuration,
+    openingSequenceId: options.openingSequenceId,
+    idleDuration,
+    idleSequenceId,
+    includeOpening: options.includeOpening,
+    initialIdleLoops,
+    betweenTalkIdleSeconds: options.betweenTalkIdleSeconds,
+    finalIdleLoops,
+    talks,
   });
-  // Keep the last pose from being a Talk frame, even when the idle loop itself is short.
-  segments.push({
-    kind: "final-idle",
-    ...(idleSequenceId ? { sequenceId: idleSequenceId } : {}),
-    duration: Math.max(1, idleDuration * finalIdleLoops),
+  let talkNumber = 0;
+  const segments: VideoRecordingSegment[] = schedule.map((entry) => {
+    if (entry.kind === "talk") talkNumber += 1;
+    return {
+      kind: entry.kind as VideoRecordingSegment["kind"],
+      ...(entry.sequenceId ? { sequenceId: entry.sequenceId } : {}),
+      ...(entry.kind === "talk" ? { talkNumber, talkCount: talks.length } : {}),
+      duration: entry.duration,
+    };
   });
   return {
     mode: "full-sequence",
@@ -282,6 +292,26 @@ export function videoRecordingSubtitleSpans(plan: VideoRecordingPlan, project: S
     }];
   })).sort((a, b) => a.start - b.start || a.end - b.end || a.id.localeCompare(b.id));
 
+  return stackVideoRecordingSubtitleSpans(spans);
+}
+
+/** Resolve canonical composition subtitles onto its authored export range. */
+export function videoRecordingCompositionSubtitleSpans(
+  composition: SpineComposition,
+  language: SpineTimeline["language"],
+): VideoRecordingSubtitleSpan[] {
+  const spans = composition.subtitles.flatMap((cue) => {
+    if (!cue.enabled) return [];
+    const start = Math.max(0, cue.start);
+    const end = Math.min(composition.duration, cue.end);
+    const text = cue.text[language]?.trim() ?? "";
+    if (end <= start || !text) return [];
+    return [{ id: `${composition.id}:${cue.id}`, text, start, end }];
+  }).sort((a, b) => a.start - b.start || a.end - b.end || a.id.localeCompare(b.id));
+  return stackVideoRecordingSubtitleSpans(spans);
+}
+
+function stackVideoRecordingSubtitleSpans(spans: Omit<VideoRecordingSubtitleSpan, "row">[]): VideoRecordingSubtitleSpan[] {
   const rowEnds: number[] = [];
   return spans.map((span) => {
     let row = rowEnds.findIndex((end) => end <= span.start);
@@ -297,7 +327,7 @@ export function videoRecordingProgress(plan: VideoRecordingPlan, elapsedSeconds:
     const active = videoRecordingSegmentAt(plan, elapsed);
     const boundedElapsed = Math.min(plan.totalDuration, elapsed);
     const segment = active?.segment;
-    const phase = segment?.kind === "opening" ? "opening"
+    const phase = segment?.kind === "opening" || segment?.kind === "composition" ? "opening"
       : segment?.kind === "talk" ? "talk"
         : segment?.kind === "final-idle" ? "final-idle"
           : "idle";
@@ -571,8 +601,8 @@ export function videoRecordingFrameCount(totalDuration: number, frameRate: numbe
 }
 
 /** Clip a source audio segment to the exported timeline without changing its authored start. */
-export function videoRecordingAudioSchedule(start: number, end: number, volume: number, totalDuration: number): VideoRecordingAudioSchedule | null {
-  if (![start, end, volume, totalDuration].every(Number.isFinite) || totalDuration <= 0 || end <= start) return null;
+export function videoRecordingAudioSchedule(start: number, end: number, volume: number, totalDuration: number, sourceOffset = 0): VideoRecordingAudioSchedule | null {
+  if (![start, end, volume, totalDuration, sourceOffset].every(Number.isFinite) || totalDuration <= 0 || end <= start || sourceOffset < 0) return null;
   const safeStart = Math.max(0, start);
   const safeEnd = Math.min(totalDuration, end);
   if (safeEnd <= safeStart) return null;
@@ -580,6 +610,7 @@ export function videoRecordingAudioSchedule(start: number, end: number, volume: 
     start: safeStart,
     duration: safeEnd - safeStart,
     volume: Math.max(0, Math.min(1, volume)),
+    sourceOffset: sourceOffset + (safeStart - start),
   };
 }
 

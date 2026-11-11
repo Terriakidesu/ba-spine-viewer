@@ -9,6 +9,7 @@ import { normalizeSpineCameraTrack, type SpineCameraTrack } from "@ba-spine/spin
 import type { BehaviorGraphLayouts } from "./behaviorGraph";
 import { normalizeBehaviorGraphLayouts } from "./behaviorGraph";
 import type { InteractionPreviewDebug } from "./preview";
+import type { LegacyCompositionSegmentKind, LegacyCompositionScheduleEntry } from "@ba-spine/spine-runtime/spine/spineCompositionMigration";
 
 export type EditorMcpBlendMode = "normal" | "multiply" | "screen" | "additive";
 export type EditorMcpPreviewCaptureMode = "composition" | "viewport";
@@ -155,6 +156,7 @@ export function editorDocumentSaveState(project: EditorProject, savedFingerprint
 
 export type EditorMcpCommand =
   | { name: "get_project" }
+  | { name: "evaluate_composition"; seconds: number }
   | { name: "validate_project" }
   | { name: "preview_change_set"; operations: EditorMcpCommand[] }
   | { name: "apply_change_set"; changeSetId: string }
@@ -176,6 +178,7 @@ export type EditorMcpCommand =
   | { name: "update_look_follow"; patch: Partial<SpineLookFollowSettings> }
   | { name: "replace_behavior_machines"; machines: SpineBehaviorMachine[]; graphLayouts?: BehaviorGraphLayouts }
   | { name: "create_talk_sequence" }
+  | { name: "migrate_legacy_composition"; schedule: LegacyCompositionScheduleEntry[]; frameRate: number; persistentTimeMapping: "continuous-output" | "original-authored-time"; persistentBackgrounds?: boolean }
   | { name: "delete_sequence"; sequenceId: string }
   | { name: "reorder_sequences"; sequenceIds: string[] }
   | { name: "replace_sequence"; sequenceId: string; sequence: EditorTimeline }
@@ -391,10 +394,10 @@ export interface EditorMcpOperationDefinition<K extends EditorMcpCommandName = E
 }
 
 const COMMAND_MUTATION_GROUPS = {
-  none: ["get_project", "validate_project", "inspect_recovery", "list_audio_assets", "evaluate_camera_track"],
+  none: ["get_project", "evaluate_composition", "validate_project", "inspect_recovery", "list_audio_assets", "evaluate_camera_track"],
   authored: [
     "apply_change_set", "undo", "redo", "add_interaction", "update_interaction", "duplicate_interaction", "delete_interaction", "add_region", "update_region", "duplicate_region", "delete_region", "update_look_follow", "replace_behavior_machines",
-    "create_talk_sequence", "delete_sequence", "reorder_sequences", "replace_sequence", "update_camera_track", "update_project_settings", "add_audio_clip", "duplicate_audio_clip", "update_audio_clip", "delete_audio_clip", "link_audio_subtitle", "match_audio_length",
+    "create_talk_sequence", "migrate_legacy_composition", "delete_sequence", "reorder_sequences", "replace_sequence", "update_camera_track", "update_project_settings", "add_audio_clip", "duplicate_audio_clip", "update_audio_clip", "delete_audio_clip", "link_audio_subtitle", "match_audio_length",
     "create_spine_layer", "delete_spine_layer", "duplicate_animation_clip", "duplicate_color_clip", "delete_color_clip", "delete_color_layer", "duplicate_subtitle_cue", "split_subtitle_cue", "set_timeline_items_enabled", "delete_timeline_items",
     "update_spine_layer", "add_animation_clip", "update_animation_clip", "move_animation_clip", "delete_animation_clip", "add_subtitle_cue", "update_subtitle_cue", "delete_subtitle_cue", "apply_subtitle_import", "reorder_visual_layer", "add_color_layer", "add_color_clip", "update_color_layer", "update_color_clip",
   ],
@@ -408,11 +411,11 @@ const COMMAND_MUTATION_GROUPS = {
 } as const satisfies Record<EditorMcpMutationCategory, readonly EditorMcpCommandName[]>;
 
 const MCP_TOOL_NAME_BY_COMMAND = {
-  get_project: "editor_get_project", validate_project: "editor_validate", preview_change_set: "editor_preview_change_set", apply_change_set: "editor_apply_change_set",
+  get_project: "editor_get_project", evaluate_composition: "editor_evaluate_composition", validate_project: "editor_validate", preview_change_set: "editor_preview_change_set", apply_change_set: "editor_apply_change_set",
   inspect_recovery: "editor_inspect_recovery", restore_recovery: "editor_restore_recovery", open_project_file: "editor_open_project_file", undo: "editor_undo", redo: "editor_redo",
   add_interaction: "editor_add_interaction", update_interaction: "editor_update_interaction", duplicate_interaction: "editor_duplicate_interaction", delete_interaction: "editor_delete_interaction", select_interaction: "editor_select_interaction",
   add_region: "editor_add_region", update_region: "editor_update_region", duplicate_region: "editor_duplicate_region", delete_region: "editor_delete_region", select_region: "editor_select_region", update_look_follow: "editor_update_look_follow",
-  replace_behavior_machines: "editor_replace_behavior_machines", create_talk_sequence: "editor_create_talk_sequence", delete_sequence: "editor_delete_sequence", reorder_sequences: "editor_reorder_sequences", replace_sequence: "editor_replace_sequence",
+  replace_behavior_machines: "editor_replace_behavior_machines", create_talk_sequence: "editor_create_talk_sequence", migrate_legacy_composition: "editor_migrate_legacy_composition", delete_sequence: "editor_delete_sequence", reorder_sequences: "editor_reorder_sequences", replace_sequence: "editor_replace_sequence",
   update_camera_track: "editor_update_camera_track", evaluate_camera_track: "editor_evaluate_camera_track", frame_camera_item: "editor_frame_camera_item", update_project_settings: "editor_update_project_settings",
   add_audio_clip: "editor_add_audio_clip", duplicate_audio_clip: "editor_duplicate_audio_clip", update_audio_clip: "editor_update_audio_clip", delete_audio_clip: "editor_delete_audio_clip", link_audio_subtitle: "editor_link_audio_subtitle", list_audio_assets: "editor_list_audio_assets", match_audio_length: "editor_match_audio_length", preview_audio_clip: "editor_preview_audio_clip", stop_audio_preview: "editor_stop_audio_preview",
   create_spine_layer: "editor_create_spine_layer", delete_spine_layer: "editor_delete_spine_layer", duplicate_animation_clip: "editor_duplicate_animation_clip", duplicate_color_clip: "editor_duplicate_color_clip", delete_color_clip: "editor_delete_color_clip", delete_color_layer: "editor_delete_color_layer", duplicate_subtitle_cue: "editor_duplicate_subtitle_cue", select_subtitle_cue: "editor_select_subtitle_cue", split_subtitle_cue: "editor_split_subtitle_cue", set_timeline_items_enabled: "editor_set_timeline_items_enabled", delete_timeline_items: "editor_delete_timeline_items",
@@ -998,6 +1001,12 @@ export function normalizeEditorMcpCommand(value: unknown): EditorMcpCommand {
     case "get_project":
       if (!onlyKeys(value, ["name"])) throw new Error("Unexpected get_project fields.");
       return { name: value.name };
+    case "evaluate_composition": {
+      if (!onlyKeys(value, ["name", "seconds"])) throw new Error("Unexpected evaluate_composition fields.");
+      const seconds = optionalNumber(value.seconds, "seconds", 0, 1_000_000);
+      if (seconds === undefined) throw new Error("evaluate_composition requires a finite time in seconds.");
+      return { name: value.name, seconds };
+    }
     case "validate_project":
       if (!onlyKeys(value, ["name"])) throw new Error("Unexpected validate_project fields.");
       return { name: value.name };
@@ -1005,7 +1014,7 @@ export function normalizeEditorMcpCommand(value: unknown): EditorMcpCommand {
       if (!onlyKeys(value, ["name", "operations"]) || !Array.isArray(value.operations) || value.operations.length < 1 || value.operations.length > 50) throw new Error("preview_change_set requires between 1 and 50 typed operations.");
       const allowed = new Set([
         "add_interaction", "update_interaction", "duplicate_interaction", "delete_interaction", "add_region", "update_region", "duplicate_region", "delete_region",
-        "update_look_follow", "replace_behavior_machines", "create_talk_sequence", "delete_sequence", "reorder_sequences", "replace_sequence", "update_camera_track", "update_project_settings",
+        "update_look_follow", "replace_behavior_machines", "create_talk_sequence", "migrate_legacy_composition", "delete_sequence", "reorder_sequences", "replace_sequence", "update_camera_track", "update_project_settings",
       ]);
       const operations = value.operations.map((operation, index) => {
         if (!isRecord(operation) || typeof operation.name !== "string" || !allowed.has(operation.name)) throw new Error(`operations[${index}] is not an allowed authored-document operation.`);
@@ -1099,6 +1108,26 @@ export function normalizeEditorMcpCommand(value: unknown): EditorMcpCommand {
     case "create_talk_sequence":
       if (!onlyKeys(value, ["name"])) throw new Error("Unexpected create_talk_sequence fields.");
       return { name: value.name };
+    case "migrate_legacy_composition": {
+      if (!onlyKeys(value, ["name", "schedule", "frameRate", "persistentTimeMapping", "persistentBackgrounds"])) throw new Error("Unexpected migrate_legacy_composition fields.");
+      if (!Array.isArray(value.schedule) || value.schedule.length < 1 || value.schedule.length > 500) throw new Error("schedule must contain between 1 and 500 explicit ranges.");
+      const kinds: LegacyCompositionSegmentKind[] = ["opening", "idle", "initial-idle", "between-idle", "final-idle", "talk", "section", "gap"];
+      const schedule: LegacyCompositionScheduleEntry[] = value.schedule.map((item, index) => {
+        if (!isRecord(item) || !onlyKeys(item, ["id", "kind", "sequenceId", "start", "duration", "sourceStart"])) throw new Error(`schedule[${index}] contains unsupported fields or is not an object.`);
+        if (typeof item.kind !== "string" || !kinds.includes(item.kind as LegacyCompositionSegmentKind)) throw new Error(`schedule[${index}].kind is unsupported.`);
+        if (item.sequenceId !== null && typeof item.sequenceId !== "string") throw new Error(`schedule[${index}].sequenceId must be a string or null.`);
+        const start = optionalNumber(item.start, `schedule[${index}].start`, 0, 1_000_000);
+        const duration = optionalNumber(item.duration, `schedule[${index}].duration`, Number.MIN_VALUE, 1_000_000);
+        const sourceStart = optionalNumber(item.sourceStart, `schedule[${index}].sourceStart`, 0, 1_000_000);
+        if (start === undefined || duration === undefined || sourceStart === undefined) throw new Error(`schedule[${index}] requires finite start, duration, and sourceStart values.`);
+        return { id: stringField(item.id, `schedule[${index}].id`), kind: item.kind as LegacyCompositionSegmentKind, sequenceId: item.sequenceId as string | null, start, duration, sourceStart };
+      });
+      if (value.persistentTimeMapping !== "continuous-output" && value.persistentTimeMapping !== "original-authored-time") throw new Error("persistentTimeMapping must be continuous-output or original-authored-time.");
+      const frameRate = optionalNumber(value.frameRate, "frameRate", 1, 240);
+      if (frameRate === undefined) throw new Error("migrate_legacy_composition requires a frameRate between 1 and 240.");
+      const persistentBackgrounds = optionalBoolean(value.persistentBackgrounds, "persistentBackgrounds");
+      return { name: value.name, schedule, frameRate, persistentTimeMapping: value.persistentTimeMapping, ...(persistentBackgrounds === undefined ? {} : { persistentBackgrounds }) };
+    }
     case "delete_sequence":
       if (!onlyKeys(value, ["name", "sequenceId"])) throw new Error("Unexpected delete_sequence fields.");
       return { name: value.name, sequenceId: stringField(value.sequenceId, "sequenceId") };

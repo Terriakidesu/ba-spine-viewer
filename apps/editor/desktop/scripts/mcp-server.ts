@@ -360,7 +360,7 @@ function failed(value: unknown) {
 }
 
 const server = new McpServer({ name: "ba-spine-editor", version: "0.3.0" }, {
-  instructions: "Use the Editor as a safe project assistant. Read editor_capabilities and editor_state first; documentRevision is stable across playback snapshots. Use editor_get_project_document for workspace-independent authored data. Typed project, interaction, behavior, sequence, camera-track, and timeline-content edits work across workspaces. Playhead/viewport controls, audio preview/duration decoding, subtitle-import preview/apply, and rendered captures require the Timeline workspace to be mounted; call editor_set_workspace first and check availability.timelineWorkspaceMounted. Camera evaluation and framing require the Camera workspace; check availability.cameraWorkspaceMounted. Preview subtitle imports before applying them, then verify with editor_get_sequence or editor_capture_preview. Authored changes stay in memory until editor_save; MCP saves reject external file conflicts and verify written content.",
+  instructions: "Use the Editor as a safe project assistant. Read editor_capabilities and editor_state first; documentRevision is stable across playback snapshots. Use editor_get_project_document for workspace-independent authored data and editor_evaluate_composition for deterministic composition sampling at an explicit time. Typed project, interaction, behavior, sequence, camera-track, composition-migration, and timeline-content edits work across workspaces. Legacy composition migration requires an explicit output schedule and persistent-background time mapping; preview its report/diff before applying the reviewed change set. Migration preserves source sequences and remains in memory until explicitly saved. Playhead/viewport controls, audio preview/duration decoding, subtitle-import preview/apply, and rendered captures require the Timeline workspace to be mounted; call editor_set_workspace first and check availability.timelineWorkspaceMounted. Camera evaluation and framing require the Camera workspace; check availability.cameraWorkspaceMounted. Preview subtitle imports before applying them, then verify with editor_get_sequence or editor_capture_preview. Authored changes stay in memory until editor_save; MCP saves reject external file conflicts and verify written content.",
 });
 
 const behaviorScalarSchema = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
@@ -533,6 +533,18 @@ server.registerTool(trackToolName("editor_get_project"), {
   } catch (value) { return failed(value); }
 });
 
+server.registerTool(trackToolName("editor_evaluate_composition"), {
+  title: "Evaluate unified composition",
+  description: "Sample the shared deterministic composition evaluator at an explicit time. Returns active sections, property values, layer transforms, animation source times, cues, and diagnostics without mounting a preview workspace or changing authored data.",
+  inputSchema: z.object({ seconds: z.number().finite().min(0).max(1_000_000) }).strict(),
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+}, async ({ seconds }) => {
+  try {
+    const state = await editorState();
+    return result(await sendCommand({ name: "evaluate_composition", seconds }, state.documentRevision));
+  } catch (value) { return failed(value); }
+});
+
 server.registerTool(trackToolName("editor_get_project_document"), {
   title: "Inspect full authored project",
   description: "Return the complete authored Editor project, including settings, interactions, behavior machines, graph layouts, sequences, audio, subtitles, and camera tracks. This is a read-only snapshot at one document revision.",
@@ -679,6 +691,20 @@ const reviewedChangeOperationSchema = z.discriminatedUnion("name", [
   z.object({ name: z.literal("update_look_follow"), patch: lookFollowPatchSchema }).strict(),
   z.object({ name: z.literal("replace_behavior_machines"), machines: z.array(behaviorMachineSchema), graphLayouts: z.record(z.string(), behaviorGraphLayoutSchema).optional() }).strict(),
   z.object({ name: z.literal("create_talk_sequence") }).strict(),
+  z.object({
+    name: z.literal("migrate_legacy_composition"),
+    schedule: z.array(z.object({
+      id: z.string().min(1),
+      kind: z.enum(["opening", "idle", "initial-idle", "between-idle", "final-idle", "talk", "section", "gap"]),
+      sequenceId: z.string().nullable(),
+      start: z.number().finite().min(0).max(1_000_000),
+      duration: z.number().finite().positive().max(1_000_000),
+      sourceStart: z.number().finite().min(0).max(1_000_000),
+    }).strict()).min(1).max(500),
+    frameRate: z.number().finite().min(1).max(240),
+    persistentTimeMapping: z.enum(["continuous-output", "original-authored-time"]),
+    persistentBackgrounds: z.boolean().optional(),
+  }).strict(),
   z.object({ name: z.literal("delete_sequence"), sequenceId: z.string().min(1) }).strict(),
   z.object({ name: z.literal("reorder_sequences"), sequenceIds: z.array(z.string().min(1)).min(1) }).strict(),
   z.object({ name: z.literal("replace_sequence"), sequenceId: z.string().min(1), sequence: editorTimelineSchema }).strict(),
@@ -924,6 +950,34 @@ server.registerTool(trackToolName("editor_create_talk_sequence"), {
 }, async ({ expectedDocumentRevision, idempotencyKey }) => {
   try { return result(await sendCommand({ name: "create_talk_sequence" }, expectedDocumentRevision, idempotencyKey)); }
   catch (value) { return failed(value); }
+});
+
+server.registerTool(trackToolName("editor_migrate_legacy_composition"), {
+  title: "Preview legacy timeline migration",
+  description: "Preview an explicit conversion of legacy Opening/Talk sequences into a versioned unified composition. Supply the full output schedule and persistent-background time mapping. The returned assumptions, diagnostics, and before/after diff are not applied until editor_apply_change_set is called; legacy sequences remain preserved.",
+  inputSchema: z.object({
+    schedule: z.array(z.object({
+      id: z.string().min(1),
+      kind: z.enum(["opening", "idle", "initial-idle", "between-idle", "final-idle", "talk", "section", "gap"]),
+      sequenceId: z.string().nullable(),
+      start: z.number().finite().min(0).max(1_000_000),
+      duration: z.number().finite().positive().max(1_000_000),
+      sourceStart: z.number().finite().min(0).max(1_000_000),
+    }).strict()).min(1).max(500),
+    frameRate: z.number().finite().min(1).max(240),
+    persistentTimeMapping: z.enum(["continuous-output", "original-authored-time"]),
+    persistentBackgrounds: z.boolean().optional(),
+    expectedDocumentRevision: z.number().int().nonnegative().optional(),
+    idempotencyKey: z.string().min(1).max(128).optional(),
+  }).strict(),
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+}, async ({ schedule, frameRate, persistentTimeMapping, persistentBackgrounds, expectedDocumentRevision, idempotencyKey }) => {
+  try {
+    return result(await sendCommand({
+      name: "preview_change_set",
+      operations: [{ name: "migrate_legacy_composition", schedule, frameRate, persistentTimeMapping, ...(persistentBackgrounds === undefined ? {} : { persistentBackgrounds }) }],
+    }, expectedDocumentRevision, idempotencyKey));
+  } catch (value) { return failed(value); }
 });
 
 server.registerTool(trackToolName("editor_delete_sequence"), {

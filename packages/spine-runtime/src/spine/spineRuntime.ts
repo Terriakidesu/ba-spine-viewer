@@ -5,6 +5,7 @@ import {
   AnimationStateData,
   Bone,
   EventTimeline,
+  MixBlend,
   MeshAttachment,
   Physics,
   RegionAttachment,
@@ -29,6 +30,7 @@ import { DEFAULT_EFFECTS_STRENGTH, drawWithEffectsStrength } from "./spineEffect
 import { authoredInteraction, authoredInteractionAction, authoredRegions, clearInteractionTrack, DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, DEFAULT_TALK_MIX_DURATION, interactionKind, interactionPhaseAfterStart, interactionPressReady, lookFollowRotation, lookFollowTarget, normalizeAnimationMixDuration, normalizeSpineLookFollowSettings, profileFromProject, queueInteractionFadeOut, setInteractionTrack, smoothLookFollowPoint, type SpineAnimationPair, type SpineInteractionAction, type SpineInteractionProfile, type SpineInteractionProject, type SpineAuthoredInteraction, type SpineAuthoredRegion, type SpineLookFollowSettings } from "./spineInteraction";
 import { SpineBehaviorRuntime, type SpineBehaviorDebugMachine, type SpineBehaviorRuntimeContext } from "./spineBehaviorRuntime";
 import { normalizeSpineBehaviorMachines, type SpineBehaviorAction, type SpineBehaviorEvent, type SpineBehaviorMachine, type SpineBehaviorState } from "./spineBehavior";
+import { applySpineSkeletalOverrides, type EvaluatedComposition, type SpineSkeletalOverride } from "./spineComposition";
 import {
   applyInteractionMotion,
   applyInteractionMotionReturn,
@@ -2189,6 +2191,72 @@ export class SpineRenderer {
     bundle.state.apply(bundle.skeleton);
     bundle.skeleton.updateWorldTransform(Physics.reset);
     if (preserveInteractions) rebaseInteractionMotion(this.motionState());
+  }
+
+  /** Sample composition clips and non-destructive skeletal overrides at one explicit time. */
+  sampleEditorComposition(
+    clips: readonly EvaluatedComposition["activeAnimationClips"][number][],
+    overrides: readonly SpineSkeletalOverride[],
+    layerId: string,
+    assetIdentity: string,
+    preserveInteractions = false,
+    physics: Physics = Physics.reset,
+  ) {
+    const bundle = this.bundle;
+    if (!bundle) return [];
+    const sequenceId = "unified-composition";
+    const sequenceChanged = preserveInteractions && sequenceId !== this.sampledEditorSequenceId;
+    if (preserveInteractions && sequenceChanged) this.resetTimelineInteractionState();
+    if (preserveInteractions) {
+      this.sampledEditorSequenceId = sequenceId;
+      this.sampledEditorTalkSequence = false;
+      this.interactionReady = true;
+      this.restoreInteractionPose();
+    } else this.playing = false;
+
+    const { skeleton, state } = bundle;
+    skeleton.setToSetupPose();
+    if (preserveInteractions) {
+      state.clearTrack(0);
+      for (let track = 7; track < state.tracks.length; track += 1) state.clearTrack(track);
+    } else state.clearTracks();
+
+    const ordered = [...clips].sort((a, b) => a.clip.priority - b.clip.priority || a.clip.id.localeCompare(b.clip.id));
+    let track = preserveInteractions ? 9 : 0;
+    const apply = (animation: string, sampleTime: number, loop: boolean, weight: number, mixingMode: "replace" | "add") => {
+      const data = skeleton.data.findAnimation(animation);
+      if (!data) return false;
+      const entry = state.setAnimation(track, animation, loop);
+      entry.trackEnd = Number.POSITIVE_INFINITY;
+      entry.trackTime = loop && data.duration > 0 ? Math.max(0, sampleTime) % data.duration : Math.min(Math.max(0, sampleTime), data.duration);
+      entry.animationLast = entry.trackTime;
+      entry.trackLast = entry.trackTime;
+      entry.nextAnimationLast = entry.trackTime;
+      entry.nextTrackLast = entry.trackTime;
+      entry.timeScale = 0;
+      entry.alpha = Math.max(0, Math.min(1, weight));
+      entry.mixBlend = mixingMode === "add" && track > (preserveInteractions ? 9 : 0) ? MixBlend.add : track === (preserveInteractions ? 9 : 0) ? MixBlend.setup : MixBlend.replace;
+      track += 1;
+      return true;
+    };
+
+    let sampledFace = "";
+    for (const active of ordered) {
+      apply(active.clip.animation, active.sourceTime, active.clip.loop, active.weight, active.clip.mixingMode);
+      if (active.clip.faceAnimation && apply(active.clip.faceAnimation, active.sourceTime, active.clip.loop, active.weight, "replace")) {
+        sampledFace = active.clip.faceAnimation;
+      }
+    }
+    this.sampledEditorFace = sampledFace;
+    state.apply(skeleton);
+    const diagnostics = applySpineSkeletalOverrides(skeleton, layerId, assetIdentity, overrides);
+    skeleton.updateWorldTransform(physics);
+    if (preserveInteractions) rebaseInteractionMotion(this.motionState());
+    return diagnostics;
+  }
+
+  hasPhysicsConstraints(): boolean {
+    return (this.bundle?.skeleton.physicsConstraints.length ?? 0) > 0;
   }
 
   private resetTimelineInteractionState() {

@@ -2,6 +2,75 @@ import { describe, expect, test } from "bun:test";
 import { Animation, AnimationState, AnimationStateData, BoneData, Event, EventData, EventTimeline, Skeleton, SkeletonData, TranslateTimeline } from "@esotericsoftware/spine-core";
 import { defaultSpineAnimation, findIdleAnimation, findIntroAnimation, INTRO_ANIMATION, SpineRenderer, talkEventTimes } from "./spineRuntime";
 import { normalizeSpineInteractionProject } from "./spineInteraction";
+import { createEmptySpineComposition, evaluateComposition } from "./spineComposition";
+
+test("composition renderer samples weighted clips before applying non-destructive skeletal overrides", () => {
+  const data = new SkeletonData();
+  const root = new BoneData(0, "root", null);
+  data.bones.push(root);
+  const moveX = new TranslateTimeline(2, 0, 0);
+  moveX.setFrame(0, 0, 0, 0);
+  moveX.setFrame(1, 2, 20, 0);
+  const moveY = new TranslateTimeline(2, 0, 0);
+  moveY.setFrame(0, 0, 10, 0);
+  moveY.setFrame(1, 2, 10, 20);
+  data.animations.push(new Animation("Move_X", [moveX], 2), new Animation("Move_Y", [moveY], 2));
+  const skeleton = new Skeleton(data);
+  const state = new AnimationState(new AnimationStateData(data));
+  const renderer = Object.assign(Object.create(SpineRenderer.prototype), {
+    bundle: { skeleton, state },
+  }) as SpineRenderer;
+  const composition = createEmptySpineComposition("render-test", "Render test", 4, 30);
+  composition.layers.push({
+    id: "character",
+    name: "Character",
+    role: "character",
+    order: 0,
+    assetDirectory: "character",
+    assetIdentity: "asset:character",
+    transformParentId: null,
+    baseProperties: {},
+    enabled: true,
+    locked: false,
+  });
+  const clip = (id: string, animation: string, priority: number, weight: number) => ({
+    id,
+    layerId: "character",
+    animation,
+    clock: { kind: "composition" as const },
+    sourceClock: { kind: "clip-source" as const },
+    start: 0,
+    end: 3,
+    sourceStart: 0,
+    sourceEnd: 2,
+    sourceOriginTime: 0,
+    sourceOffset: 0,
+    speed: 1,
+    loop: false,
+    endBehavior: "clear" as const,
+    blendIn: 0,
+    blendOut: 0,
+    mixingMode: "replace" as const,
+    weight,
+    priority,
+    enabled: true,
+  });
+  composition.animationClips.push(clip("x", "Move_X", 0, 1), clip("y", "Move_Y", 1, 0.5));
+  const evaluation = evaluateComposition(composition, { compositionTime: 1 });
+  const diagnostics = renderer.sampleEditorComposition(evaluation.activeAnimationClips, [{
+    target: { kind: "bone", layerId: "character", path: "root", assetIdentity: "asset:character" },
+    property: "bone.x",
+    value: 30,
+    mode: "override",
+    weight: 0.5,
+  }], "character", "asset:character");
+
+  expect(diagnostics).toEqual([]);
+  expect(state.getCurrent(0)?.animation?.name).toBe("Move_X");
+  expect(state.getCurrent(1)?.animation?.name).toBe("Move_Y");
+  expect(skeleton.bones[0]?.x).toBeCloseTo(20);
+  expect(skeleton.bones[0]?.y).toBeCloseTo(5);
+});
 
 test("authored talks sample both moving body and face while preserving interaction tracks", () => {
   const data = new SkeletonData();

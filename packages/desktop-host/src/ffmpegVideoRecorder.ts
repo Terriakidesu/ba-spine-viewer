@@ -45,6 +45,7 @@ export interface FfmpegVideoAudioTrack {
   start: number;
   duration: number;
   volume: number;
+  sourceOffset: number;
   extension: string;
   bytes: Uint8Array;
 }
@@ -70,7 +71,7 @@ interface FfmpegVideoSession {
   frameWriter: ReturnType<typeof createWriteStream>;
   frameCount: number;
   frameBytes: number;
-  audioTracks: Array<{ path: string; start: number; duration: number; volume: number }>;
+  audioTracks: Array<{ path: string; start: number; duration: number; volume: number; sourceOffset: number }>;
   audioBytes: number;
   phase: "rendering" | "encoding" | "saving";
   encodeProgress: number;
@@ -222,7 +223,7 @@ export function ffmpegVideoColorPipelineArgs(format: FfmpegVideoFormat): string[
 }
 
 export function ffmpegAudioMixFilterGraph(
-  tracks: readonly Pick<FfmpegVideoAudioTrack, "start" | "duration" | "volume">[],
+  tracks: readonly (Pick<FfmpegVideoAudioTrack, "start" | "duration" | "volume"> & Partial<Pick<FfmpegVideoAudioTrack, "sourceOffset">>)[],
   videoDuration: number,
 ): { graph: string; output: "[aout]" } | null {
   if (tracks.length === 0 || !Number.isFinite(videoDuration) || videoDuration <= 0) return null;
@@ -230,8 +231,9 @@ export function ffmpegAudioMixFilterGraph(
     const start = Math.max(0, track.start);
     const duration = Math.max(0, Math.min(track.duration, videoDuration - start));
     const volume = Math.max(0, Math.min(1, track.volume));
+    const sourceOffset = Math.max(0, track.sourceOffset ?? 0);
     const delayMilliseconds = Math.round(start * 1000);
-    return `[${index + 1}:a:0]atrim=start=0:duration=${duration.toFixed(6)},asetpts=PTS-STARTPTS,volume=${volume.toFixed(4)},adelay=${delayMilliseconds}:all=1[a${index}]`;
+    return `[${index + 1}:a:0]atrim=start=${sourceOffset.toFixed(6)}:duration=${duration.toFixed(6)},asetpts=PTS-STARTPTS,volume=${volume.toFixed(4)},adelay=${delayMilliseconds}:all=1[a${index}]`;
   });
   const inputs = tracks.map((_, index) => `[a${index}]`).join("");
   filters.push(`${inputs}amix=inputs=${tracks.length}:duration=longest:dropout_transition=0:normalize=0,apad,atrim=duration=${videoDuration.toFixed(6)}[aout]`);
@@ -427,6 +429,7 @@ export class FfmpegVideoRecorder {
     if (!AUDIO_EXTENSIONS.has(extension)
       || !Number.isFinite(track.start) || track.start < 0 || track.start > 1800
       || !Number.isFinite(track.duration) || track.duration <= 0 || track.duration > 1800
+      || !Number.isFinite(track.sourceOffset) || track.sourceOffset < 0 || track.sourceOffset > 1800
       || !Number.isFinite(track.volume) || track.volume < 0 || track.volume > 1) {
       throw new Error("The Viewer audio track settings are invalid.");
     }
@@ -438,7 +441,7 @@ export class FfmpegVideoRecorder {
     }
     const audioPath = join(session.temporaryDirectory, `audio-${session.audioTracks.length}.${extension}`);
     await writeFile(audioPath, track.bytes, { flag: "wx" });
-    session.audioTracks.push({ path: audioPath, start: track.start, duration: track.duration, volume: track.volume });
+    session.audioTracks.push({ path: audioPath, start: track.start, duration: track.duration, volume: track.volume, sourceOffset: track.sourceOffset });
     session.audioBytes += track.bytes.byteLength;
   }
 

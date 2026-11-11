@@ -100,6 +100,9 @@ export function manifestProjectValue(data: SpineManifestProjectData, directory: 
     assetDirectory: directory,
     entrySequence: data.record.manifest.entrySequence,
     interactions: Array.isArray(rawInteractions.interactions) ? rawInteractions.interactions : [],
+    ...(rawInteractions.composition && typeof rawInteractions.composition === "object" && !Array.isArray(rawInteractions.composition)
+      ? { composition: rawInteractions.composition }
+      : {}),
     ...(Array.isArray(rawInteractions.behaviorMachines) ? { behaviorMachines: rawInteractions.behaviorMachines } : {}),
     ...(rawInteractions.behaviorGraphLayouts && typeof rawInteractions.behaviorGraphLayouts === "object" && !Array.isArray(rawInteractions.behaviorGraphLayouts)
       ? { behaviorGraphLayouts: rawInteractions.behaviorGraphLayouts }

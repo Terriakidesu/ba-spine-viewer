@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { Animation, AnimationState, AnimationStateData, BoneData, Skeleton, SkeletonData } from "@esotericsoftware/spine-core";
+import { createEmptySpineComposition } from "./spineComposition";
 import { authoredInteractionAction, authoredRegions, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, DEFAULT_TALK_MIX_DURATION, findInteractionProfile, interactionPhaseAfterStart, interactionPressReady, INTERACTION_PHASE_MIX, lookFollowRotation, lookFollowTarget, normalizeSpineInteractionProject, normalizeSpineLookFollowSettings, profileFromProject, setInteractionTrack, smoothLookFollowPoint } from "./spineInteraction";
 
 describe("Spine lobby interaction data", () => {
+  test("Viewer project normalization retains a supported unified composition and refuses newer versions", () => {
+    const composition = createEmptySpineComposition("composition-1", "Unified timeline", 8, 30);
+    expect(normalizeSpineInteractionProject({ schemaVersion: 9, assetDirectory: "Airi_home", interactions: [], composition })?.composition).toEqual(composition);
+    expect(normalizeSpineInteractionProject({ schemaVersion: 9, assetDirectory: "Airi_home", interactions: [], composition: { ...composition, schemaVersion: 2 } })).toBeNull();
+  });
+
   test("pairs the game start, follow and release tracks", () => {
     const profile = findInteractionProfile([
       "Idle_01", "Pat_01_M", "Pat_01_A", "PatEnd_01_M", "PatEnd_01_A",

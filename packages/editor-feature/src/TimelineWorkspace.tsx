@@ -24,8 +24,11 @@ import type { EditorSaveFile } from "./editorProject";
 import { audioPlaybackDecision, clampAudioEnd, clampAudioStart, decodedAudioTiming } from "./audioModel";
 import { addTalkSequence, animationClipEnd, animationEndForLayer, authoredTimelineEnd, deleteAnimationClipRipple, deleteSequence, duplicateAnimationClipRipple, effectiveAnimationClips, extendTimelineDuration, insertAnimationClipRipple, linkAudioToSubtitle, linkedSubtitleForAudio, matchAudioAndSubtitleLength, matchedAnimationEndpoint, moveAnimationClipRipple, moveSequenceBy, moveSequenceId, nextTalkSequenceId, nextTalkSequenceIdForProject, openingTimelineDuration, replaceSubtitleImport, resolveTimelineSnap, sequenceDisplayName, sequenceIdsForProject, snapToTargets, splitCue, switchSequence } from "./sequenceModel";
 import { advanceSpineTimeline, normalizeColorClipFades, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineLayerAnimation, timelineMainAnimation, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimelineAudioPreloadState } from "@ba-spine/spine-runtime/spine/spineTimeline";
+import { evaluateCompositionFrame } from "@ba-spine/spine-runtime/spine/spineComposition";
+import { compositionFrameToTimeline } from "@ba-spine/spine-runtime/spine/spineCompositionTimeline";
 import { SpineTimelineLayerCanvas } from "@ba-spine/spine-runtime/ui/SpineTimelineLayerCanvas";
 import { spineAudioPathCandidates } from "@ba-spine/spine-runtime/spine/spineAudio";
+import { createLegacyCompositionSchedule, DEFAULT_FULL_SEQUENCE_ARRANGEMENT } from "@ba-spine/spine-runtime/spine/spineCompositionMigration";
 import { serializeSubtitleDocument } from "./subtitleDocument";
 import type { RecentFile } from "./recentFiles";
 import { AssetPickerModal } from "./AssetPickerModal";
@@ -48,6 +51,7 @@ import { AudioWaveform, type AudioWaveformMeasurement } from "./AudioWaveform";
 import { missingManifestAssetFiles, validateTimeline, type TimelineDiagnostic } from "./timelineDiagnostics";
 import { copyTimelineSelection, pasteTimelineSelection, type TimelineClipboard, type TimelineClipboardSelection } from "./timelineClipboard";
 import { searchSubtitleCues, type SubtitleSearchLanguage } from "./subtitleCueSearch";
+import { migrateEditorProjectComposition } from "./editorCompositionMigration";
 import { IconChevronDown, IconChevronLeft, IconChevronRight, IconEye, IconEyeOff, IconExpand, IconLink, IconLock, IconMinus, IconPause, IconPlay, IconPlus, IconSkipBack, IconSkipForward, IconSound, IconSync, IconUnlock, IconUnlink } from "@ba-spine/app-ui/icons";
 import "./timelineSnapFeedback.css";
 
@@ -382,6 +386,22 @@ async function findAudioFile(source: DesktopAssetSource, path: string, signal?: 
   return null;
 }
 
+function editorAssetPathForDirectory(project: EditorProject | null, directory: string): string | undefined {
+  const activePath = project?.timeline.assetPaths?.[directory];
+  if (activePath) return activePath;
+  for (const timeline of Object.values(project?.sequences ?? {})) {
+    const path = timeline.assetPaths?.[directory];
+    if (path) return path;
+  }
+  const originals = project?.composition?.migrationMetadata?.originalTimelines;
+  if (!originals || typeof originals !== "object" || Array.isArray(originals)) return undefined;
+  for (const timeline of Object.values(originals as Record<string, { assetPaths?: Record<string, string> } | null>)) {
+    const path = timeline?.assetPaths?.[directory];
+    if (path) return path;
+  }
+  return undefined;
+}
+
 function canvasHasVisiblePixels(source: HTMLCanvasElement): boolean {
   if (source.width <= 0 || source.height <= 0) return false;
   const probe = document.createElement("canvas");
@@ -398,6 +418,7 @@ function canvasHasVisiblePixels(source: HTMLCanvasElement): boolean {
 export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () => undefined, source, directory, directories, directoryLabels = {}, directoryInfo = {}, project, initialHandoff, initialSubtitlePath, onSubtitleOpened, initialAudioPaths, onAudioOpened, onRecentFile, onMutate, onLive, onSelectProject, onBeginEdit, onBeginCameraEdit = () => undefined, onEndCameraEdit = () => undefined, onCancelCameraEdit = () => undefined, onSave, onRegisterSave, onStatus, onError, onRegisterMcp, onMcpSnapshot, onAudioWaveformProfile }: TimelineWorkspaceProps) {
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [compositionPreviewEnabled, setCompositionPreviewEnabled] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [subtitleSearchQuery, setSubtitleSearchQuery] = useState("");
   const [subtitleSearchLanguage, setSubtitleSearchLanguage] = useState<SubtitleSearchLanguage>("all");
@@ -594,17 +615,27 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   }
 
   const timeline = project?.timeline ?? null;
-  const cameraTrack = timeline?.camera ?? null;
+  const composition = project?.composition ?? null;
+  const compositionPreviewFrame = compositionPreviewEnabled && composition
+    ? evaluateCompositionFrame(composition, { compositionTime: currentTime, transportTime: currentTime })
+    : null;
+  const compositionPreviewTimeline = composition && compositionPreviewFrame
+    ? compositionFrameToTimeline(composition, compositionPreviewFrame, currentTime, timeline?.language ?? "en")
+    : null;
+  const previewTimeline = compositionPreviewTimeline ?? timeline;
+  const cameraTrack = compositionPreviewEnabled ? composition?.camera ?? null : timeline?.camera ?? null;
   const selectedCameraKeyframe = cameraTrack?.keyframes.find((keyframe) => keyframe.id === selectedCameraKeyframeId) ?? null;
-  const audioLoadKey = (timeline?.audio ?? []).map((clip) => `${clip.id}:${clip.path}`).join("|");
+  const audioLoadKey = (previewTimeline?.audio ?? []).map((clip) => `${clip.id}:${clip.path}`).join("|");
   const audioPreloadIdentityRef = useRef({ source, key: audioLoadKey });
   const audioPreloadsReady = audioPreloadIdentityRef.current.source === source
     && audioPreloadIdentityRef.current.key === audioLoadKey
-    && timelineAudioPreloadsReady(timeline?.audio ?? [], audioPreloadStates);
+    && timelineAudioPreloadsReady(previewTimeline?.audio ?? [], audioPreloadStates);
   const discovered = useMemo(() => directory ? compositionDirectories(directory, directories) : [], [directory, directories]);
   const displayLayers = useMemo(() => [...(timeline?.layers ?? [])].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)), [timeline?.layers]);
   const displayColorLayers = useMemo(() => [...(timeline?.colorLayers ?? [])].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)), [timeline?.colorLayers]);
   const displayVisualTracks = useMemo<VisualTrack[]>(() => timeline ? timelineVisualLayers(timeline) : [], [timeline?.layers, timeline?.colorLayers]);
+  const previewVisualTracks = useMemo<VisualTrack[]>(() => previewTimeline ? timelineVisualLayers(previewTimeline) : [], [previewTimeline?.layers, previewTimeline?.colorLayers]);
+  const compositionLayerFrames = new Map(compositionPreviewFrame?.layers.map((layer) => [layer.layer.id, layer]) ?? []);
   const selectedLayer = timeline?.layers.find((layer) => layer.id === timeline.selectedLayerId) ?? null;
   const selectedLayerMeta = selectedLayer ? metas[selectedLayer.id] ?? null : null;
   const selectedCue = timeline?.subtitles.find((cue) => cue.id === timeline.selectedCueId) ?? null;
@@ -656,15 +687,18 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   useEffect(() => { setColorHexDraft(null); }, [selectedColorClip?.id, selectedColorClip?.color]);
   const selectedAnimation = selectedClips.find((item) => item.kind === "animation");
   const selectedAnimationClip = selectedAnimation ? findAnimationClip(selectedAnimation.id) : null;
-  const layerDirectoriesKey = displayLayers.map((layer) => layer.directory).join("|");
-  const layerAssetPathsKey = JSON.stringify(displayLayers.map((layer) => [layer.directory, project?.timeline.assetPaths?.[layer.directory] ?? null]));
+  const assetLayers = useMemo(() => compositionPreviewEnabled && composition
+    ? composition.layers.map((layer) => ({ id: layer.id, directory: layer.assetDirectory }))
+    : displayLayers.map((layer) => ({ id: layer.id, directory: layer.directory })), [composition, compositionPreviewEnabled, displayLayers]);
+  const layerDirectoriesKey = assetLayers.map((layer) => layer.directory).join("|");
+  const layerAssetPathsKey = JSON.stringify(assetLayers.map((layer) => [layer.directory, editorAssetPathForDirectory(project, layer.directory) ?? null]));
   const characterLayer = timeline?.layers.find((layer) => layer.role === "character") ?? null;
   const characterMeta = characterLayer ? metas[characterLayer.id] ?? null : null;
-  const referenceLayerId = timeline ? timelineReferenceLayerId(timeline) : "";
-  const cameraReferenceLayer = timeline?.layers.find((layer) => layer.id === referenceLayerId) ?? null;
+  const referenceLayerId = previewTimeline ? timelineReferenceLayerId(previewTimeline) : "";
+  const cameraReferenceLayer = previewTimeline?.layers.find((layer) => layer.id === referenceLayerId) ?? null;
   const cameraProjectionRenderer = useMemo(() => spineRenderersRef.current.get(referenceLayerId) ?? null, [cameraProjectionRevision, referenceLayerId]);
   const cameraProjectionSize = cameraProjectionRenderer?.canvasClientSize() ?? null;
-  const cameraSequenceKey = timeline?.sequenceId ?? "legacy";
+  const cameraSequenceKey = compositionPreviewEnabled ? "unified-composition" : timeline?.sequenceId ?? "legacy";
   const sampledCamera = cameraTrack
     ? sampleSpineCameraTrackWithFallback(cameraTrack, currentTime, cameraProjectionRenderer?.getArtworkCameraFrame(cameraAspectValue(cameraTrack.aspectRatio)) ?? null)
     : null;
@@ -823,6 +857,18 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   }, [mode]);
 
   function updateCameraTrack(mutator: (value: SpineCameraTrack) => SpineCameraTrack, history = true) {
+    if (compositionPreviewEnabled) {
+      const callback = history ? onMutate : onLive;
+      callback((current) => {
+        if (!current.composition) return current;
+        const base = current.composition.camera ?? {
+          ...emptyCameraTrack(),
+          ...(referenceLayerId ? { referenceLayerId } : {}),
+        };
+        return { ...current, composition: { ...current.composition, camera: mutator(base) } };
+      });
+      return;
+    }
     updateTimeline((value) => ({
       ...value,
       camera: mutator(value.camera ?? {
@@ -1741,7 +1787,9 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const openingAutoDuration = timeline?.sequenceId === "opening"
     ? openingTimelineDuration(timeline, introDuration, layerEnd)
     : 0;
-  const duration = timeline
+  const duration = compositionPreviewEnabled && composition
+    ? composition.duration
+    : timeline
     ? timelinePlaybackDuration(timeline, timeline.sequenceId === "opening" && !explicitAnimationClips ? openingIntroStart + (openingMode === "skip" ? 0 : introDuration) : 0, layerEnd, talkMixDuration)
     : MIN_TIMELINE_DURATION;
   const animationsByLayer = useMemo(() => Object.fromEntries(Object.entries(metas)
@@ -1763,7 +1811,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     : 0;
   const talkBlendOutStart = isTalkSequence ? duration - talkMixDuration : undefined;
   const trackWidth = Math.max(640, duration * TIMELINE_SCALE * zoom + 48);
-  const characterHidden = timeline ? timelineSceneHidesCharacter(timeline, currentTime) : false;
+  const characterHidden = !compositionPreviewEnabled && timeline ? timelineSceneHidesCharacter(timeline, currentTime) : false;
 
   function createMcpSnapshot(): EditorMcpTimelineSnapshot | null {
     if (!timeline) return null;
@@ -2554,6 +2602,78 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     onMutate((current) => switchSequence(current, id, animations, directories));
   }
 
+  function toggleCompositionPreview() {
+    const current = projectRef.current?.composition;
+    if (!current) return;
+    const enabled = !compositionPreviewEnabled;
+    setPlaying(false);
+    setPreviewUntil(null);
+    setSelectedCameraKeyframeId(null);
+    setSelectedCameraBoundId(null);
+    setCameraInspectorTarget("settings");
+    setCompositionPreviewEnabled(enabled);
+    setCurrentTime((time) => Math.min(time, enabled ? current.duration : timeline?.duration ?? time));
+    onStatus(enabled
+      ? "Unified composition preview is active. Timeline clip editing remains on the legacy sequence; Camera edits target the unified composition."
+      : "Returned to the active legacy sequence preview.");
+  }
+
+  function migrateToUnifiedComposition() {
+    const current = projectRef.current;
+    if (!current) return;
+    if (current.composition) {
+      onStatus("This project already has a unified composition.");
+      return;
+    }
+    const availableIds = sequenceIds.length > 0 ? sequenceIds : ["opening"];
+    const storedActiveId = current.timeline.sequenceId ?? "legacy";
+    const timelineFor = (id: string): EditorProject["timeline"] | null => {
+      if (id === storedActiveId && storedActiveId !== "legacy") return current.timeline;
+      if (id === "opening" && storedActiveId === "legacy" && !current.sequences?.opening) return current.timeline;
+      return current.sequences?.[id] ?? null;
+    };
+    const durationFor = (id: string, value: EditorProject["timeline"]): number => timelinePlaybackDuration({
+      ...value,
+      sequenceId: id,
+      durationMode: value.durationMode ?? "manual",
+      colorLayers: value.colorLayers,
+    }, 0, undefined, current.talkMixDuration);
+    const openingTimeline = timelineFor("opening");
+    const talkIds = availableIds.filter((id) => /^talk-\d+$/i.test(id));
+    const talks = talkIds.flatMap((id) => {
+      const value = timelineFor(id);
+      return value ? [{ sequenceId: id, duration: durationFor(id, value) }] : [];
+    });
+    const idleSequenceId = openingTimeline ? "opening" : talks[0]?.sequenceId ?? null;
+    const idleTimeline = idleSequenceId ? timelineFor(idleSequenceId) : null;
+    const schedule = createLegacyCompositionSchedule({
+      openingSequenceId: openingTimeline ? "opening" : null,
+      openingDuration: openingTimeline ? durationFor("opening", openingTimeline) : 0,
+      idleSequenceId,
+      idleDuration: idleTimeline ? durationFor(idleSequenceId!, idleTimeline) : 1,
+      includeOpening: Boolean(openingTimeline),
+      initialIdleLoops: DEFAULT_FULL_SEQUENCE_ARRANGEMENT.initialIdleLoops,
+      betweenTalkIdleSeconds: DEFAULT_FULL_SEQUENCE_ARRANGEMENT.betweenTalkIdleSeconds,
+      finalIdleLoops: DEFAULT_FULL_SEQUENCE_ARRANGEMENT.finalIdleLoops,
+      talks,
+    });
+    const migrated = migrateEditorProjectComposition(current, {
+      schedule,
+      frameRate: 30,
+      persistentTimeMapping: DEFAULT_FULL_SEQUENCE_ARRANGEMENT.persistentTimeMapping,
+      persistentBackgrounds: DEFAULT_FULL_SEQUENCE_ARRANGEMENT.persistentBackgrounds,
+    });
+    const scheduleSummary = migrated.report.schedule.map((entry) => `${entry.id}: ${entry.kind} ${entry.start.toFixed(2)}–${(entry.start + entry.duration).toFixed(2)}s${entry.sequenceId ? ` (${entry.sequenceId})` : ""}`).join("\n");
+    const reportSummary = [
+      ...migrated.report.assumptions.map((assumption) => `• ${assumption}`),
+      ...migrated.report.diagnostics.map((item) => `• ${item.severity.toUpperCase()} ${item.code}: ${item.message}`),
+    ].join("\n");
+    const confirmed = window.confirm(`Create an in-memory unified composition? The source sequences will be preserved, and saving remains explicit.\n\nSchedule:\n${scheduleSummary || "(empty)"}\n\nMigration report:\n${reportSummary || "No assumptions or diagnostics."}\n\nContinue?`);
+    if (!confirmed) return;
+    onMutate((value) => ({ ...value, composition: migrated.composition }));
+    onStatus(`Created an unsaved unified composition draft with ${migrated.composition.sections.length} sections. Legacy sequences remain intact; use Save when ready.`);
+  }
+
   function addTalkSequenceToProject() {
     if (!project) return;
     const id = nextTalkSequenceIdForProject(project, animations);
@@ -2689,9 +2809,9 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     setFiles({});
     setLayerLoadErrors({});
     setLayerManifestVersions({});
-    void Promise.all(displayLayers.map(async (layer) => {
+    void Promise.all(assetLayers.map(async (layer) => {
       try {
-        const assetPath = project?.timeline.assetPaths?.[layer.directory];
+        const assetPath = editorAssetPathForDirectory(project, layer.directory);
         const files = assetPath && source.getSetFilesAtPath
           ? await source.getSetFilesAtPath(assetPath, controller.signal)
           : await source.getSetFiles(layer.directory, controller.signal);
@@ -2776,7 +2896,10 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       void findAudioFile(source, clip.path, request.controller.signal).then((file) => {
         if (pendingAudioLoadsRef.current[clip.id] !== request) return;
         delete pendingAudioLoadsRef.current[clip.id];
-        const currentClip = projectRef.current?.timeline.audio.find((item) => item.id === clip.id);
+        const currentProject = projectRef.current;
+        const currentClip = compositionPreviewEnabled
+          ? currentProject?.composition?.audio.find((item) => item.id === clip.id)
+          : currentProject?.timeline.audio.find((item) => item.id === clip.id);
         if (sourceRef.current !== source || currentClip?.path !== clip.path) return;
         if (!file) {
           setMissingAudio((value) => value.includes(clip.path) ? value : [...value, clip.path]);
@@ -2788,13 +2911,17 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       }).catch(() => {
         if (pendingAudioLoadsRef.current[clip.id] !== request) return;
         delete pendingAudioLoadsRef.current[clip.id];
-        if (sourceRef.current === source && projectRef.current?.timeline.audio.some((item) => item.id === clip.id && item.path === clip.path)) {
+        const currentProject = projectRef.current;
+        const clipStillExists = compositionPreviewEnabled
+          ? currentProject?.composition?.audio.some((item) => item.id === clip.id && item.path === clip.path)
+          : currentProject?.timeline.audio.some((item) => item.id === clip.id && item.path === clip.path);
+        if (sourceRef.current === source && clipStillExists) {
           setMissingAudio((value) => value.includes(clip.path) ? value : [...value, clip.path]);
           setAudioPreloadState(clip.id, "missing");
         }
       });
     }
-  }, [audioLoadKey, source, timeline?.audio]);
+  }, [audioLoadKey, compositionPreviewEnabled, source]);
 
   useEffect(() => () => {
     for (const request of Object.values(pendingAudioLoadsRef.current)) request.controller.abort();
@@ -2841,6 +2968,10 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   }, [directory, initialSubtitlePath, onError, onSubtitleOpened, project, source]);
 
   function applyDecodedAudioDuration(id: string, decodedDuration: number) {
+    if (compositionPreviewEnabled) {
+      if (Number.isFinite(decodedDuration) && decodedDuration > 0) setAudioDurations((value) => value[id] === decodedDuration ? value : { ...value, [id]: decodedDuration });
+      return;
+    }
     const currentTimeline = timeline;
     const clip = currentTimeline?.audio.find((item) => item.id === id);
     if (!currentTimeline) return;
@@ -2860,7 +2991,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       Object.values(audioElementsRef.current).forEach((audio) => audio?.pause());
       return;
     }
-    for (const clip of timeline?.audio ?? []) {
+    for (const clip of previewTimeline?.audio ?? []) {
       const audio = audioElementsRef.current[clip.id];
       if (!audio) continue;
       if (audioPreloadStates[clip.id] === "missing") {
@@ -2883,12 +3014,13 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       audioPreviousTimeRef.current[clip.id] = currentTime;
       audioStartedRef.current[clip.id] = decision.started;
       if (!active) { audio.pause(); continue; }
-      const local = Math.max(0, currentTime - clip.start);
+      const sourceOffset = (clip as { sourceOffset?: number }).sourceOffset ?? 0;
+      const local = Math.max(0, currentTime - clip.start) + sourceOffset;
       if (decision.seek || Math.abs(audio.currentTime - local) > 0.08) audio.currentTime = local;
       if (decision.play) void audio.play().catch(() => undefined);
       else audio.pause();
     }
-  }, [audioPreloadsReady, audioUrls, currentTime, playing, speed, timeline?.audio]);
+  }, [audioPreloadsReady, audioUrls, compositionPreviewEnabled, currentTime, playing, previewTimeline?.audio, speed]);
 
   useEffect(() => {
     if (!playing || !audioPreloadsReady) return;
@@ -2900,7 +3032,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       const stopAt = selectionLoopRange?.end ?? (previewUntil === null ? duration : Math.min(duration, previewUntil));
       const advanced = selectionLoopRange
         ? advanceTimelineRangeLoop(currentTimeRef.current, delta, speed, selectionLoopRange)
-        : advanceSpineTimeline(currentTimeRef.current, delta, speed, stopAt, previewUntil === null && Boolean(timeline?.loop) && !talkAutoplayActive);
+        : advanceSpineTimeline(currentTimeRef.current, delta, speed, stopAt, previewUntil === null && Boolean(previewTimeline?.loop) && !talkAutoplayActive);
       currentTimeRef.current = advanced.time;
       setCurrentTime(advanced.time);
       if (advanced.finished) {
@@ -2915,7 +3047,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [audioPreloadsReady, duration, isTalkSequence, loopTalkList, playing, previewUntil, selectionLoopRange, speed, talkAutoplayActive, talkSequenceIds, timeline?.audio, timeline?.loop, timeline?.sequenceId]);
+  }, [audioPreloadsReady, duration, isTalkSequence, loopTalkList, playing, previewUntil, previewTimeline?.audio, previewTimeline?.loop, selectionLoopRange, speed, talkAutoplayActive, talkSequenceIds, timeline?.sequenceId]);
 
   useEffect(() => {
     if (!pendingTalkSequence || !talkAutoplayActive) return;
@@ -3004,6 +3136,10 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   useEffect(() => {
     if (mode !== "camera") setCameraContextMenu(null);
   }, [mode]);
+
+  useEffect(() => {
+    setCompositionPreviewEnabled(false);
+  }, [directory, project?.composition?.id]);
 
   useEffect(() => {
     if (mode !== "camera" || cameraContextMenu) return;
@@ -4163,7 +4299,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   if (!project || !timeline) return <div className="timeline-empty"><strong>Open a Spine asset folder first</strong><span>The timeline uses the selected character set plus matching <code>_bg</code> and <code>_scene</code> directories.</span></div>;
 
   const availableLayerDirectories = directories.filter((item) => !timeline.layers.some((layer) => layer.directory === item));
-  const activeSubtitleTexts = timelineActiveSubtitleTexts(timeline, currentTime);
+  const activeSubtitleTexts = timelineActiveSubtitleTexts(previewTimeline ?? timeline, currentTime);
   const selectedClipDetails: SelectedClipDetail[] = [];
   for (const selection of selectedClips) {
     if (selection.kind === "layer") {
@@ -4291,7 +4427,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     ? Math.max(500, selectedCameraKeyframe.frameHeight * 4, (cameraProjectionRenderer?.getArtworkCameraFrame(cameraAspectValue(cameraTrack.aspectRatio))?.height ?? 0) * 2, ...cameraTrack.safeBounds.map((bound) => cameraFrameHeightForBound(bound, cameraTrack.aspectRatio) * 2))
     : 1000;
   const cameraPlayheadOccupied = cameraTrack?.keyframes.some((keyframe) => Math.abs(keyframe.time - currentTime) < 0.001) ?? false;
-  const cameraReferenceMissing = Boolean(cameraTrack?.referenceLayerId && !(timeline?.layers ?? []).some((layer) => layer.id === cameraTrack.referenceLayerId));
+  const cameraReferenceMissing = Boolean(cameraTrack?.referenceLayerId && !(previewTimeline?.layers ?? []).some((layer) => layer.id === cameraTrack.referenceLayerId));
 
   function timelineSelectionFromElement(element: Element): TimelineSelection | null {
     const target = element.closest<HTMLElement>("[data-context-kind][data-context-id]");
@@ -4455,7 +4591,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
 
   function renderTimelineAudio() {
     return <div className="timeline-audio-host" aria-hidden="true">
-      {(timeline?.audio ?? []).map((clip) => <audio key={clip.id} ref={(element) => { audioElementsRef.current[clip.id] = element; }} src={audioUrls[clip.id]} preload="auto" onLoadedMetadata={(event) => applyDecodedAudioDuration(clip.id, event.currentTarget.duration)} onCanPlay={() => setAudioPreloadState(clip.id, "ready")} onError={() => { setMissingAudio((value) => value.includes(clip.path) ? value : [...value, clip.path]); setAudioPreloadState(clip.id, "missing"); }} />)}
+      {(previewTimeline?.audio ?? []).map((clip) => <audio key={clip.id} ref={(element) => { audioElementsRef.current[clip.id] = element; }} src={audioUrls[clip.id]} preload="auto" onLoadedMetadata={(event) => applyDecodedAudioDuration(clip.id, event.currentTarget.duration)} onCanPlay={() => setAudioPreloadState(clip.id, "ready")} onError={() => { setMissingAudio((value) => value.includes(clip.path) ? value : [...value, clip.path]); setAudioPreloadState(clip.id, "missing"); }} />)}
     </div>;
   }
 
@@ -4494,8 +4630,9 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
 
       <main className="camera-main">
         <header className="camera-heading">
-          <div><strong>{timeline.sequenceId === "opening" ? "Opening / Intro" : timeline.sequenceId ? sequenceDisplayName(timeline.sequenceId) : "Recovered composition"}</strong><small>Full-scene authoring · {cameraTrack?.aspectRatio ?? "16:9"} constrained output</small></div>
-          <label className="camera-sequence-picker">Sequence<select value={timeline.sequenceId ?? "legacy"} onChange={(event) => chooseSequence(event.target.value)}>{sequenceIds.map((id) => <option key={id} value={id}>{id === "opening" ? "Opening / Intro" : sequenceDisplayName(id)}</option>)}{(!timeline.sequenceId || timeline.sequenceId === "legacy") && <option value="legacy">Recovered composition</option>}</select></label>
+          <div><strong>{compositionPreviewEnabled ? "Unified composition" : timeline.sequenceId === "opening" ? "Opening / Intro" : timeline.sequenceId ? sequenceDisplayName(timeline.sequenceId) : "Recovered composition"}</strong><small>{compositionPreviewEnabled ? "Shared composition evaluation · camera edits save to the composition" : `Full-scene authoring · ${cameraTrack?.aspectRatio ?? "16:9"} constrained output`}</small></div>
+          {!compositionPreviewEnabled && <label className="camera-sequence-picker">Sequence<select value={timeline.sequenceId ?? "legacy"} onChange={(event) => chooseSequence(event.target.value)}>{sequenceIds.map((id) => <option key={id} value={id}>{id === "opening" ? "Opening / Intro" : sequenceDisplayName(id)}</option>)}{(!timeline.sequenceId || timeline.sequenceId === "legacy") && <option value="legacy">Recovered composition</option>}</select></label>}
+          {composition && <button type="button" className={`editor-button${compositionPreviewEnabled ? " active" : ""}`} aria-pressed={compositionPreviewEnabled} onClick={toggleCompositionPreview}>{compositionPreviewEnabled ? "Preview legacy sequence" : "Preview unified composition"}</button>}
           <button type="button" className={`editor-button${cameraTrack?.enabled ? " active" : ""}`} onClick={() => updateCameraTrack((value) => ({ ...value, enabled: !value.enabled }))} aria-pressed={cameraTrack?.enabled === true}>{cameraTrack?.enabled ? "Camera enabled" : "Enable camera"}</button>
           <button type="button" className={`editor-button${cameraInspectorTarget === "settings" ? " active" : ""}`} onClick={() => setCameraInspectorTarget("settings")} aria-pressed={cameraInspectorTarget === "settings"}>Camera settings</button>
           <button type="button" className="editor-button camera-add-shot" onClick={addCameraKeyframe}><IconPlus /> Add shot at playhead</button>
@@ -4528,10 +4665,10 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
               <div ref={stageRef} className={`timeline-stage camera-scene-stage tool-${cameraTool}${stagePanning ? " is-panning" : ""}${cameraSpacePanning ? " is-space-panning" : ""}${cameraBoundDrawing ? " is-drawing-camera-bound" : ""}`} role="application" tabIndex={0} aria-haspopup="menu" aria-keyshortcuts="Shift+F10 ContextMenu" aria-label={cameraBoundDrawing ? "Full scene. Drag to draw a camera boundary. Press V for Select, H for Pan, B for Draw, F to fit, or hold Space and drag to pan." : "Full scene camera editor. Middle-drag to pan; press V for Select, H for Pan, B for Draw, F to fit, or hold Space and drag to pan."} onKeyDownCapture={handleCameraStageKeyDownCapture} onKeyDown={handleCameraStageKeyDown} onClick={clearCameraSceneSelection} onContextMenu={(event) => openCameraContextMenu(event, { kind: "empty" })} onPointerDown={beginStagePan} onPointerMove={moveStagePan} onPointerUp={endStagePan} onPointerCancel={endStagePan} onLostPointerCapture={endStagePan} onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }} onWheel={zoomStageAtCursor}>
                 <div className="timeline-stage-content" style={{ transform: `translate3d(${stageView.x}px, ${stageView.y}px, 0) scale(${stageView.scale})` }}>
                   <div className="timeline-visual-composition">
-                    {displayVisualTracks.map((track) => track.kind === "spine"
-                       ? <SpineTimelineLayerCanvas key={`camera-scene-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} currentTime={currentTime} mainAnimation={mainAnimation} mainCharacterTransform={characterLayer} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} effectsStrength={project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH} characterHidden={characterHidden} cameraMode="artwork" resolutionScale={stageView.scale} sharedCameraPose={sharedCameraPose} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={setSharedCameraPose} onAnimationDuration={onAnimationDuration} onRenderer={(id, renderer) => { if (renderer) spineRenderersRef.current.set(id, renderer); else spineRenderersRef.current.delete(id); setCameraProjectionRevision((value) => value + 1); }} onError={onError} />
-                      : <TimelineColorLayerPreview key={`camera-scene-color-${track.layer.id}`} layer={track.layer} time={currentTime} />)}
-                    {!displayVisualTracks.length && <div className="timeline-empty"><strong>No layers</strong><span>Add a Spine layer in Timeline to preview this scene.</span></div>}
+                     {previewVisualTracks.map((track) => track.kind === "spine"
+                        ? <SpineTimelineLayerCanvas key={`camera-scene-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} composition={compositionPreviewFrame ? composition ?? undefined : undefined} compositionSample={compositionLayerFrames.get(track.layer.id)} currentTime={currentTime} mainAnimation={mainAnimation} mainCharacterTransform={characterLayer} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} effectsStrength={project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH} characterHidden={characterHidden} cameraMode="artwork" resolutionScale={stageView.scale} sharedCameraPose={sharedCameraPose} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={setSharedCameraPose} onAnimationDuration={onAnimationDuration} onRenderer={(id, renderer) => { if (renderer) spineRenderersRef.current.set(id, renderer); else spineRenderersRef.current.delete(id); setCameraProjectionRevision((value) => value + 1); }} onError={onError} />
+                        : <TimelineColorLayerPreview key={`camera-scene-color-${track.layer.id}`} layer={track.layer} time={currentTime} />)}
+                     {!previewVisualTracks.length && <div className="timeline-empty"><strong>No layers</strong><span>Add a Spine layer in Timeline to preview this scene.</span></div>}
                   </div>
                   </div>
                   {cameraProjectionSize && (cameraGuidesVisible || cameraShotGuidesVisible && (cameraOutputRect || selectedCameraKeyframe) || cameraBoundDrawing || cameraBoundDraft) && <svg className={`timeline-camera-overlay camera-scene-overlay${cameraBoundDrawing ? " is-drawing" : ""}`} viewBox={`0 0 ${cameraProjectionSize.width} ${cameraProjectionSize.height}`} preserveAspectRatio="none" role="application" aria-label={cameraBoundDrawing ? "Drag over the full scene to draw a camera boundary" : "Full-scene camera boundaries and selected camera shot"} style={cameraBoundDrawing ? { pointerEvents: "all", touchAction: "none" } : undefined} onPointerDown={beginCameraBoundDraw} onPointerMove={moveCameraBoundDraw} onPointerUp={endCameraBoundDraw} onPointerCancel={(event) => {
@@ -4634,8 +4771,8 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
             <div className="camera-output-wrap">
               <div className="camera-output-stage" style={{ "--camera-aspect": cameraAspectValue(editableCameraTrack.aspectRatio) } as CSSProperties}>
                 <div className="timeline-visual-composition camera-output-composition">
-                  {displayVisualTracks.map((track) => track.kind === "spine"
-                        ? <SpineTimelineLayerCanvas key={`camera-output-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} currentTime={currentTime} mainAnimation={mainAnimation} mainCharacterTransform={characterLayer} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} effectsStrength={project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH} characterHidden={characterHidden} cameraMode={previewCameraMode} sharedCameraFrame={previewCameraFrame} sharedCameraPose={null} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={() => undefined} onAnimationDuration={onAnimationDuration} onError={onError} />
+                   {previewVisualTracks.map((track) => track.kind === "spine"
+                         ? <SpineTimelineLayerCanvas key={`camera-output-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} composition={compositionPreviewFrame ? composition ?? undefined : undefined} compositionSample={compositionLayerFrames.get(track.layer.id)} currentTime={currentTime} mainAnimation={mainAnimation} mainCharacterTransform={characterLayer} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} effectsStrength={project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH} characterHidden={characterHidden} cameraMode={previewCameraMode} sharedCameraFrame={previewCameraFrame} sharedCameraPose={null} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={() => undefined} onAnimationDuration={onAnimationDuration} onError={onError} />
                     : <TimelineColorLayerPreview key={`camera-output-color-${track.layer.id}`} layer={track.layer} time={currentTime} />)}
                 </div>
                 {activeSubtitleTexts.length > 0 && <div className="timeline-subtitle-preview camera-output-subtitles" aria-live="polite">{activeSubtitleTexts.map((text, index) => <div key={`${index}-${text}`}>{text}</div>)}</div>}
@@ -4777,12 +4914,15 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
         </div>
       </aside>
       {!sequencePanelCollapsed && <TimelinePanelResizer side="sequences" value={sequencePanelWidth} onChange={(sequencePanelWidth) => updateTimelineLayout({ sequencePanelWidth })} />}
-       <section className="timeline-main">
-           <div className="sequence-heading">
-              <div><strong>{timeline.sequenceId === "opening" ? "Opening / Intro" : timeline.sequenceId ? sequenceDisplayName(timeline.sequenceId) : "Recovered composition"}</strong><small>{timeline.sequenceId === "opening" ? "Layered Spine and color composition." : "Synchronized Spine composition"}</small></div>
-              <div className="sequence-heading-actions">
-                <button type="button" className="editor-button timeline-panel-toggle" aria-controls="timeline-sequence-browser" aria-expanded={!sequencePanelCollapsed} onClick={() => updateTimelineLayout({ sequencePanelCollapsed: !sequencePanelCollapsed })}>{sequencePanelCollapsed ? "Show sequences" : "Hide sequences"}</button>
-                {(timeline.sequenceId === "opening" || isTalkSequence) && <span className="opening-duration-badge">{timeline.durationMode === "auto" ? "AUTO" : "MANUAL"} · {seconds(duration)}</span>}
+        <section className="timeline-main">
+            <div className="sequence-heading">
+                <div><strong>{compositionPreviewEnabled ? "Unified composition preview" : timeline.sequenceId === "opening" ? "Opening / Intro" : timeline.sequenceId ? sequenceDisplayName(timeline.sequenceId) : "Recovered composition"}</strong><small>{compositionPreviewEnabled ? "Shared evaluator · timeline rows below remain the legacy sequence" : timeline.sequenceId === "opening" ? "Layered Spine and color composition." : "Synchronized Spine composition"}</small></div>
+                <div className="sequence-heading-actions">
+                  <button type="button" className="editor-button timeline-panel-toggle" aria-controls="timeline-sequence-browser" aria-expanded={!sequencePanelCollapsed} onClick={() => updateTimelineLayout({ sequencePanelCollapsed: !sequencePanelCollapsed })}>{sequencePanelCollapsed ? "Show sequences" : "Hide sequences"}</button>
+                  {!project.composition && <button type="button" className="editor-button" onClick={migrateToUnifiedComposition} title="Review the generated migration schedule and report before creating an unsaved composition draft">Migrate to unified composition</button>}
+                  {composition && <button type="button" className={`editor-button${compositionPreviewEnabled ? " active" : ""}`} aria-pressed={compositionPreviewEnabled} onClick={toggleCompositionPreview}>{compositionPreviewEnabled ? "Preview legacy sequence" : "Preview unified composition"}</button>}
+                  {compositionPreviewEnabled && <span className="opening-duration-badge" role="status">Read-only composition preview</span>}
+                 {(timeline.sequenceId === "opening" || isTalkSequence) && <span className="opening-duration-badge">{timeline.durationMode === "auto" ? "AUTO" : "MANUAL"} · {seconds(duration)}</span>}
                  {timeline.sequenceId === "opening" && <><button className="editor-button" type="button" onClick={() => addColorLayer()}><IconPlus /> Color layer</button><button className="editor-button" type="button" onClick={() => setLayerPickerOpen(true)} disabled={!availableLayerDirectories.length}><IconPlus /> Spine layer</button></>}
                 <button type="button" className="editor-button timeline-panel-toggle" aria-controls="timeline-inspector" aria-expanded={!inspectorPanelCollapsed} onClick={() => updateTimelineLayout({ inspectorPanelCollapsed: !inspectorPanelCollapsed })}>{inspectorPanelCollapsed ? "Show inspector" : "Hide inspector"}</button>
               </div>
@@ -4807,10 +4947,10 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
              >
                 <div className="timeline-stage-content" style={{ transform: `translate3d(${stageView.x}px, ${stageView.y}px, 0) scale(${stageView.scale})` }}>
                   <div className="timeline-visual-composition">
-                      {displayVisualTracks.map((track) => track.kind === "spine"
-                       ? <SpineTimelineLayerCanvas key={`spine-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} currentTime={currentTime} mainAnimation={mainAnimation} mainCharacterTransform={characterLayer} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} effectsStrength={project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH} characterHidden={characterHidden} preserveDrawingBuffer cameraMode={previewCameraMode} sharedCameraFrame={previewCameraFrame} onMarkers={(next) => setMarkers((old) => old.join() === next.join() ? old : next)} sharedCameraPose={null} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={() => undefined} onAnimationDuration={onAnimationDuration} onRenderer={(id, renderer) => { if (renderer) spineRenderersRef.current.set(id, renderer); else spineRenderersRef.current.delete(id); setCameraProjectionRevision((value) => value + 1); }} onError={onError} />
-                        : <TimelineColorLayerPreview key={`color-${track.layer.id}`} layer={track.layer} time={currentTime} />)}
-                    {!displayVisualTracks.length && <div className="timeline-empty"><strong>No layers</strong><span>Add a Spine or Color layer from the Add menu.</span></div>}
+                       {previewVisualTracks.map((track) => track.kind === "spine"
+                        ? <SpineTimelineLayerCanvas key={`spine-${track.layer.id}`} layer={track.layer} files={files[track.layer.directory] ?? null} composition={compositionPreviewFrame ? composition ?? undefined : undefined} compositionSample={compositionLayerFrames.get(track.layer.id)} currentTime={currentTime} mainAnimation={mainAnimation} mainCharacterTransform={characterLayer} sequenceId={timeline.sequenceId} openingMode={timeline.openingMode} talkMixDuration={talkMixDuration} talkBlendOutStart={talkBlendOutStart} effectsStrength={project?.effectsStrength ?? DEFAULT_EFFECTS_STRENGTH} characterHidden={characterHidden} preserveDrawingBuffer cameraMode={previewCameraMode} sharedCameraFrame={previewCameraFrame} onMarkers={(next) => setMarkers((old) => old.join() === next.join() ? old : next)} sharedCameraPose={null} referenceCamera={track.layer.id === referenceLayerId} onMeta={(id, meta) => setMetas((value) => ({ ...value, [id]: meta }))} onCameraPose={() => undefined} onAnimationDuration={onAnimationDuration} onRenderer={(id, renderer) => { if (renderer) spineRenderersRef.current.set(id, renderer); else spineRenderersRef.current.delete(id); setCameraProjectionRevision((value) => value + 1); }} onError={onError} />
+                         : <TimelineColorLayerPreview key={`color-${track.layer.id}`} layer={track.layer} time={currentTime} />)}
+                     {!previewVisualTracks.length && <div className="timeline-empty"><strong>No layers</strong><span>Add a Spine or Color layer from the Add menu.</span></div>}
                    </div>
                  </div>
                {activeSubtitleTexts.length > 0 && <div className="timeline-subtitle-preview" aria-live="polite">

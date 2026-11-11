@@ -471,6 +471,7 @@ async function api(request: Request, url: URL): Promise<Response> {
         start: Number(request.headers.get("x-ba-spine-audio-start")),
         duration: Number(request.headers.get("x-ba-spine-audio-duration")),
         volume: Number(request.headers.get("x-ba-spine-audio-volume")),
+        sourceOffset: Number(request.headers.get("x-ba-spine-audio-source-offset") ?? 0),
         extension: request.headers.get("x-ba-spine-audio-extension") ?? "",
         bytes,
       });
