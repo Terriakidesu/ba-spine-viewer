@@ -214,6 +214,53 @@
   white-space: nowrap;
 }
 
+.composition-tool-row > label > select {
+  max-width: 180px;
+  min-width: 90px;
+}
+
+.composition-route-controls {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.composition-route-controls > label {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.composition-route-channels {
+  display: flex;
+  min-width: 100%;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 0;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--app-border, #34363d);
+  border-radius: 6px;
+}
+
+.composition-route-channels legend {
+  padding: 0 4px;
+  color: var(--app-muted, #a3a5ad);
+  font-size: 11px;
+}
+
+.composition-route-channels label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--app-muted, #a3a5ad);
+  font-size: 11px;
+}
+
+.composition-tangent-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  align-items: start;
+}
+
 @media (max-width: 720px) {
   .composition-editor-toolbar { flex-wrap: wrap; }
   .composition-editor-toolbar > span { margin-left: 0; }

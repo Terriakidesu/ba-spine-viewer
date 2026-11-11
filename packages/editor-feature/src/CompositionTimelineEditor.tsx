@@ -4,6 +4,7 @@ import {
   type CompositionAnimationClip,
   type CompositionPropertyTrack,
   type CompositionSection,
+  type CompositionSectionRoute,
   type CompositionTarget,
   type CompositionValue,
   type SpineComposition,
@@ -199,6 +200,11 @@ export function CompositionTimelineEditor({ composition, currentTime, animationN
     edit({ kind: "upsert_section", section: { ...section, ...patch } });
   }
 
+  function updateSectionRoute(patch: Partial<CompositionSectionRoute>) {
+    if (!selectedSection?.route) return;
+    updateSection(selectedSection, { route: { ...selectedSection.route, ...patch } });
+  }
+
   const laneStyle = { width: `${trackWidth}px` };
 
   return <div className="composition-editor-panel" ref={scrollRef} aria-label="Unified composition timeline">
@@ -286,6 +292,31 @@ export function CompositionTimelineEditor({ composition, currentTime, animationN
             <button type="button" className="editor-button" disabled={selectedSection.route?.role !== "idle"} onClick={() => edit({ kind: "set_idle_section", sectionId: selectedSection.id })}>Set idle route target</button>
             <button type="button" className="editor-button" onClick={() => edit({ kind: "set_entry_section", sectionId: selectedSection.id })}>Set entry section</button>
           </div>
+          {selectedSection.route && <div className="composition-tool-row composition-route-controls">
+            {selectedSection.route.role === "talk" && <>
+              <label>Return to<select aria-label="Talk return section" value={selectedSection.route.returnToSectionId ?? ""} onChange={(event) => updateSectionRoute({ returnToSectionId: event.target.value || null })}>
+                <option value="">No section</option>{composition.sections.filter((section) => section.id !== selectedSection.id).map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}
+              </select></label>
+              <label>Duplicate trigger<select aria-label="Talk duplicate trigger policy" value={selectedSection.route.duplicateTrigger} onChange={(event) => updateSectionRoute({ duplicateTrigger: event.target.value as CompositionSectionRoute["duplicateTrigger"] })}>
+                <option value="ignore">Ignore</option><option value="restart">Restart</option><option value="queue">Queue</option><option value="replace">Replace</option>
+              </select></label>
+              <label>Interruption<select aria-label="Talk interruption policy" value={selectedSection.route.interruption} onChange={(event) => updateSectionRoute({ interruption: event.target.value as CompositionSectionRoute["interruption"] })}>
+                <option value="replace">Replace</option><option value="ignore">Ignore</option><option value="finish-current">Finish current</option>
+              </select></label>
+              <NumberField label="Talk blend in" value={selectedSection.route.blendIn} min={0} step={0.01} precision={3} unit="s" onCommit={(blendIn) => updateSectionRoute({ blendIn })} />
+              <NumberField label="Talk blend out" value={selectedSection.route.blendOut} min={0} step={0.01} precision={3} unit="s" onCommit={(blendOut) => updateSectionRoute({ blendOut })} />
+              <label>Camera return<select aria-label="Talk camera return policy" value={selectedSection.route.cameraReturn} onChange={(event) => updateSectionRoute({ cameraReturn: event.target.value as CompositionSectionRoute["cameraReturn"] })}>
+                <option value="blend">Blend</option><option value="hold">Hold</option><option value="persistent">Persistent</option>
+              </select></label>
+            </>}
+            <fieldset className="composition-route-channels"><legend>Owned channels</legend>
+              {(["body", "face", "audio", "subtitles", "camera", "effects", "scene", "skeletal-overrides"] as const).map((channel) => <label key={channel}>
+                <input type="checkbox" checked={selectedSection.route!.ownedChannels.includes(channel)} onChange={(event) => updateSectionRoute({ ownedChannels: event.target.checked
+                  ? [...selectedSection.route!.ownedChannels, channel]
+                  : selectedSection.route!.ownedChannels.filter((item) => item !== channel) })} />{channel}
+              </label>)}
+            </fieldset>
+          </div>}
         </>}
       </section>
       <section className="composition-authoring-section">
@@ -347,6 +378,12 @@ export function CompositionTimelineEditor({ composition, currentTime, animationN
           <button type="button" className="editor-button" disabled={!selectedKey} onClick={updateSelectedKey}>Update selected key</button>
           <button type="button" className="editor-button danger" disabled={!selectedKey} onClick={() => { if (!selectedKey) return; edit({ kind: "remove_keyframe", trackId: selectedTrack.id, keyId: selectedKey.id }); setSelectedKeyId(null); }}>Remove key</button>
           <button type="button" className="editor-button danger" onClick={() => { edit({ kind: "remove_property_track", trackId: selectedTrack.id }); setSelectedTrackId(null); }}>Remove track</button>
+        </div>}
+        {selectedTrack && selectedKey && <div className="composition-tool-row composition-tangent-controls" aria-label="Keyframe tangent controls">
+          <NumberField label="In tangent time" value={selectedKey.inTangent?.time ?? 1 / 3} min={0} max={1} step={0.01} precision={3} onCommit={(time) => edit({ kind: "upsert_keyframe", trackId: selectedTrack.id, key: { ...selectedKey, inTangent: { time, value: selectedKey.inTangent?.value ?? 2 / 3 } } })} />
+          <NumberField label="In tangent value" value={selectedKey.inTangent?.value ?? 2 / 3} step={0.01} precision={3} onCommit={(value) => edit({ kind: "upsert_keyframe", trackId: selectedTrack.id, key: { ...selectedKey, inTangent: { time: selectedKey.inTangent?.time ?? 1 / 3, value } } })} />
+          <NumberField label="Out tangent time" value={selectedKey.outTangent?.time ?? 1 / 3} min={0} max={1} step={0.01} precision={3} onCommit={(time) => edit({ kind: "upsert_keyframe", trackId: selectedTrack.id, key: { ...selectedKey, outTangent: { time, value: selectedKey.outTangent?.value ?? 1 / 3 } } })} />
+          <NumberField label="Out tangent value" value={selectedKey.outTangent?.value ?? 1 / 3} step={0.01} precision={3} onCommit={(value) => edit({ kind: "upsert_keyframe", trackId: selectedTrack.id, key: { ...selectedKey, outTangent: { time: selectedKey.outTangent?.time ?? 1 / 3, value } } })} />
         </div>}
       </section>
       <section className="composition-authoring-section">

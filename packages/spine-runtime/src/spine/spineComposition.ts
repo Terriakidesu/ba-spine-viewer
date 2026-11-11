@@ -426,6 +426,35 @@ export function validateComposition(composition: SpineComposition, capabilities?
 
   const layerIds = new Set(composition.layers.map((layer) => layer.id));
   const sectionIds = new Set(composition.sections.map((section) => section.id));
+  const sectionById = new Map(composition.sections.map((section) => [section.id, section]));
+  const sectionForClock = (
+    clock: CompositionClock | CompositionSourceClock,
+    description: string,
+    targetId: string,
+  ): CompositionSection | null => {
+    if (clock.kind !== "section-instance") return null;
+    const section = sectionById.get(clock.sectionId);
+    if (!section) {
+      report("error", "missing-section-clock", `${description} references missing section “${clock.sectionId}”.`, targetId);
+      return null;
+    }
+    return section;
+  };
+  const validateSectionLocalCueRange = (
+    section: CompositionSection,
+    start: number,
+    end: number,
+    description: string,
+    targetId: string,
+  ) => {
+    const sectionDuration = section.end - section.start;
+    if (!Number.isFinite(sectionDuration) || sectionDuration <= 0) return;
+    if (start >= sectionDuration) {
+      report("warning", "section-local-range", `${description} starts at or beyond the end of section “${section.id}” and is unreachable.`, targetId);
+    } else if (end > sectionDuration) {
+      report("warning", "section-local-range", `${description} extends past the end of section “${section.id}” and will be truncated.`, targetId);
+    }
+  };
   for (const layer of composition.layers) {
     if (!layer.assetDirectory.trim() || !layer.assetIdentity.trim()) report("error", "layer-asset", `Layer “${layer.name}” has no stable asset binding.`, layer.id);
     if (!Number.isFinite(layer.order)) report("error", "layer-order", `Layer “${layer.id}” has an invalid compositing order.`, layer.id);
@@ -489,6 +518,14 @@ export function validateComposition(composition: SpineComposition, capabilities?
   }
 
   for (const track of composition.propertyTracks) {
+    const clockSection = sectionForClock(track.clock, `Track “${track.id}” clock`, track.id);
+    if (clockSection) {
+      const sectionDuration = clockSection.end - clockSection.start;
+      if (Number.isFinite(sectionDuration) && sectionDuration > 0
+        && track.keys.some((key) => Number.isFinite(key.time) && key.time > sectionDuration)) {
+        report("warning", "section-local-key-range", `Track “${track.id}” has keys beyond the end of section “${clockSection.id}”; those keys are unreachable.`, track.id);
+      }
+    }
     const definition = compositionPropertyDefinition(track.property);
     if (!definition) {
       report("warning", "unsupported-property", `Property “${track.property}” is not registered; its authored keys are retained but cannot be evaluated.`, track.id);
@@ -530,6 +567,9 @@ export function validateComposition(composition: SpineComposition, capabilities?
     }
   }
   for (const clip of composition.animationClips) {
+    const activationSection = sectionForClock(clip.clock, `Animation clip “${clip.id}” activation clock`, clip.id);
+    sectionForClock(clip.sourceClock, `Animation clip “${clip.id}” source clock`, clip.id);
+    if (activationSection) validateSectionLocalCueRange(activationSection, clip.start, clip.end, `Animation clip “${clip.id}”`, clip.id);
     if (!layerIds.has(clip.layerId)) report("error", "missing-animation-layer", `Animation clip “${clip.id}” references missing layer “${clip.layerId}”.`, clip.id);
     if (clip.sourceStart < 0 || clip.sourceEnd <= clip.sourceStart || !Number.isFinite(clip.sourceEnd)) report("error", "source-range", `Animation clip “${clip.id}” has an invalid source range.`, clip.id);
     if (!Number.isFinite(clip.sourceOriginTime) || clip.sourceOriginTime < 0) report("error", "source-origin", `Animation clip “${clip.id}” has an invalid source-clock origin.`, clip.id);
@@ -538,7 +578,18 @@ export function validateComposition(composition: SpineComposition, capabilities?
     if (clip.weight < 0 || clip.weight > 1 || clip.blendIn < 0 || clip.blendOut < 0) report("error", "clip-mix", `Animation clip “${clip.id}” has invalid mix values.`, clip.id);
   }
   for (const audio of composition.audio) {
+    if (audio.sectionId) {
+      const section = sectionById.get(audio.sectionId);
+      if (!section) report("error", "missing-audio-section", `Audio clip “${audio.id}” references missing section “${audio.sectionId}”.`, audio.id);
+      else validateSectionLocalCueRange(section, audio.start, audio.end, `Audio clip “${audio.id}”`, audio.id);
+    }
     if (audio.volume < 0 || audio.volume > 1 || audio.sourceOffset < 0) report("error", "audio-values", `Audio clip “${audio.id}” has invalid source offset or volume.`, audio.id);
+  }
+  for (const cue of composition.subtitles) {
+    if (!cue.sectionId) continue;
+    const section = sectionById.get(cue.sectionId);
+    if (!section) report("error", "missing-subtitle-section", `Subtitle cue “${cue.id}” references missing section “${cue.sectionId}”.`, cue.id);
+    else validateSectionLocalCueRange(section, cue.start, cue.end, `Subtitle cue “${cue.id}”`, cue.id);
   }
   for (const layer of composition.colorLayers) {
     if (layer.opacity < 0 || layer.opacity > 1) report("error", "color-layer-opacity", `Color layer “${layer.id}” opacity must be in [0, 1].`, layer.id);

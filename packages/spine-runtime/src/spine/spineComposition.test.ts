@@ -430,6 +430,76 @@ test("validation preserves warnings for unresolved targets and rejects invalid n
   expect(diagnostics.map((diagnostic) => diagnostic.code)).toContain("key-value");
 });
 
+test("validation reports missing section clocks and unreachable section-local keys, clips, and cues", () => {
+  const value = composition();
+  value.sections.push({ id: "talk", name: "Talk", start: 2, end: 5 });
+  value.propertyTracks.push(
+    track({
+      id: "late-key-track",
+      target: { kind: "layer", layerId: "character" },
+      property: "layer.position.x",
+      clock: { kind: "section-instance", sectionId: "talk" },
+      keys: [{ id: "late-key", time: 3.5, value: 1, interpolation: "linear" }],
+    }),
+    track({
+      id: "endpoint-key-track",
+      target: { kind: "layer", layerId: "character" },
+      property: "layer.position.y",
+      clock: { kind: "section-instance", sectionId: "talk" },
+      keys: [{ id: "endpoint-key", time: 3, value: 1, interpolation: "linear" }],
+    }),
+    track({
+      id: "missing-clock-track",
+      target: { kind: "layer", layerId: "character" },
+      property: "layer.position.x",
+      clock: { kind: "section-instance", sectionId: "missing" },
+      keys: [{ id: "key", time: 0, value: 1, interpolation: "linear" }],
+    }),
+  );
+  value.animationClips.push({
+    id: "local-clip",
+    layerId: "character",
+    animation: "Talk",
+    clock: { kind: "section-instance", sectionId: "talk" },
+    sourceClock: { kind: "section-instance", sectionId: "missing-source" },
+    start: 2.5,
+    end: 3.5,
+    sourceStart: 0,
+    sourceEnd: 2,
+    sourceOriginTime: 0,
+    sourceOffset: 0,
+    speed: 1,
+    loop: false,
+    endBehavior: "clear",
+    blendIn: 0,
+    blendOut: 0,
+    mixingMode: "replace",
+    weight: 1,
+    priority: 0,
+    enabled: true,
+  });
+  value.audio.push(
+    { id: "overrun-audio", name: "Voice", path: "voice.ogg", start: 2.5, end: 3.5, sourceOffset: 0, volume: 1, enabled: true, sectionId: "talk" },
+    { id: "missing-audio-section", name: "Voice", path: "voice.ogg", start: 0, end: 1, sourceOffset: 0, volume: 1, enabled: true, sectionId: "missing" },
+  );
+  value.subtitles.push(
+    { id: "late-subtitle", start: 3, end: 3.5, enabled: true, text: { en: "Late", ja: "", ko: "" }, sectionId: "talk" },
+    { id: "missing-subtitle-section", start: 0, end: 1, enabled: true, text: { en: "Missing", ja: "", ko: "" }, sectionId: "missing" },
+  );
+
+  const diagnostics = validateComposition(value);
+  const hasDiagnostic = (code: string, targetId: string) => diagnostics.some((item) => item.code === code && item.targetId === targetId);
+  expect(hasDiagnostic("section-local-key-range", "late-key-track")).toBe(true);
+  expect(hasDiagnostic("section-local-key-range", "endpoint-key-track")).toBe(false);
+  expect(hasDiagnostic("missing-section-clock", "missing-clock-track")).toBe(true);
+  expect(hasDiagnostic("section-local-range", "local-clip")).toBe(true);
+  expect(hasDiagnostic("missing-section-clock", "local-clip")).toBe(true);
+  expect(hasDiagnostic("section-local-range", "overrun-audio")).toBe(true);
+  expect(hasDiagnostic("section-local-range", "late-subtitle")).toBe(true);
+  expect(hasDiagnostic("missing-audio-section", "missing-audio-section")).toBe(true);
+  expect(hasDiagnostic("missing-subtitle-section", "missing-subtitle-section")).toBe(true);
+});
+
 test("bone and IK overrides modify the evaluated skeleton only, not source setup data", () => {
   const data = new SkeletonData();
   const root = new BoneData(0, "root", null);
