@@ -1,7 +1,7 @@
 import { timelineForSequence, timelineSubtitleText, type SpineTimeline, type SpineTimelineProject } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import type { SpineCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import { createLegacyCompositionSchedule } from "@ba-spine/spine-runtime/spine/spineCompositionMigration";
-import type { SpineComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
+import { compositionEvaluationContextAt, compositionTargetKey, evaluateComposition, type SpineComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
 
 export type VideoRecordingMode = "full-sequence" | "opening-idle" | "idle-only";
 export type VideoRecordingFormat = "webm" | "mp4";
@@ -104,6 +104,8 @@ export interface VideoRecordingAudioSchedule {
   duration: number;
   volume: number;
   sourceOffset: number;
+  /** Piecewise-linear gain samples in seconds after the trimmed audio source begins. */
+  gainAutomation?: Array<{ time: number; volume: number }>;
 }
 
 export interface VideoRecordingProgress {
@@ -302,8 +304,9 @@ export function videoRecordingCompositionSubtitleSpans(
 ): VideoRecordingSubtitleSpan[] {
   const spans = composition.subtitles.flatMap((cue) => {
     if (!cue.enabled) return [];
-    const start = Math.max(0, cue.start);
-    const end = Math.min(composition.duration, cue.end);
+    const sectionOffset = cue.sectionId ? composition.sections.find((section) => section.id === cue.sectionId)?.start ?? 0 : 0;
+    const start = Math.max(0, sectionOffset + cue.start);
+    const end = Math.min(composition.duration, sectionOffset + cue.end);
     const text = cue.text[language]?.trim() ?? "";
     if (end <= start || !text) return [];
     return [{ id: `${composition.id}:${cue.id}`, text, start, end }];
@@ -601,17 +604,105 @@ export function videoRecordingFrameCount(totalDuration: number, frameRate: numbe
 }
 
 /** Clip a source audio segment to the exported timeline without changing its authored start. */
-export function videoRecordingAudioSchedule(start: number, end: number, volume: number, totalDuration: number, sourceOffset = 0): VideoRecordingAudioSchedule | null {
+export function videoRecordingAudioSchedule(
+  start: number,
+  end: number,
+  volume: number,
+  totalDuration: number,
+  sourceOffset = 0,
+  gainAutomation?: readonly { time: number; volume: number }[],
+): VideoRecordingAudioSchedule | null {
   if (![start, end, volume, totalDuration, sourceOffset].every(Number.isFinite) || totalDuration <= 0 || end <= start || sourceOffset < 0) return null;
   const safeStart = Math.max(0, start);
   const safeEnd = Math.min(totalDuration, end);
   if (safeEnd <= safeStart) return null;
-  return {
+  const scheduled: VideoRecordingAudioSchedule = {
     start: safeStart,
     duration: safeEnd - safeStart,
     volume: Math.max(0, Math.min(1, volume)),
     sourceOffset: sourceOffset + (safeStart - start),
   };
+  if (gainAutomation?.length) {
+    let previousTime = -1;
+    const points = gainAutomation.map((point) => {
+      if (!Number.isFinite(point.time) || !Number.isFinite(point.volume) || point.time < 0 || point.volume < 0 || point.volume > 1 || point.time <= previousTime) return null;
+      previousTime = point.time;
+      return { time: point.time, volume: point.volume };
+    });
+    if (points.some((point) => point === null) || points.length < 2) return null;
+    const valid = points as Array<{ time: number; volume: number }>;
+    if (valid[0]!.time > 1e-6 || valid.at(-1)!.time < scheduled.duration - 1e-6 || valid.at(-1)!.time > scheduled.duration + 1e-6) return null;
+    scheduled.gainAutomation = valid;
+  }
+  return scheduled;
+}
+
+function simplifyGainCurve(points: Array<{ time: number; volume: number }>, tolerance: number): Array<{ time: number; volume: number }> {
+  if (points.length <= 2) return points;
+  const keep = new Uint8Array(points.length);
+  keep[0] = 1;
+  keep[points.length - 1] = 1;
+  const pending: Array<[number, number]> = [[0, points.length - 1]];
+  while (pending.length) {
+    const [first, last] = pending.pop()!;
+    const start = points[first]!;
+    const end = points[last]!;
+    const span = end.time - start.time;
+    let maxError = tolerance;
+    let maxIndex = -1;
+    for (let index = first + 1; index < last; index += 1) {
+      const point = points[index]!;
+      const ratio = span > 0 ? (point.time - start.time) / span : 0;
+      const expected = start.volume + (end.volume - start.volume) * ratio;
+      const error = Math.abs(point.volume - expected);
+      if (error > maxError) { maxError = error; maxIndex = index; }
+    }
+    if (maxIndex >= 0) {
+      keep[maxIndex] = 1;
+      pending.push([first, maxIndex], [maxIndex, last]);
+    }
+  }
+  return points.filter((_, index) => keep[index] === 1);
+}
+
+/** Sample canonical audio-volume automation at output-frame times and simplify within 0.001 gain. */
+export function videoRecordingCompositionGainAutomation(
+  composition: SpineComposition,
+  audioId: string,
+  start: number,
+  end: number,
+  frameRate: number,
+  baseVolume: number,
+): Array<{ time: number; volume: number }> | undefined {
+  if (!composition.propertyTracks.some((track) => track.enabled && track.target.kind === "audio" && track.target.audioId === audioId && track.property === "audio.volume")) return undefined;
+  if (![start, end, frameRate, baseVolume].every(Number.isFinite) || end <= start || frameRate <= 0) throw new Error("Audio gain automation requires a valid composition range and frame rate.");
+  const frameCount = Math.ceil((end - start) * frameRate);
+  if (frameCount > 108_000) throw new Error(`Audio gain automation for ${audioId} exceeds the 30-minute export sampling limit.`);
+  const target = { kind: "audio", audioId } as const;
+  const propertyKey = compositionTargetKey(target, "audio.volume");
+  const points: Array<{ time: number; volume: number }> = [];
+  for (let frame = 0; frame <= frameCount; frame += 1) {
+    const localTime = Math.min(end - start, frame / frameRate);
+    const sampleTime = start + localTime;
+    const context = compositionEvaluationContextAt(composition, sampleTime, sampleTime);
+    // Gain automation includes a terminal point at the clip endpoint. Preserve the
+    // section-local clock there without making the half-open section/cue active.
+    const endingSections = composition.sections.filter((section) => section.end === sampleTime);
+    if (endingSections.length) {
+      context.sectionInstanceTimes = {
+        ...(context.sectionInstanceTimes ?? {}),
+        ...Object.fromEntries(endingSections.map((section) => [section.id, section.end - section.start])),
+      };
+    }
+    const evaluation = evaluateComposition(composition, context);
+    const sampled = evaluation.properties.get(propertyKey);
+    const volume = typeof sampled === "number" && Number.isFinite(sampled) ? Math.max(0, Math.min(1, sampled)) : Math.max(0, Math.min(1, baseVolume));
+    points.push({ time: localTime, volume });
+  }
+  const reduced = simplifyGainCurve(points, 0.001);
+  if (reduced.length > 512) throw new Error(`Audio gain automation for ${audioId} is too dense to export safely (${reduced.length} samples; maximum 512).`);
+  const isConstant = reduced.every((point) => Math.abs(point.volume - reduced[0]!.volume) < 1e-7);
+  return isConstant ? undefined : reduced;
 }
 
 /** Capture one composited JPEG frame at a time for the native FFmpeg pipeline. */

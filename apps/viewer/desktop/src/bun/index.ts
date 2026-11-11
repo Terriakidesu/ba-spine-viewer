@@ -465,6 +465,23 @@ async function api(request: Request, url: URL): Promise<Response> {
       if (contentType && contentType !== "application/octet-stream" && !contentType.startsWith("audio/")) {
         return errorResponse("The Viewer audio track is invalid.");
       }
+      let gainAutomation: Array<{ time: number; volume: number }> | undefined;
+      const gainHeader = request.headers.get("x-ba-spine-audio-gain");
+      if (gainHeader) {
+        let parsedGain: unknown;
+        try {
+          parsedGain = JSON.parse(gainHeader) as unknown;
+        } catch {
+          return errorResponse("The Viewer audio gain automation is invalid.");
+        }
+        if (!Array.isArray(parsedGain) || parsedGain.length < 2 || parsedGain.length > 512
+          || parsedGain.some((point) => !Array.isArray(point) || point.length !== 2
+            || typeof point[0] !== "number" || !Number.isFinite(point[0])
+            || typeof point[1] !== "number" || !Number.isFinite(point[1]))) {
+          return errorResponse("The Viewer audio gain automation is invalid.");
+        }
+        gainAutomation = parsedGain.map((point) => ({ time: point[0] as number, volume: point[1] as number }));
+      }
       const bytes = await readBoundedBytes(request, 256 * 1024 * 1024);
       if (!bytes) return errorResponse("The Viewer audio track is empty.");
       await ffmpegVideoRecorder.addAudioTrack(sessionId, {
@@ -473,6 +490,7 @@ async function api(request: Request, url: URL): Promise<Response> {
         volume: Number(request.headers.get("x-ba-spine-audio-volume")),
         sourceOffset: Number(request.headers.get("x-ba-spine-audio-source-offset") ?? 0),
         extension: request.headers.get("x-ba-spine-audio-extension") ?? "",
+        ...(gainAutomation ? { gainAutomation } : {}),
         bytes,
       });
       return json({ added: true });

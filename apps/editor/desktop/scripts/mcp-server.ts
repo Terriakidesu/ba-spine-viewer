@@ -446,6 +446,98 @@ const audioPatchSchema = z.object({
   name: z.string().min(1).optional(), path: z.string().min(1).optional(), start: z.number().finite().min(0).optional(), end: z.number().finite().min(0).optional(),
   enabled: z.boolean().optional(), volume: z.number().finite().min(0).max(1).optional(), autoEnd: z.boolean().optional(),
 }).strict().refine((patch) => Object.keys(patch).length > 0, "Set at least one audio field.");
+const compositionValueSchema = z.union([
+  z.number().finite(), z.string(), z.boolean(),
+  z.object({ r: z.number().finite().min(0).max(1), g: z.number().finite().min(0).max(1), b: z.number().finite().min(0).max(1), a: z.number().finite().min(0).max(1) }).strict(),
+]);
+const compositionClockSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("composition") }).strict(),
+  z.object({ kind: z.literal("transport") }).strict(),
+  z.object({ kind: z.literal("section-instance"), sectionId: z.string().min(1) }).strict(),
+]);
+const compositionSourceClockSchema = z.union([compositionClockSchema, z.object({ kind: z.literal("clip-source") }).strict()]);
+const compositionTargetSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("layer"), layerId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("camera") }).strict(),
+  z.object({ kind: z.literal("clip"), clipId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("bone"), layerId: z.string().min(1), path: z.string().min(1), assetIdentity: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("constraint"), layerId: z.string().min(1), type: z.enum(["ik", "transform", "path", "physics"]), name: z.string().min(1), assetIdentity: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("slot"), layerId: z.string().min(1), name: z.string().min(1), assetIdentity: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("audio"), audioId: z.string().min(1) }).strict(),
+]);
+const compositionKeySchema = z.object({
+  id: z.string().min(1), time: z.number().finite().min(0), value: compositionValueSchema, interpolation: z.enum(["step", "linear", "bezier"]),
+  inTangent: z.object({ time: z.number().finite(), value: z.number().finite() }).strict().optional(),
+  outTangent: z.object({ time: z.number().finite(), value: z.number().finite() }).strict().optional(),
+}).strict();
+const compositionLayerSchema = z.object({
+  id: z.string().min(1), name: z.string(), role: z.enum(["character", "scene", "background", "overlay", "color"]), order: z.number().finite(),
+  assetDirectory: z.string().min(1), assetIdentity: z.string().min(1), transformParentId: z.string().nullable(),
+  animationBinding: z.object({ sourceLayerId: z.string().min(1), fallback: z.enum(["authored-animation", "layer-base"]) }).strict().optional(),
+  baseProperties: z.record(z.string(), compositionValueSchema), enabled: z.boolean(), locked: z.boolean(),
+}).strict();
+const compositionAnimationClipSchema = z.object({
+  id: z.string().min(1), layerId: z.string().min(1), animation: z.string().min(1), faceAnimation: z.string().optional(),
+  clock: compositionClockSchema, sourceClock: compositionSourceClockSchema, start: z.number().finite().min(0), end: z.number().finite().min(0),
+  sourceStart: z.number().finite().min(0), sourceEnd: z.number().finite().min(0), sourceOriginTime: z.number().finite().min(0), sourceOffset: z.number().finite().min(0),
+  speed: z.number().finite().min(0).max(8), loop: z.boolean(), endBehavior: z.enum(["clear", "hold"]), blendIn: z.number().finite().min(0), blendOut: z.number().finite().min(0),
+  mixingMode: z.enum(["replace", "add"]), weight: z.number().finite().min(0).max(1), priority: z.number().finite(), enabled: z.boolean(),
+}).strict();
+const compositionSectionSchema = z.object({
+  id: z.string().min(1), name: z.string().min(1), start: z.number().finite().min(0), end: z.number().finite().min(0),
+  route: z.object({
+    role: z.enum(["talk", "idle", "opening", "other"]), returnToSectionId: z.string().min(1).nullable(),
+    ownedChannels: z.array(z.enum(["body", "face", "audio", "subtitles", "camera", "effects", "scene", "skeletal-overrides"])),
+    duplicateTrigger: z.enum(["ignore", "restart", "queue", "replace"]), interruption: z.enum(["ignore", "replace", "finish-current"]),
+    blendIn: z.number().finite().min(0), blendOut: z.number().finite().min(0), cameraReturn: z.enum(["blend", "hold", "persistent"]),
+  }).strict().optional(),
+}).strict();
+const compositionPropertyTrackSchema = z.object({
+  id: z.string().min(1), target: compositionTargetSchema, property: z.string().min(1), clock: compositionClockSchema, enabled: z.boolean(),
+  priority: z.number().finite(), blendMode: z.enum(["override", "additive"]), weight: z.number().finite().min(0).max(1), baseValue: compositionValueSchema.optional(),
+  holdBefore: z.boolean(), holdAfter: z.boolean(), rotationMode: z.enum(["shortest", "continuous"]).optional(), keys: z.array(compositionKeySchema),
+}).strict();
+const compositionAudioClipSchema = z.object({
+  id: z.string().min(1), name: z.string(), path: z.string().min(1), start: z.number().finite().min(0), end: z.number().finite().min(0),
+  sourceOffset: z.number().finite().min(0), volume: z.number().finite().min(0).max(1), enabled: z.boolean(), sectionId: z.string().min(1).optional(),
+}).strict();
+const compositionSubtitleCueSchema = z.object({
+  id: z.string().min(1), start: z.number().finite().min(0), end: z.number().finite().min(0), enabled: z.boolean(),
+  text: z.object({ en: z.string(), ja: z.string(), ko: z.string() }).strict(), sectionId: z.string().min(1).optional(),
+}).strict();
+const compositionColorLayerSchema = z.object({
+  id: z.string().min(1), name: z.string(), enabled: z.boolean(), locked: z.boolean(), opacity: z.number().finite().min(0).max(1), order: z.number().finite(),
+  blendMode: z.enum(["normal", "multiply", "screen", "additive"]),
+  clips: z.array(z.object({
+    id: z.string().min(1), name: z.string(), start: z.number().finite().min(0), end: z.number().finite().min(0),
+    color: z.object({ r: z.number().finite().min(0).max(1), g: z.number().finite().min(0).max(1), b: z.number().finite().min(0).max(1), a: z.number().finite().min(0).max(1) }).strict(),
+    opacity: z.number().finite().min(0).max(1), fadeIn: z.number().finite().min(0), fadeOut: z.number().finite().min(0), enabled: z.boolean(),
+  }).strict()),
+}).strict();
+const compositionEditOperationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("set_duration"), duration: z.number().finite().positive() }).strict(),
+  z.object({ kind: z.literal("set_idle_section"), sectionId: z.string().min(1).nullable() }).strict(),
+  z.object({ kind: z.literal("set_entry_section"), sectionId: z.string().min(1).nullable() }).strict(),
+  z.object({ kind: z.literal("upsert_section"), section: compositionSectionSchema }).strict(),
+  z.object({ kind: z.literal("remove_section"), sectionId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("upsert_layer"), layer: compositionLayerSchema }).strict(),
+  z.object({ kind: z.literal("remove_layer"), layerId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("set_layer_base_property"), layerId: z.string().min(1), property: z.string().min(1), value: compositionValueSchema }).strict(),
+  z.object({ kind: z.literal("set_animation_binding"), layerId: z.string().min(1), binding: z.object({ sourceLayerId: z.string().min(1), fallback: z.enum(["authored-animation", "layer-base"]) }).strict().nullable() }).strict(),
+  z.object({ kind: z.literal("upsert_animation_clip"), clip: compositionAnimationClipSchema }).strict(),
+  z.object({ kind: z.literal("remove_animation_clip"), clipId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("upsert_property_track"), track: compositionPropertyTrackSchema }).strict(),
+  z.object({ kind: z.literal("remove_property_track"), trackId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("upsert_keyframe"), trackId: z.string().min(1), key: compositionKeySchema }).strict(),
+  z.object({ kind: z.literal("remove_keyframe"), trackId: z.string().min(1), keyId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("upsert_audio_clip"), clip: compositionAudioClipSchema }).strict(),
+  z.object({ kind: z.literal("remove_audio_clip"), clipId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("upsert_subtitle_cue"), cue: compositionSubtitleCueSchema }).strict(),
+  z.object({ kind: z.literal("remove_subtitle_cue"), cueId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("upsert_color_layer"), layer: compositionColorLayerSchema }).strict(),
+  z.object({ kind: z.literal("remove_color_layer"), layerId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("set_camera"), camera: cameraTrackSchema.nullable() }).strict(),
+]);
 const editorTimelineSchema = z.object({
   sequenceId: z.string().optional(), subtitlePath: z.string().optional(), openingMode: z.enum(["scene-first", "direct", "skip"]).optional(), sceneDuration: z.number().finite().min(0).optional(),
   openingIdleDuration: z.number().finite().min(0).optional(), durationMode: z.enum(["auto", "manual"]).optional(), layersInitialized: z.boolean(), duration: z.number().finite().positive(), loop: z.boolean(),
@@ -543,6 +635,20 @@ server.registerTool(trackToolName("editor_evaluate_composition"), {
     const state = await editorState();
     return result(await sendCommand({ name: "evaluate_composition", seconds }, state.documentRevision));
   } catch (value) { return failed(value); }
+});
+
+server.registerTool(trackToolName("editor_edit_composition"), {
+  title: "Edit unified composition",
+  description: "Apply 1–100 typed composition edits as one undoable in-memory project transaction. Read the composition and current document revision first. Use editor_preview_change_set plus editor_apply_change_set when you want to inspect the before/after diff before applying; saving remains explicit.",
+  inputSchema: z.object({
+    operations: z.array(compositionEditOperationSchema).min(1).max(100),
+    expectedDocumentRevision: z.number().int().nonnegative().optional(),
+    idempotencyKey: z.string().min(1).max(128).optional(),
+  }).strict(),
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+}, async ({ operations, expectedDocumentRevision, idempotencyKey }) => {
+  try { return result(await sendCommand({ name: "edit_composition", operations }, expectedDocumentRevision, idempotencyKey)); }
+  catch (value) { return failed(value); }
 });
 
 server.registerTool(trackToolName("editor_get_project_document"), {
@@ -690,6 +796,7 @@ const reviewedChangeOperationSchema = z.discriminatedUnion("name", [
   z.object({ name: z.literal("delete_region"), interactionId: z.string().min(1), regionId: z.string().min(1) }).strict(),
   z.object({ name: z.literal("update_look_follow"), patch: lookFollowPatchSchema }).strict(),
   z.object({ name: z.literal("replace_behavior_machines"), machines: z.array(behaviorMachineSchema), graphLayouts: z.record(z.string(), behaviorGraphLayoutSchema).optional() }).strict(),
+  z.object({ name: z.literal("edit_composition"), operations: z.array(compositionEditOperationSchema).min(1).max(100) }).strict(),
   z.object({ name: z.literal("create_talk_sequence") }).strict(),
   z.object({
     name: z.literal("migrate_legacy_composition"),
@@ -714,7 +821,7 @@ const reviewedChangeOperationSchema = z.discriminatedUnion("name", [
 
 server.registerTool(trackToolName("editor_preview_change_set"), {
   title: "Review atomic project changes",
-  description: "Validate 1–50 typed authored-document operations against a draft, then return a bounded before/after diff and warnings with a 60-second single-host/project/revision token. Supported operations are interaction/region edits, Look-follow, behavior replacement, project settings, sequence create/delete/reorder/replacement, and camera replacement. Audio, saves, runtime effects, and workspace changes are excluded.",
+  description: "Validate 1–50 typed authored-document operations against a draft, then return a bounded before/after diff and warnings with a 60-second single-host/project/revision token. Supported operations include typed composition edits, interaction/region edits, Look-follow, behavior replacement, project settings, sequence create/delete/reorder/replacement, and camera replacement. Audio, saves, runtime effects, and workspace changes are excluded.",
   inputSchema: z.object({ operations: z.array(reviewedChangeOperationSchema).min(1).max(50), expectedDocumentRevision: z.number().int().nonnegative() }).strict(),
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
 }, async ({ operations, expectedDocumentRevision }) => {

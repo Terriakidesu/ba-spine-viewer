@@ -46,6 +46,7 @@ export interface FfmpegVideoAudioTrack {
   duration: number;
   volume: number;
   sourceOffset: number;
+  gainAutomation?: Array<{ time: number; volume: number }>;
   extension: string;
   bytes: Uint8Array;
 }
@@ -71,7 +72,7 @@ interface FfmpegVideoSession {
   frameWriter: ReturnType<typeof createWriteStream>;
   frameCount: number;
   frameBytes: number;
-  audioTracks: Array<{ path: string; start: number; duration: number; volume: number; sourceOffset: number }>;
+  audioTracks: Array<{ path: string; start: number; duration: number; volume: number; sourceOffset: number; gainAutomation?: Array<{ time: number; volume: number }> }>;
   audioBytes: number;
   phase: "rendering" | "encoding" | "saving";
   encodeProgress: number;
@@ -223,7 +224,7 @@ export function ffmpegVideoColorPipelineArgs(format: FfmpegVideoFormat): string[
 }
 
 export function ffmpegAudioMixFilterGraph(
-  tracks: readonly (Pick<FfmpegVideoAudioTrack, "start" | "duration" | "volume"> & Partial<Pick<FfmpegVideoAudioTrack, "sourceOffset">>)[],
+  tracks: readonly (Pick<FfmpegVideoAudioTrack, "start" | "duration" | "volume"> & Partial<Pick<FfmpegVideoAudioTrack, "sourceOffset" | "gainAutomation">>)[],
   videoDuration: number,
 ): { graph: string; output: "[aout]" } | null {
   if (tracks.length === 0 || !Number.isFinite(videoDuration) || videoDuration <= 0) return null;
@@ -233,7 +234,27 @@ export function ffmpegAudioMixFilterGraph(
     const volume = Math.max(0, Math.min(1, track.volume));
     const sourceOffset = Math.max(0, track.sourceOffset ?? 0);
     const delayMilliseconds = Math.round(start * 1000);
-    return `[${index + 1}:a:0]atrim=start=${sourceOffset.toFixed(6)}:duration=${duration.toFixed(6)},asetpts=PTS-STARTPTS,volume=${volume.toFixed(4)},adelay=${delayMilliseconds}:all=1[a${index}]`;
+    const points = track.gainAutomation;
+    let volumeFilter = `volume=${volume.toFixed(4)}`;
+    if (points?.length) {
+      if (points.length < 2 || points.length > 512 || points[0]!.time > 1e-6
+        || points.at(-1)!.time < duration - 1e-6 || points.at(-1)!.time > duration + 1e-6
+        || points.some((point, pointIndex) => !Number.isFinite(point.time) || !Number.isFinite(point.volume)
+          || point.time < 0 || point.time > duration + 1e-6 || point.volume < 0 || point.volume > 1
+          || (pointIndex > 0 && point.time <= points[pointIndex - 1]!.time))) {
+        throw new Error("The Viewer audio gain automation is invalid.");
+      }
+      let expression = points.at(-1)!.volume.toFixed(8);
+      for (let pointIndex = points.length - 2; pointIndex >= 0; pointIndex -= 1) {
+        const first = points[pointIndex]!;
+        const last = points[pointIndex + 1]!;
+        const slope = (last.volume - first.volume) / (last.time - first.time);
+        const segment = `${first.volume.toFixed(8)}+(t-${first.time.toFixed(6)})*${slope.toFixed(10)}`;
+        expression = `if(lt(t,${last.time.toFixed(6)}),${segment},${expression})`;
+      }
+      volumeFilter = `volume='${expression}':eval=frame`;
+    }
+    return `[${index + 1}:a:0]atrim=start=${sourceOffset.toFixed(6)}:duration=${duration.toFixed(6)},asetpts=PTS-STARTPTS,${volumeFilter},adelay=${delayMilliseconds}:all=1[a${index}]`;
   });
   const inputs = tracks.map((_, index) => `[a${index}]`).join("");
   filters.push(`${inputs}amix=inputs=${tracks.length}:duration=longest:dropout_transition=0:normalize=0,apad,atrim=duration=${videoDuration.toFixed(6)}[aout]`);
@@ -433,6 +454,14 @@ export class FfmpegVideoRecorder {
       || !Number.isFinite(track.volume) || track.volume < 0 || track.volume > 1) {
       throw new Error("The Viewer audio track settings are invalid.");
     }
+    if (track.gainAutomation !== undefined && (!Array.isArray(track.gainAutomation) || track.gainAutomation.length < 2 || track.gainAutomation.length > 512
+      || track.gainAutomation[0]!.time > 1e-6 || track.gainAutomation.at(-1)!.time < track.duration - 1e-6
+      || track.gainAutomation.at(-1)!.time > track.duration + 1e-6
+      || track.gainAutomation.some((point, index) => !Number.isFinite(point.time) || !Number.isFinite(point.volume)
+        || point.time < 0 || point.time > track.duration + 1e-6 || point.volume < 0 || point.volume > 1
+        || (index > 0 && point.time <= track.gainAutomation![index - 1]!.time)))) {
+      throw new Error("The Viewer audio gain automation is invalid.");
+    }
     if (!(track.bytes instanceof Uint8Array) || track.bytes.byteLength === 0
       || track.bytes.byteLength > MAX_AUDIO_BYTES
       || session.audioBytes + track.bytes.byteLength > MAX_AUDIO_BYTES
@@ -441,7 +470,14 @@ export class FfmpegVideoRecorder {
     }
     const audioPath = join(session.temporaryDirectory, `audio-${session.audioTracks.length}.${extension}`);
     await writeFile(audioPath, track.bytes, { flag: "wx" });
-    session.audioTracks.push({ path: audioPath, start: track.start, duration: track.duration, volume: track.volume, sourceOffset: track.sourceOffset });
+    session.audioTracks.push({
+      path: audioPath,
+      start: track.start,
+      duration: track.duration,
+      volume: track.volume,
+      sourceOffset: track.sourceOffset,
+      ...(track.gainAutomation ? { gainAutomation: track.gainAutomation } : {}),
+    });
     session.audioBytes += track.bytes.byteLength;
   }
 

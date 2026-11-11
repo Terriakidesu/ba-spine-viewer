@@ -55,12 +55,12 @@ import {
   type SpineVoiceLine,
 } from "@ba-spine/spine-runtime/spine/spineVoicelines";
 import { SpineCompositionViewport, type SpineCompositionViewportHandle } from "@ba-spine/spine-runtime/ui/SpineCompositionViewport";
-import { evaluateCompositionFrame } from "@ba-spine/spine-runtime/spine/spineComposition";
+import { compositionEvaluationContextAt, evaluateCompositionFrame } from "@ba-spine/spine-runtime/spine/spineComposition";
 import { compositionFrameToTimeline } from "@ba-spine/spine-runtime/spine/spineCompositionTimeline";
 import { timelineAuthoredCueEnd, timelineForSequence, timelineLastDefinedCameraTrack, timelinePlaybackDuration, timelineSequenceIds, timelineSubtitleText, timelineTalkInProgress, timelineTalkSequenceIds, type SpineTimeline } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import { hasLegacySquareCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import { hasLegacyViewerAspectRatio, readViewerAspectRatio, writeViewerAspectRatio, type ViewerAspectRatio } from "./viewerPresentation";
-import { createCanvasFrameCapture, createCanvasRecordingCapture, createFullSequenceRecordingPlan, createUnifiedCompositionRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, readVideoRecordingQuality, videoFilenameStem, videoRecordingAudioSchedule, videoRecordingCompositionSubtitleSpans, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingSubtitleSpans, videoRecordingTimelineOffsets, writeVideoRecordingQuality, type AudioRecordingCapture, type CanvasFrameCapture, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
+import { createCanvasFrameCapture, createCanvasRecordingCapture, createFullSequenceRecordingPlan, createUnifiedCompositionRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, readVideoRecordingQuality, videoFilenameStem, videoRecordingAudioSchedule, videoRecordingCompositionGainAutomation, videoRecordingCompositionSubtitleSpans, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingSubtitleSpans, videoRecordingTimelineOffsets, writeVideoRecordingQuality, type AudioRecordingCapture, type CanvasFrameCapture, type CanvasRecordingCapture, type SupportedVideoFormat, type VideoRecordingFormat, type VideoRecordingPlan, type VideoRecordingSettings } from "./videoRecorder";
 
 type ViewerDraftPreview = Omit<SpineDraftSnapshot, "project"> & { project: SpineInteractionProject };
 
@@ -224,7 +224,7 @@ interface VideoRecordingRun {
   desktopSessionId: string | null;
   desktopStream: DesktopFfmpegVideoStream | null;
   desktopFrameCapture: CanvasFrameCapture | null;
-  desktopAudioTracks: Array<{ file: File; start: number; duration: number; volume: number; sourceOffset: number; extension: string; sequenceId: string }>;
+  desktopAudioTracks: Array<{ file: File; start: number; duration: number; volume: number; sourceOffset: number; gainAutomation?: Array<{ time: number; volume: number }>; extension: string; sequenceId: string }>;
   runtimeSubtitleSegments: Array<{ start: number; end: number; clipIndex: number }>;
   lastRuntimeSubtitleClip: number | null;
   desktopFrameTask: Promise<void> | null;
@@ -1100,7 +1100,7 @@ export function Spine() {
   const compositionFallbackTimeline = useMemo(() => {
     const composition = selectedInteractionProject?.composition;
     if (!composition) return null;
-    const frame = evaluateCompositionFrame(composition, { compositionTime: 0, transportTime: 0 });
+    const frame = evaluateCompositionFrame(composition, compositionEvaluationContextAt(composition, 0, 0));
     return compositionFrameToTimeline(composition, frame, 0, selectedInteractionProject.timeline?.language ?? "en");
   }, [selectedInteractionProject?.composition, selectedInteractionProject?.timeline?.language]);
   const compositionTimeline = selectedInteractionProject
@@ -1111,6 +1111,9 @@ export function Spine() {
   const compositionActive = Boolean(compositionTimeline && (unifiedCompositionSelected || compositionSequenceId));
   const activeExportRun = videoRecordingRunRef.current;
   const authoredTalkSequenceIds = selectedInteractionProject ? timelineTalkSequenceIds(selectedInteractionProject) : [];
+  const compositionTalkSectionIds = selectedInteractionProject?.composition?.sections
+    .filter((section) => section.route?.role === "talk")
+    .map((section) => section.id) ?? [];
   const fullSequenceCompositionRecording = activeExportRun?.source === "composition" && activeExportRun.settings.mode === "full-sequence";
   const recordingCameraHistoryTimelines = useMemo(() => {
     if (!selectedInteractionProject) return [];
@@ -1178,10 +1181,11 @@ export function Spine() {
     ? videoRecorderDialog.settings.aspectRatio
     : aspectRatio;
   const authoredTalkAutoplayAvailable = Boolean(
-    !unifiedCompositionSelected
-      && selectedInteractionProject
-      && authoredTalkSequenceIds.length > 0
-      && timelineForSequence(selectedInteractionProject, "opening"),
+    unifiedCompositionSelected
+      ? compositionTalkSectionIds.length > 0
+      : selectedInteractionProject
+        && authoredTalkSequenceIds.length > 0
+        && timelineForSequence(selectedInteractionProject, "opening"),
   );
   const activeViewport = () => compositionActive ? compositionRef.current : viewportRef.current;
   useEffect(() => {
@@ -2356,6 +2360,10 @@ export function Spine() {
     const authoredTalkActive = compositionActive && timelineTalkInProgress(compositionSequenceId, idleMode);
     if (rendererInteractionBusy() || authoredTalkActive) return;
     stopVoice(true, !preserveAutoplay);
+    if (compositionActive && unifiedCompositionSelected) {
+      compositionRef.current?.triggerTalk(line ? voiceAnimationForLine(line) : undefined);
+      return;
+    }
     if (compositionActive && selectedInteractionProject && authoredTalkSequenceIds.length > 0) {
       const requestedNumber = line ? Number((line.animation || line.id).match(/(?:Talk_|talk-|_)(\d+)/i)?.[1]) : null;
       const currentIndex = authoredTalkSequenceIds.indexOf(compositionSequenceId);
@@ -2392,7 +2400,7 @@ export function Spine() {
       }
       return;
     }
-    if (!interactionReady || (voiceLines.length === 0 && !authoredTalkSequenceIds.length)) return;
+    if (!interactionReady || (voiceLines.length === 0 && (unifiedCompositionSelected ? compositionTalkSectionIds.length === 0 : authoredTalkSequenceIds.length === 0))) return;
     if (rendererInteractionBusy()) return;
     if (authoredTalkAutoplayAvailable && selectedInteractionProject) {
       stopVoice(true, false);
@@ -2400,6 +2408,16 @@ export function Spine() {
       talkAutoplayRef.current = true;
       setTalkAutoplay(true);
       setSelectedVoiceLineIndex(null);
+      if (unifiedCompositionSelected) {
+        const firstSectionId = compositionTalkSectionIds[authoredTalkIndexRef.current++];
+        if (!firstSectionId) {
+          talkAutoplayRef.current = false;
+          setTalkAutoplay(false);
+          return;
+        }
+        compositionRef.current?.triggerSection(firstSectionId);
+        return;
+      }
       const firstTalkId = authoredTalkSequenceIds[authoredTalkIndexRef.current++];
       const firstTalk = firstTalkId ? timelineForSequence(selectedInteractionProject, firstTalkId) : null;
       if (!firstTalk) {
@@ -2429,6 +2447,19 @@ export function Spine() {
         recording.phase = "idle";
         recording.idleStartedAt = performance.now();
         setIdleMode("persistent");
+      }
+      return;
+    }
+    if (unifiedCompositionSelected) {
+      if (talkAutoplayRef.current && compositionTalkSectionIds.length > 0) {
+        const nextSectionId = compositionTalkSectionIds[authoredTalkIndexRef.current++];
+        if (nextSectionId) {
+          compositionRef.current?.triggerSection(nextSectionId);
+          return;
+        }
+        talkAutoplayRef.current = false;
+        authoredTalkIndexRef.current = 0;
+        setTalkAutoplay(false);
       }
       return;
     }
@@ -2497,8 +2528,8 @@ export function Spine() {
   const prepareDesktopAudioTracks = async (run: VideoRecordingRun, metrics: { openingDuration?: number; introMarkers?: number[] }) => {
     const plan = run.plan;
     if (!plan || !run.settings.includeAudio || (run.settings.mode !== "opening-idle" && run.settings.mode !== "full-sequence") || !source) return;
-    const addTrack = (file: File, start: number, end: number, volume: number, sequenceId: string, sourceOffset = 0) => {
-      const schedule = videoRecordingAudioSchedule(start, end, volume, plan.totalDuration, sourceOffset);
+    const addTrack = (file: File, start: number, end: number, volume: number, sequenceId: string, sourceOffset = 0, gainAutomation?: readonly { time: number; volume: number }[]) => {
+      const schedule = videoRecordingAudioSchedule(start, end, volume, plan.totalDuration, sourceOffset, gainAutomation);
       if (!schedule) return;
       const extension = recordingAudioExtension(file);
       if (!extension) throw new Error(t("spine.recorder.audioFormat", { name: file.name }));
@@ -2511,7 +2542,15 @@ export function Spine() {
           if (!clip.enabled) continue;
           const file = await loadRecordingAudioFile(source, clip.path);
           if (!file) continue;
-          addTrack(file, clip.start, clip.end, clip.volume, selectedInteractionProject.composition.id, clip.sourceOffset);
+          const composition = selectedInteractionProject.composition;
+          const sectionOffset = clip.sectionId ? composition.sections.find((section) => section.id === clip.sectionId)?.start ?? 0 : 0;
+          const clipStart = sectionOffset + clip.start;
+          const clipEnd = sectionOffset + clip.end;
+          const gainEnd = Math.min(clipEnd, plan.totalDuration);
+          const gainAutomation = clipStart < gainEnd
+            ? videoRecordingCompositionGainAutomation(composition, clip.id, clipStart, gainEnd, run.settings.frameRate, clip.volume)
+            : undefined;
+          addTrack(file, clipStart, clipEnd, clip.volume, composition.id, clip.sourceOffset, gainAutomation);
         }
         return;
       }

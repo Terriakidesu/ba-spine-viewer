@@ -447,8 +447,8 @@ export function migrateLegacyTimelinesToComposition(
           id: `legacy-audio-${safeId(entry.id)}-${safeId(audio.id)}`,
           name: audio.name,
           path: audio.path,
-          start: entry.start + intersectStart - entry.sourceStart,
-          end: entry.start + intersectEnd - entry.sourceStart,
+          start: intersectStart - entry.sourceStart,
+          end: intersectEnd - entry.sourceStart,
           sourceOffset: Math.max(0, intersectStart - audio.start),
           volume: audio.volume,
           enabled: audio.enabled,
@@ -461,8 +461,8 @@ export function migrateLegacyTimelinesToComposition(
         if (intersectEnd <= intersectStart) continue;
         composition.subtitles.push({
           id: `legacy-subtitle-${safeId(entry.id)}-${safeId(cue.id)}`,
-          start: entry.start + intersectStart - entry.sourceStart,
-          end: entry.start + intersectEnd - entry.sourceStart,
+          start: intersectStart - entry.sourceStart,
+          end: intersectEnd - entry.sourceStart,
           enabled: cue.enabled,
           text: { ...cue.text },
           sectionId: entry.id,

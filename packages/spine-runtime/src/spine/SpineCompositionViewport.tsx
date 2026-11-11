@@ -7,8 +7,8 @@ import { spineAudioPathCandidates } from "./spineAudio";
 import { advanceSpineTimeline, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineIdleAnimation, timelineLayerAnimation, timelineLayerAnimationClips, timelineLayerAnimationPlaybackEnd, timelineLayerTransform, timelineMainAnimation, timelineOpeningContinuationStart, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer, type SpineTimelineAudioPreloadState } from "./spineTimeline";
 import { SpineTimelineLayerCanvas } from "./SpineTimelineLayerCanvas";
 import { cameraAspectValue, changeSpineCameraAspectRatio, evaluateSpineCameraTrack, type SpineCameraAspectRatio, type SpineCameraTrack } from "./spineCameraMotion";
-import { evaluateCompositionFrame, runFixedStepPreroll, type SpineComposition } from "./spineComposition";
-import { compositionFrameToTimeline } from "./spineCompositionTimeline";
+import { compositionEvaluationContextAt, evaluateCompositionFrame, runFixedStepPreroll, type CompositionEvaluationContext, type SpineComposition } from "./spineComposition";
+import { compositionCameraTrackAt, compositionFrameToTimeline } from "./spineCompositionTimeline";
 
 export interface SpineCompositionRecordingCueTimeline {
   timeline: SpineTimeline;
@@ -25,6 +25,7 @@ export interface SpineCompositionViewportHandle {
   seek: (time: number) => void;
   sampleRecordingFrame: (time: number, idleAnimationTime?: number, recordingElapsed?: number) => void;
   triggerTalk: (animation?: string) => void;
+  triggerSection: (sectionId: string) => void;
   setTalkAudioPending: (pending: boolean) => void;
   isTalkActive: () => boolean;
   isInteractionBusy: () => boolean;
@@ -101,6 +102,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   const activeCameraBoundRef = useRef<string | null>(null);
   const pendingCameraPoseRef = useRef<SpineCameraPose | null>(null);
   const [interactionOverlay, setInteractionOverlay] = useState<SpineInteractionOverlay>({ canvasWidth: 0, canvasHeight: 0, points: [] });
+  const [activeSectionInstance, setActiveSectionInstance] = useState<{ sectionId: string; startedAt: number } | null>(null);
   const [resetCameraSignal, setResetCameraSignal] = useState(0);
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({});
   const [audioPreloadStates, setAudioPreloadStates] = useState<Record<string, SpineTimelineAudioPreloadState>>({});
@@ -111,6 +113,8 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   const includeLayerScaleRef = useRef(false);
   const audioStartedRef = useRef<Record<string, boolean>>({});
   const audioPreviousTimeRef = useRef<Record<string, number | undefined>>({});
+  const activeSectionInstanceRef = useRef<{ sectionId: string; startedAt: number } | null>(null);
+  const queuedSectionIdRef = useRef<string | null>(null);
   const fileCacheRef = useRef(new Map<string, Promise<SpineFiles | null>>());
   onProgressRef.current = onProgress;
   onFinishedRef.current = onFinished;
@@ -118,19 +122,58 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   onLoadProgressRef.current = onLoadProgress;
   onErrorRef.current = onError;
 
+  useEffect(() => {
+    if (!recordingClock) return;
+    activeSectionInstanceRef.current = null;
+    queuedSectionIdRef.current = null;
+    setActiveSectionInstance(null);
+  }, [recordingClock]);
+
   const compositionTime = recordingClock ? currentTimeRef.current : currentTime;
-  const compositionFrame = composition ? evaluateCompositionFrame(composition, {
-    compositionTime,
-    transportTime: recordingClock ? currentTimeRef.current : currentTime,
-  }) : null;
+  // Export samples the authored range, not whichever temporary Viewer section
+  // happened to be active before recording began.
+  const activeCompositionSection = !recordingClock && activeSectionInstance && composition
+    ? composition.sections.find((section) => section.id === activeSectionInstance.sectionId) ?? null
+    : null;
+  const rawSectionInstanceTime = activeSectionInstance ? Math.max(0, compositionTime - activeSectionInstance.startedAt) : 0;
+  const activeSectionDuration = activeCompositionSection ? Math.max(0.01, activeCompositionSection.end - activeCompositionSection.start) : 0;
+  const compositionContextAt = (sampleTime: number): CompositionEvaluationContext | null => {
+    if (!composition) return null;
+    const context = compositionEvaluationContextAt(composition, sampleTime, sampleTime);
+    if (!activeSectionInstance || !activeCompositionSection || sampleTime < activeSectionInstance.startedAt) return context;
+    const elapsed = Math.max(0, sampleTime - activeSectionInstance.startedAt);
+    const duration = Math.max(0.01, activeCompositionSection.end - activeCompositionSection.start);
+    const sectionTime = activeCompositionSection.route?.role === "idle" ? elapsed % duration : elapsed;
+    const blendIn = activeCompositionSection.route?.blendIn ?? 0;
+    const blendOut = activeCompositionSection.route?.blendOut ?? 0;
+    const weight = activeCompositionSection.route?.role === "talk"
+      ? Math.min(blendIn > 0 ? Math.min(1, sectionTime / blendIn) : 1,
+        blendOut > 0 ? Math.min(1, Math.max(0, duration - sectionTime) / blendOut) : 1)
+      : 1;
+    return {
+      ...context,
+      sectionInstanceTimes: { ...(context.sectionInstanceTimes ?? {}), [activeCompositionSection.id]: sectionTime },
+      activeSectionId: activeCompositionSection.id,
+      activeSectionChannels: activeCompositionSection.route?.ownedChannels ?? [],
+      activeSectionWeight: weight,
+    };
+  };
+  const sectionInstanceStartTimes = composition
+    ? Object.fromEntries(composition.sections.map((section) => [section.id, section.id === activeCompositionSection?.id ? activeSectionInstance!.startedAt : section.start]))
+    : {};
+  const frameContext = compositionContextAt(compositionTime);
+  const compositionFrame = composition && frameContext ? evaluateCompositionFrame(composition, frameContext) : null;
   const timeline = composition && compositionFrame
-    ? compositionFrameToTimeline(composition, compositionFrame, compositionTime, authoredTimeline.language)
+    ? compositionFrameToTimeline(composition, compositionFrame, compositionTime, authoredTimeline.language, sectionInstanceStartTimes, activeCompositionSection?.id)
     : authoredTimeline;
   const compositionLayerFrames = new Map(compositionFrame?.layers.map((layer) => [layer.layer.id, layer]) ?? []);
   const timelineIdentity = composition ?? authoredTimeline;
   const layers = useMemo(() => [...timeline.layers].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)), [timeline.layers]);
   const visualLayers = useMemo(() => timelineVisualLayers(timeline), [timeline.layers, timeline.colorLayers]);
-  const cameraTrack = recordingCameraTrack === undefined ? timeline.camera ?? null : recordingCameraTrack;
+  const authoredCameraTrack = recordingCameraTrack === undefined ? timeline.camera ?? null : recordingCameraTrack;
+  const cameraTrack = composition && compositionFrame
+    ? compositionCameraTrackAt(composition, compositionFrame, compositionTime, authoredCameraTrack, referenceArtworkFrame)
+    : authoredCameraTrack;
   const referenceLayerId = timelineReferenceLayerId(timeline, cameraTrack);
   const timelineClockTime = recordingClock ? currentTimeRef.current : currentTime;
   const recordingIdleAnimationTime = recordingClock && recordingIdleOffset !== undefined
@@ -235,6 +278,23 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
     : null;
 
   useEffect(() => {
+    if (!composition || !activeSectionInstance || !activeCompositionSection || activeCompositionSection.route?.role === "idle") return;
+    if (rawSectionInstanceTime < activeSectionDuration) return;
+    const queuedSectionId = queuedSectionIdRef.current;
+    queuedSectionIdRef.current = null;
+    const returnSectionId = queuedSectionId
+      ?? activeCompositionSection.route?.returnToSectionId
+      ?? composition.idleSectionId;
+    const returnSection = returnSectionId ? composition.sections.find((section) => section.id === returnSectionId) : null;
+    const next = returnSection
+      ? { sectionId: returnSection.id, startedAt: activeSectionInstance.startedAt + activeSectionDuration }
+      : null;
+    activeSectionInstanceRef.current = next;
+    setActiveSectionInstance(next);
+    if (activeCompositionSection.route?.role === "talk" || !next) onFinishedRef.current();
+  }, [activeCompositionSection, activeSectionDuration, activeSectionInstance, composition, rawSectionInstanceTime]);
+
+  useEffect(() => {
     onLoadingRef.current(compositionLoading);
   }, [compositionLoading]);
 
@@ -243,9 +303,11 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
     const renderers = [...layerRenderersRef.current.entries()];
     if (renderers.length === 0) return;
     const sampleAt = (sampleTime: number, physics: Physics) => {
+      const sampleContext = compositionContextAt(sampleTime);
       const frame = sampleTime === compositionTime
         ? compositionFrame
-        : evaluateCompositionFrame(composition, { compositionTime: sampleTime, transportTime: sampleTime });
+        : sampleContext ? evaluateCompositionFrame(composition, sampleContext) : null;
+      if (!frame) return;
       for (const layerFrame of frame.layers) {
         const renderer = layerRenderersRef.current.get(layerFrame.layer.id);
         if (!renderer) continue;
@@ -490,7 +552,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
       }
       audio.volume = clip.volume;
       audio.playbackRate = speed;
-      const active = idleMode === "none" && clip.enabled && effectiveCurrentTime >= clip.start && effectiveCurrentTime <= clip.end;
+      const active = (composition !== undefined || idleMode === "none") && clip.enabled && effectiveCurrentTime >= clip.start && effectiveCurrentTime <= clip.end;
       const decision = timelineAudioPlaybackDecision({
         active,
         playing,
@@ -510,7 +572,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
       if (decision.play) void audio.play().catch(() => undefined);
       else audio.pause();
     }
-  }, [allAudioEntries, audioPreloadStates, audioReady, compositionReady, currentTime, effectiveCurrentTime, idleMode, playing, recordingAudioCues, recordingCueAudioEnabled, recordingCueTimelines, speed, timeline.audio, timeline.sequenceId]);
+  }, [allAudioEntries, audioPreloadStates, audioReady, composition, compositionReady, currentTime, effectiveCurrentTime, idleMode, playing, recordingAudioCues, recordingCueAudioEnabled, recordingCueTimelines, speed, timeline.audio, timeline.sequenceId]);
 
   useEffect(() => {
     if (!playing || (!recordingClock && (!compositionReady || !audioReady))) return;
@@ -585,14 +647,20 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
       else if (stageRef.current?.requestFullscreen) await stageRef.current.requestFullscreen();
     },
      restartPlayback: () => {
-       if (interactionMode === "interaction") talkRendererRef.current?.restartPlayback();
+       activeSectionInstanceRef.current = null;
+       setActiveSectionInstance(null);
+       queuedSectionIdRef.current = null;
+        if (interactionMode === "interaction") talkRendererRef.current?.restartPlayback();
        const restartTime = idleMode !== "none" && timeline.sequenceId === "opening" ? openingIdleStart : 0;
        currentTimeRef.current = restartTime;
        idleAnimationTimeRef.current = restartTime;
        onProgressRef.current({ time: restartTime, duration: playbackDuration, animation: progressAnimation });
      },
-    seek: (time) => {
-       const next = idleMode !== "none" && timeline.sequenceId === "opening"
+     seek: (time) => {
+        activeSectionInstanceRef.current = null;
+        setActiveSectionInstance(null);
+        queuedSectionIdRef.current = null;
+        const next = idleMode !== "none" && timeline.sequenceId === "opening"
          ? Math.max(openingIdleStart, Math.min(playbackDuration, time))
          : Math.max(0, Math.min(playbackDuration, time));
        currentTimeRef.current = next;
@@ -611,10 +679,66 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
           animation: progressAnimation,
         });
      },
-     triggerTalk: (animation) => talkRendererRef.current?.triggerTalk(animation),
-     setTalkAudioPending: (pending) => talkRendererRef.current?.setTalkAudioPending(pending),
-     isTalkActive: () => talkRendererRef.current?.isTalkActive() ?? false,
-     isInteractionBusy: () => talkRendererRef.current?.isInteractionBusy() ?? false,
+      triggerSection: (sectionId) => {
+        const target = composition?.sections.find((section) => section.id === sectionId);
+        if (!target) return;
+        const active = activeSectionInstanceRef.current;
+        const activeSection = active ? composition?.sections.find((section) => section.id === active.sectionId) : null;
+        const duplicatePolicy = target.route?.duplicateTrigger ?? "restart";
+        if (activeSection?.id === target.id && duplicatePolicy === "ignore") return;
+        if (activeSection?.id === target.id && duplicatePolicy === "queue") {
+          queuedSectionIdRef.current = target.id;
+          return;
+        }
+        if (activeSection?.route?.interruption === "ignore") return;
+        if (activeSection?.route?.interruption === "finish-current" && activeSection.route.role === "talk") {
+          queuedSectionIdRef.current = target.id;
+          return;
+        }
+        const next = { sectionId: target.id, startedAt: currentTimeRef.current };
+        activeSectionInstanceRef.current = next;
+        setActiveSectionInstance(next);
+      },
+      triggerTalk: (animation) => {
+        const talkSections = composition?.sections.filter((section) => section.route?.role === "talk") ?? [];
+        const matchingSection = animation
+          ? talkSections.find((section) => composition?.animationClips.some((clip) => {
+            if (!clip.enabled || clip.animation !== animation && clip.faceAnimation !== animation) return false;
+            if (clip.clock.kind === "section-instance") return clip.clock.sectionId === section.id;
+            return clip.clock.kind === "composition" && clip.start >= section.start - 1e-6 && clip.end <= section.end + 1e-6
+              && composition.layers.find((layer) => layer.id === clip.layerId)?.role === "character";
+          }))
+          : talkSections[0];
+        if (matchingSection) {
+          const active = activeSectionInstanceRef.current;
+          const activeSection = active ? composition?.sections.find((section) => section.id === active.sectionId) : null;
+          const duplicatePolicy = matchingSection.route?.duplicateTrigger ?? "restart";
+          if (activeSection?.id === matchingSection.id && duplicatePolicy === "ignore") return;
+          if (activeSection?.id === matchingSection.id && duplicatePolicy === "queue") {
+            queuedSectionIdRef.current = matchingSection.id;
+            return;
+          }
+          if (activeSection?.route?.interruption === "ignore") return;
+          if (activeSection?.route?.interruption === "finish-current" && activeSection.route.role === "talk") {
+            queuedSectionIdRef.current = matchingSection.id;
+            return;
+          }
+          const next = { sectionId: matchingSection.id, startedAt: currentTimeRef.current };
+          activeSectionInstanceRef.current = next;
+          setActiveSectionInstance(next);
+          return;
+        }
+        talkRendererRef.current?.triggerTalk(animation);
+      },
+      setTalkAudioPending: (pending) => talkRendererRef.current?.setTalkAudioPending(pending),
+      isTalkActive: () => activeSectionInstanceRef.current
+        ? composition?.sections.find((section) => section.id === activeSectionInstanceRef.current?.sectionId)?.route?.role === "talk"
+        : talkRendererRef.current?.isTalkActive() ?? false,
+      isInteractionBusy: () => {
+        const sectionId = activeSectionInstanceRef.current?.sectionId;
+        const active = sectionId ? composition?.sections.find((section) => section.id === sectionId) : null;
+        return active?.route?.role === "talk" || (talkRendererRef.current?.isInteractionBusy() ?? false);
+      },
      startIntroAudio: () => talkRendererRef.current?.startIntroAudio(),
      getTimelinePlaybackDuration: (targetTimeline) => timelinePlaybackDuration(
        targetTimeline,
@@ -647,13 +771,13 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
           ready: compositionReady && (requirePreloads ? allAudioReady : audioReady),
       };
     },
-   }), [allAudioReady, animationDurations, audioReady, compositionReady, idleMode, interactionMode, layers, metas, openingIdleStart, playbackDuration, progressAnimation, referenceLayerId, sharedCameraPose, talkMixDuration, timeline]);
+    }), [allAudioReady, animationDurations, audioReady, composition, compositionReady, idleMode, interactionMode, layers, metas, openingIdleStart, playbackDuration, progressAnimation, referenceLayerId, sharedCameraPose, talkMixDuration, timeline]);
 
    const activeSubtitleTexts = recordingCueTimelines !== undefined
      ? recordingCueSubtitlesEnabled
        ? recordingCueTimelines.flatMap(({ timeline: cueTimeline, start }) => timelineActiveSubtitleTexts(cueTimeline, currentTime - start))
        : []
-     : idleMode === "none" ? timelineActiveSubtitleTexts(timeline, effectiveCurrentTime) : [];
+     : (composition || idleMode === "none") ? timelineActiveSubtitleTexts(timeline, effectiveCurrentTime) : [];
   const interactionLayer = layers.find((layer) => layer.id === referenceLayerId);
   const interactionLayerTransform = interactionLayer ? timelineLayerTransform(interactionLayer, characterLayer) : null;
   const interactionOverlayStyle: CSSProperties = interactionLayer

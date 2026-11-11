@@ -3,7 +3,7 @@ import { Physics } from "@esotericsoftware/spine-core";
 import { SpineRenderer, type SpineCameraFrame, type SpineCameraMode, type SpineCameraPose, type SpineFiles, type SpineInteractionOverlay, type SpineLoadProgress, type SpineMeta } from "./spineRuntime";
 import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration, type SpineInteractionProject } from "./spineInteraction";
 import { timelineActiveAnimationClip, timelineAnimationClipPlaybackEnd, timelineAnimationClipSampleTime, timelineBlendModeCss, timelineFaceAnimation, timelineGlobalAnimationSampleTime, timelineIdleAnimation, timelineTalkIdleStart, timelineAnimationNeedsIdleUnderlay, timelineLayerAnimation, timelineLayerAnimationClips, timelineLayerPlaybackEnd, timelineLayerSampleTime, timelineLayerTransform, type SpineTimeline, type SpineTimelineLayer } from "./spineTimeline";
-import { evaluateCompositionFrame, runFixedStepPreroll, type EvaluatedCompositionLayer, type SpineComposition } from "./spineComposition";
+import { compositionEvaluationContextAt, evaluateCompositionFrame, runFixedStepPreroll, type EvaluatedCompositionLayer, type SpineComposition } from "./spineComposition";
 
 export interface SpineTimelineLayerCanvasProps {
   layer: SpineTimelineLayer;
@@ -259,7 +259,9 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
     if (!renderer) return;
     if (compositionSample) {
       const sampleAt = (sampleTime: number, physics: Physics) => {
-        const frame = composition ? evaluateCompositionFrame(composition, { compositionTime: sampleTime }) : null;
+        const frame = composition
+          ? evaluateCompositionFrame(composition, compositionEvaluationContextAt(composition, sampleTime, sampleTime))
+          : null;
         const layerFrame = frame?.layers.find((item) => item.layer.id === layer.id) ?? compositionSample;
         return renderer.sampleEditorComposition(
           layerFrame.animationClips,

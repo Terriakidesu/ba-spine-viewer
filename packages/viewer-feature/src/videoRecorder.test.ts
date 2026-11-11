@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createFullSequenceRecordingPlan, createUnifiedCompositionRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, normalizeVideoRecordingQuality, readVideoRecordingQuality, VIDEO_RECORDING_QUALITY_STORAGE_KEY, VIDEO_RECORDING_SUBTITLE_SELECTOR, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingCompositionSubtitleSpans, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingSubtitleSpans, videoRecordingTimelineOffsets, writeVideoRecordingQuality } from "./videoRecorder";
+import { createFullSequenceRecordingPlan, createUnifiedCompositionRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, normalizeVideoRecordingQuality, readVideoRecordingQuality, VIDEO_RECORDING_QUALITY_STORAGE_KEY, VIDEO_RECORDING_SUBTITLE_SELECTOR, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingCompositionGainAutomation, videoRecordingCompositionSubtitleSpans, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingSubtitleSpans, videoRecordingTimelineOffsets, writeVideoRecordingQuality } from "./videoRecorder";
 import { createEmptySpineComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
 
 describe("Viewer video quality preference", () => {
@@ -218,18 +218,87 @@ describe("Viewer video recording plans", () => {
     expect(videoRecordingAudioSchedule(5, 6, 1, 5)).toBeNull();
   });
 
+  test("clips gain automation to the scheduled source span and rejects malformed curves", () => {
+    const curve = [{ time: 0, volume: 0.2 }, { time: 1, volume: 0.8 }, { time: 2, volume: 0.5 }];
+    expect(videoRecordingAudioSchedule(1, 4, 1, 3, 2, curve)).toEqual({
+      start: 1,
+      duration: 2,
+      volume: 1,
+      sourceOffset: 2,
+      gainAutomation: curve,
+    });
+    expect(videoRecordingAudioSchedule(1, 4, 1, 3, 2, [{ time: 0, volume: 1 }, { time: 3, volume: 0 }])).toBeNull();
+    expect(videoRecordingAudioSchedule(1, 4, 1, 3, 2, [{ time: 0, volume: 1 }, { time: 2, volume: 0 }, { time: 1, volume: 0 }])).toBeNull();
+  });
+
+  test("samples canonical audio-volume automation on exact frame times and simplifies linear curves", () => {
+    const composition = createEmptySpineComposition("canonical", "Canonical", 2, 2);
+    composition.audio = [{ id: "music", name: "Music", path: "music.wav", start: 0, end: 2, sourceOffset: 0, volume: 0.5, enabled: true }];
+    composition.propertyTracks = [{
+      id: "music-gain",
+      target: { kind: "audio", audioId: "music" },
+      property: "audio.volume",
+      clock: { kind: "composition" },
+      enabled: true,
+      priority: 0,
+      blendMode: "override",
+      weight: 1,
+      holdBefore: true,
+      holdAfter: true,
+      keys: [
+        { id: "gain-start", time: 0, value: 0.2, interpolation: "linear" },
+        { id: "gain-end", time: 2, value: 0.8, interpolation: "linear" },
+      ],
+    }];
+
+    expect(videoRecordingCompositionGainAutomation(composition, "music", 0, 2, 2, 0.5)).toEqual([
+      { time: 0, volume: 0.2 },
+      { time: 2, volume: 0.8 },
+    ]);
+    expect(videoRecordingCompositionGainAutomation(composition, "missing", 0, 2, 2, 0.5)).toBeUndefined();
+  });
+
+  test("samples section-instance audio gain tracks against the authored section clock", () => {
+    const composition = createEmptySpineComposition("canonical", "Canonical", 4, 2);
+    composition.sections = [{ id: "talk", name: "Talk", start: 2, end: 4 }];
+    composition.audio = [{ id: "voice", name: "Voice", path: "voice.wav", start: 0, end: 2, sourceOffset: 0, volume: 1, enabled: true, sectionId: "talk" }];
+    composition.propertyTracks = [{
+      id: "voice-gain",
+      target: { kind: "audio", audioId: "voice" },
+      property: "audio.volume",
+      clock: { kind: "section-instance", sectionId: "talk" },
+      enabled: true,
+      priority: 0,
+      blendMode: "override",
+      weight: 1,
+      holdBefore: true,
+      holdAfter: true,
+      keys: [
+        { id: "quiet", time: 0, value: 0.25, interpolation: "linear" },
+        { id: "loud", time: 2, value: 0.75, interpolation: "linear" },
+      ],
+    }];
+    expect(videoRecordingCompositionGainAutomation(composition, "voice", 2, 4, 2, 1)).toEqual([
+      { time: 0, volume: 0.25 },
+      { time: 2, volume: 0.75 },
+    ]);
+  });
+
   test("maps canonical subtitle cues into the authored range and stacks overlaps", () => {
-    const composition = createEmptySpineComposition("canonical", "Canonical", 4);
+    const composition = createEmptySpineComposition("canonical", "Canonical", 6);
+    composition.sections = [{ id: "talk", name: "Talk", start: 2, end: 5 }];
     composition.subtitles = [
       { id: "first", start: 0.5, end: 2, enabled: true, text: { en: "First", ja: "最初", ko: "첫 번째" } },
       { id: "second", start: 1, end: 3, enabled: true, text: { en: "Second", ja: "二番目", ko: "두 번째" } },
       { id: "tail", start: 3.5, end: 5, enabled: true, text: { en: "Tail", ja: "末尾", ko: "끝" } },
       { id: "disabled", start: 0, end: 1, enabled: false, text: { en: "Hidden", ja: "", ko: "" } },
+      { id: "talk-local", start: 0.25, end: 1, enabled: true, text: { en: "Talk", ja: "話", ko: "대화" }, sectionId: "talk" },
     ];
     expect(videoRecordingCompositionSubtitleSpans(composition, "ja")).toEqual([
       { id: "canonical:first", text: "最初", start: 0.5, end: 2, row: 0 },
       { id: "canonical:second", text: "二番目", start: 1, end: 3, row: 1 },
-      { id: "canonical:tail", text: "末尾", start: 3.5, end: 4, row: 0 },
+      { id: "canonical:talk-local", text: "話", start: 2.25, end: 3, row: 0 },
+      { id: "canonical:tail", text: "末尾", start: 3.5, end: 5, row: 0 },
     ]);
   });
 

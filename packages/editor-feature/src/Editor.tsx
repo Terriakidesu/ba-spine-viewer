@@ -76,6 +76,7 @@ import { isEditorAssetSetReady } from "./editorAssetSet";
 import { assertMcpTimelineLocksPreserved, editorDocumentFingerprint, editorDocumentSaveState, editorMcpErrorMessage, type EditorMcpCommand, type EditorMcpState, type EditorMcpTimelineBridge, type EditorMcpTimelineSnapshot } from "./editorMcp";
 import { WaveformProfileRecorder } from "./waveformProfileDiagnostics";
 import { migrateEditorProjectComposition } from "./editorCompositionMigration";
+import { applyCompositionEdits } from "./compositionEdits";
 import type { AudioWaveformMeasurement } from "./AudioWaveform";
 import { DEFAULT_EDITOR_LAYOUT_PREFERENCES, EDITOR_LAYOUT_PREFERENCES_KEY, normalizeEditorLayoutPreferences, type WorkspaceLayoutPreset } from "./editorLayout";
 import { IconAlert, IconAxis, IconBone, IconCheck, IconChevronDown, IconClose, IconEye, IconEyeOff, IconExpand, IconFile, IconFolder, IconHand, IconHelp, IconLink, IconMenu, IconMessage, IconMore, IconPause, IconPlay, IconPlus, IconSave, IconSearch, IconSliders, IconSound, IconTarget, IconText } from "@ba-spine/app-ui/icons";
@@ -2360,6 +2361,13 @@ export function Editor() {
           warnings.push(...migrated.report.diagnostics.filter((item) => item.severity === "warning").map((item) => `${item.code}: ${item.message}`));
           break;
         }
+        case "edit_composition": {
+          if (!draft.composition) throw new Error("This project has no unified composition to edit.");
+          const edited = applyCompositionEdits(draft.composition, operation.operations);
+          next = { ...draft, composition: edited.composition };
+          warnings.push(...edited.warnings);
+          break;
+        }
         case "delete_sequence":
           if (!loadedMeta) throw new Error("Load a Spine skeleton before deleting sequences in a change set.");
           assertKnownSequence(operation.sequenceId);
@@ -2435,6 +2443,19 @@ export function Editor() {
       if (actual !== expectedDocumentRevision) throw new Error(`MCP_STALE_DOCUMENT_REVISION: expected document revision ${expectedDocumentRevision}, but the Editor is now at ${actual}. Re-read editor_state and review the change before retrying.`);
     }
     switch (command.name) {
+      case "edit_composition": {
+        const current = projectRef.current;
+        if (!current?.composition) throw new Error("This project has no unified composition to edit. Run an explicit legacy migration first.");
+        const edited = applyCompositionEdits(current.composition, command.operations);
+        mutate((value) => ({ ...value, composition: edited.composition }));
+        return {
+          compositionId: edited.composition.id,
+          affectedEntityIds: edited.affectedEntityIds,
+          createdEntityIds: edited.createdEntityIds,
+          warnings: edited.warnings,
+          saved: false,
+        };
+      }
       case "evaluate_composition": {
         const current = projectRef.current;
         if (!current?.composition) throw new Error("This project has no unified composition. Run an explicit legacy migration first.");

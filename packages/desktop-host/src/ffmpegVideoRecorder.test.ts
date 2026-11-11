@@ -161,6 +161,32 @@ describe("FFmpeg timestamped audio mixing", () => {
     expect(mix?.graph).toContain("atrim=start=4.250000:duration=1.500000");
   });
 
+  test("applies canonical gain automation as a piecewise-linear FFmpeg expression", () => {
+    const mix = ffmpegAudioMixFilterGraph([{
+      start: 0.5,
+      duration: 2,
+      volume: 0.5,
+      sourceOffset: 1.25,
+      gainAutomation: [
+        { time: 0, volume: 0.2 },
+        { time: 1, volume: 0.8 },
+        { time: 2, volume: 0.4 },
+      ],
+    }], 3);
+    expect(mix?.graph).toContain("atrim=start=1.250000:duration=2.000000,asetpts=PTS-STARTPTS");
+    expect(mix?.graph).toContain("volume='if(lt(t,1.000000),0.20000000+(t-0.000000)*0.6000000000,if(lt(t,2.000000),0.80000000+(t-1.000000)*-0.4000000000,0.40000000))':eval=frame");
+    expect(mix?.graph).toContain("adelay=500:all=1");
+  });
+
+  test("rejects malformed FFmpeg gain curves instead of silently falling back to base volume", () => {
+    expect(() => ffmpegAudioMixFilterGraph([{
+      start: 0,
+      duration: 2,
+      volume: 1,
+      gainAutomation: [{ time: 0, volume: 1 }, { time: 1, volume: 0 }],
+    }], 2)).toThrow("gain automation is invalid");
+  });
+
   test("does not add an audio stream when no audio tracks were scheduled", () => {
     expect(ffmpegAudioMixFilterGraph([], 5)).toBeNull();
   });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { acknowledgeDesktopHandoff, chooseDesktopVideoDirectory, getDesktopFullscreen, readDesktopDraftSnapshot, receiveDesktopHandoffs, saveDesktopVideo, sendDesktopHandoff, setDesktopFullscreen, sourceFromDesktop } from "./desktopSource";
+import { acknowledgeDesktopHandoff, addDesktopFfmpegAudioTrack, chooseDesktopVideoDirectory, getDesktopFullscreen, readDesktopDraftSnapshot, receiveDesktopHandoffs, saveDesktopVideo, sendDesktopHandoff, setDesktopFullscreen, sourceFromDesktop } from "./desktopSource";
 
 const manifest = JSON.stringify({
   schemaVersion: 1,
@@ -18,6 +18,39 @@ const manifest = JSON.stringify({
 });
 
 describe("viewer desktop asset source", () => {
+  test("uploads FFmpeg audio gain automation with the audio track metadata", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    let request: { path: string; headers: Headers; body: BodyInit | null | undefined } | undefined;
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { __BA_SPINE_HOST_TOKEN__: "audio-token" } });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      request = { path: String(input), headers: new Headers(init?.headers), body: init?.body };
+      return Response.json({ added: true });
+    }) as typeof fetch;
+
+    try {
+      const file = new Blob(["audio fixture"], { type: "audio/wav" });
+      const gainAutomation = [{ time: 0, volume: 0.25 }, { time: 1.5, volume: 0.75 }];
+      await addDesktopFfmpegAudioTrack("session-1", {
+        start: 2,
+        duration: 1.5,
+        volume: 1,
+        sourceOffset: 0.5,
+        extension: "wav",
+        file,
+        gainAutomation,
+      });
+      expect(request?.path).toBe("/__spine/video/ffmpeg/audio?sessionId=session-1");
+      expect(request?.headers.get("x-ba-spine-token")).toBe("audio-token");
+      expect(request?.headers.get("x-ba-spine-audio-gain")).toBe(JSON.stringify([[0, 0.25], [1.5, 0.75]]));
+      expect(request?.body).toBe(file);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
+  });
+
   test("chooses a native video folder and uploads the correctly labeled format through the host bridge", async () => {
     const originalFetch = globalThis.fetch;
     const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");

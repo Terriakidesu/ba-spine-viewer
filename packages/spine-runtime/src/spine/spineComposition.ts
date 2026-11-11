@@ -322,7 +322,7 @@ export const COMPOSITION_PROPERTY_REGISTRY: readonly CompositionPropertyDefiniti
   discrete("layer.blendMode", "Blend mode", layerTarget, "layer", "normal", ["normal", "multiply", "screen", "additive"]),
   numeric("camera.centerX", "Camera center X", ["camera"], "camera", { unit: "px" }),
   numeric("camera.centerY", "Camera center Y", ["camera"], "camera", { unit: "px" }),
-  numeric("camera.frameHeight", "Camera frame height", ["camera"], "camera", { min: 0.001, unit: "px", additive: "multiply" }),
+  numeric("camera.frameHeight", "Camera frame height", ["camera"], "camera", { defaultValue: 1, min: 0.001, unit: "px", additive: "multiply" }),
   discrete("animation.selection", "Animation", ["clip"], "animation", ""),
   numeric("animation.speed", "Animation speed", ["clip"], "animation", { defaultValue: 1, min: 0, max: 8, additive: null, interpolations: ["step", "linear"] }),
   numeric("animation.weight", "Animation weight", ["clip"], "animation", { defaultValue: 1, min: 0, max: 1, additive: null }),
@@ -336,7 +336,7 @@ export const COMPOSITION_PROPERTY_REGISTRY: readonly CompositionPropertyDefiniti
   numeric("bone.shearY", "Bone shear Y", boneTarget, "skeleton-local", { unit: "degrees", capability: "bone-local-transform" }),
   numeric("constraint.ik.mix", "IK mix", constraintTarget, "constraint", { min: 0, max: 1, additive: null, capability: "constraint.ik" }),
   numeric("constraint.ik.softness", "IK softness", constraintTarget, "constraint", { min: 0, additive: null, capability: "constraint.ik" }),
-  numeric("constraint.ik.bendDirection", "IK bend direction", constraintTarget, "constraint", { min: -1, max: 1, interpolations: ["step"], additive: null, capability: "constraint.ik" }),
+  numeric("constraint.ik.bendDirection", "IK bend direction", constraintTarget, "constraint", { defaultValue: 1, min: -1, max: 1, interpolations: ["step"], additive: null, capability: "constraint.ik" }),
   discrete("constraint.ik.compress", "IK compress", constraintTarget, "constraint", false, undefined, "constraint.ik"),
   discrete("constraint.ik.stretch", "IK stretch", constraintTarget, "constraint", false, undefined, "constraint.ik"),
   numeric("constraint.transform.mixRotate", "Transform rotation mix", constraintTarget, "constraint", { min: 0, max: 1, additive: null, capability: "constraint.transform" }),
@@ -731,6 +731,26 @@ export interface CompositionEvaluationContext {
   compositionTime: number;
   transportTime?: number;
   sectionInstanceTimes?: Readonly<Record<string, number>>;
+  /** Optional live section owner used by the interactive Viewer. */
+  activeSectionId?: string;
+  activeSectionChannels?: readonly CompositionSectionRoute["ownedChannels"][number][];
+  activeSectionWeight?: number;
+}
+
+/** Build canonical linear-playback clocks for every section covering a timestamp. */
+export function compositionEvaluationContextAt(
+  composition: SpineComposition,
+  compositionTime: number,
+  transportTime = compositionTime,
+): CompositionEvaluationContext {
+  const sectionInstanceTimes = Object.fromEntries(composition.sections.flatMap((section) => {
+    const includesEndpoint = composition.finalFramePolicy === "include-endpoint"
+      && compositionTime === composition.duration && section.end === composition.duration;
+    return compositionTime >= section.start && (compositionTime < section.end || includesEndpoint)
+      ? [[section.id, compositionTime - section.start]]
+      : [];
+  }));
+  return { compositionTime, transportTime, sectionInstanceTimes };
 }
 
 export interface EvaluatedComposition {
@@ -750,6 +770,44 @@ export function compositionClockTime(clock: CompositionClock, context: Compositi
   if (clock.kind === "composition") return context.compositionTime;
   if (clock.kind === "transport") return context.transportTime ?? null;
   return context.sectionInstanceTimes?.[clock.sectionId] ?? null;
+}
+
+function targetLayer(composition: SpineComposition, target: CompositionTarget): CompositionLayer | null {
+  const layerId = target.kind === "layer" || target.kind === "bone" || target.kind === "constraint" || target.kind === "slot"
+    ? target.layerId
+    : target.kind === "clip"
+      ? composition.animationClips.find((clip) => clip.id === target.clipId)?.layerId
+      : null;
+  return layerId ? composition.layers.find((layer) => layer.id === layerId) ?? null : null;
+}
+
+function targetRouteChannel(composition: SpineComposition, target: CompositionTarget, definition: CompositionPropertyDefinition): CompositionSectionRoute["ownedChannels"][number] {
+  if (definition.stage === "audio") return "audio";
+  if (definition.stage === "camera") return "camera";
+  if (definition.stage === "skeleton-local" || definition.stage === "constraint" || definition.stage === "slot") return "skeletal-overrides";
+  if (definition.stage === "animation") return "body";
+  const role = targetLayer(composition, target)?.role;
+  return role === "character" ? "body" : role === "scene" || role === "background" ? "scene" : "effects";
+}
+
+function routedCompositionTime(
+  composition: SpineComposition,
+  context: CompositionEvaluationContext,
+  target: CompositionTarget,
+  definition: CompositionPropertyDefinition,
+): { time: number; weight: number; routed: boolean } | null {
+  const section = context.activeSectionId ? composition.sections.find((item) => item.id === context.activeSectionId) : null;
+  const elapsed = section ? context.sectionInstanceTimes?.[section.id] : undefined;
+  if (section && elapsed !== undefined && context.activeSectionChannels) {
+    const channel = targetRouteChannel(composition, target, definition);
+    if (context.activeSectionChannels.includes(channel)) {
+      return { time: section.start + elapsed, weight: clamp01(context.activeSectionWeight ?? 1), routed: true };
+    }
+    if (channel === "body" && context.activeSectionChannels.includes("face")) {
+      return { time: section.start + elapsed, weight: clamp01(context.activeSectionWeight ?? 1), routed: true };
+    }
+  }
+  return null;
 }
 
 function compositionActive(start: number, end: number, time: number, duration: number, policy: SpineComposition["finalFramePolicy"]): boolean {
@@ -782,7 +840,14 @@ export function evaluateComposition(composition: SpineComposition, context: Comp
   for (const track of tracks) {
     const definition = compositionPropertyDefinition(track.property);
     if (!definition) continue;
-    const clockTime = compositionClockTime(track.clock, context);
+    const sectionId = track.clock.kind === "section-instance" ? track.clock.sectionId : null;
+    const sectionClock = sectionId !== null;
+    if (sectionId && context.activeSectionId && sectionId !== context.activeSectionId) continue;
+    const channel = targetRouteChannel(composition, track.target, definition);
+    if (sectionClock && context.activeSectionChannels && !context.activeSectionChannels.includes(channel)
+      && !(channel === "body" && context.activeSectionChannels.includes("face"))) continue;
+    const mapped = track.clock.kind === "composition" ? routedCompositionTime(composition, context, track.target, definition) : null;
+    const clockTime = mapped?.time ?? compositionClockTime(track.clock, context);
     if (clockTime === null) continue;
     const value = sampleCompositionTrack(track, clockTime);
     if (value === undefined) continue;
@@ -791,15 +856,29 @@ export function evaluateComposition(composition: SpineComposition, context: Comp
       diagnostics.push({ severity: "warning", code: "invalid-evaluated-value", message: `Track “${track.id}” produced ${invalid}`, targetId: track.id });
       continue;
     }
-    propertyContributions.push({ target: track.target, property: track.property, value, blendMode: track.blendMode, weight: clamp01(track.weight), priority: track.priority, trackId: track.id });
+    const weight = clamp01(track.weight) * (sectionClock || mapped?.routed ? clamp01(context.activeSectionWeight ?? 1) : 1);
+    propertyContributions.push({ target: track.target, property: track.property, value, blendMode: track.blendMode, weight, priority: track.priority, trackId: track.id });
     const key = compositionTargetKey(track.target, track.property);
     const base = properties.get(key) ?? track.baseValue ?? definition.defaultValue;
-    properties.set(key, blendValue(base, value, definition, track.blendMode, clamp01(track.weight)));
+    properties.set(key, blendValue(base, value, definition, track.blendMode, weight));
   }
   const activeSectionIds = composition.sections.filter((section) => compositionActive(section.start, section.end, context.compositionTime, composition.duration, composition.finalFramePolicy)).map((section) => section.id);
   const activeAnimationClips = composition.animationClips.flatMap((clip) => {
     if (!clip.enabled) return [];
-    const time = compositionClockTime(clip.clock, context);
+    if (clip.clock.kind === "section-instance" && context.activeSectionId && clip.clock.sectionId !== context.activeSectionId) return [];
+    const clipLayer = composition.layers.find((layer) => layer.id === clip.layerId);
+    const section = context.activeSectionId ? composition.sections.find((item) => item.id === context.activeSectionId) : null;
+    const sectionElapsed = section ? context.sectionInstanceTimes?.[section.id] : undefined;
+    const channel = clipLayer?.role === "character" ? "body" : clipLayer?.role === "scene" || clipLayer?.role === "background" ? "scene" : "effects";
+    if (clip.clock.kind === "section-instance" && context.activeSectionChannels
+      && !context.activeSectionChannels.includes(channel)
+      && !(channel === "body" && context.activeSectionChannels.includes("face"))) return [];
+    const mapped = clip.clock.kind === "composition" && section && sectionElapsed !== undefined
+      && clip.start >= section.start - 1e-6 && clip.end <= section.end + 1e-6
+      && context.activeSectionChannels?.includes(channel)
+      ? { time: section.start + sectionElapsed, weight: clamp01(context.activeSectionWeight ?? 1) }
+      : null;
+    const time = mapped?.time ?? compositionClockTime(clip.clock, context);
     if (time === null || time < clip.start || (time >= clip.end && clip.endBehavior !== "hold")) return [];
     const clipActive = clip.clock.kind === "composition"
       ? compositionActive(clip.start, clip.end, time, composition.duration, composition.finalFramePolicy)
@@ -832,7 +911,8 @@ export function evaluateComposition(composition: SpineComposition, context: Comp
     const animation = properties.get(compositionTargetKey(target, "animation.selection"));
     const weight = properties.get(compositionTargetKey(target, "animation.weight"));
     const evaluatedClip = typeof animation === "string" && animation !== clip.animation ? { ...clip, animation } : clip;
-    return [{ clip: evaluatedClip, sourceTime, weight: (typeof weight === "number" ? clamp01(weight) : clip.weight) * Math.min(inWeight, outWeight) }];
+    const routeWeight = clip.clock.kind === "section-instance" || mapped ? clamp01(context.activeSectionWeight ?? 1) : 1;
+    return [{ clip: evaluatedClip, sourceTime, weight: (typeof weight === "number" ? clamp01(weight) : clip.weight) * Math.min(inWeight, outWeight) * routeWeight }];
   }).sort((a, b) => a.clip.priority - b.clip.priority || a.clip.id.localeCompare(b.clip.id));
   const activeClipByLayer = new Map<string, typeof activeAnimationClips[number]>();
   for (const active of activeAnimationClips) activeClipByLayer.set(active.clip.layerId, active);
@@ -857,8 +937,28 @@ export function evaluateComposition(composition: SpineComposition, context: Comp
     const animation = selectedAnimation(active.clip.layerId);
     return animation && animation !== active.clip.animation ? { ...active, clip: { ...active.clip, animation } } : active;
   });
-  const activeAudio = composition.audio.filter((clip) => clip.enabled && compositionActive(clip.start, clip.end, context.compositionTime, composition.duration, composition.finalFramePolicy));
-  const activeSubtitles = composition.subtitles.filter((cue) => cue.enabled && compositionActive(cue.start, cue.end, context.compositionTime, composition.duration, composition.finalFramePolicy));
+  const activeAudio = composition.audio.filter((clip) => {
+    if (!clip.enabled) return false;
+    if (clip.sectionId) {
+      if (context.activeSectionId && context.activeSectionId !== clip.sectionId || context.activeSectionChannels && !context.activeSectionChannels.includes("audio")) return false;
+      const section = composition.sections.find((item) => item.id === clip.sectionId);
+      const sectionTime = context.sectionInstanceTimes?.[clip.sectionId]
+        ?? (section ? context.compositionTime - section.start : undefined);
+      return sectionTime !== undefined && sectionTime >= 0 && compositionActive(clip.start, clip.end, sectionTime, section ? section.end - section.start : composition.duration, composition.finalFramePolicy);
+    }
+    return compositionActive(clip.start, clip.end, context.compositionTime, composition.duration, composition.finalFramePolicy);
+  });
+  const activeSubtitles = composition.subtitles.filter((cue) => {
+    if (!cue.enabled) return false;
+    if (cue.sectionId) {
+      if (context.activeSectionId && context.activeSectionId !== cue.sectionId || context.activeSectionChannels && !context.activeSectionChannels.includes("subtitles")) return false;
+      const section = composition.sections.find((item) => item.id === cue.sectionId);
+      const sectionTime = context.sectionInstanceTimes?.[cue.sectionId]
+        ?? (section ? context.compositionTime - section.start : undefined);
+      return sectionTime !== undefined && sectionTime >= 0 && compositionActive(cue.start, cue.end, sectionTime, section ? section.end - section.start : composition.duration, composition.finalFramePolicy);
+    }
+    return compositionActive(cue.start, cue.end, context.compositionTime, composition.duration, composition.finalFramePolicy);
+  });
   const activeColorClips = composition.colorLayers.flatMap((layer) => layer.clips.flatMap((clip) => {
     if (!layer.enabled || !clip.enabled || !compositionActive(clip.start, clip.end, context.compositionTime, composition.duration, composition.finalFramePolicy)) return [];
     const elapsed = context.compositionTime - clip.start;

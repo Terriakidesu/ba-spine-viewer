@@ -24,8 +24,9 @@ import type { EditorSaveFile } from "./editorProject";
 import { audioPlaybackDecision, clampAudioEnd, clampAudioStart, decodedAudioTiming } from "./audioModel";
 import { addTalkSequence, animationClipEnd, animationEndForLayer, authoredTimelineEnd, deleteAnimationClipRipple, deleteSequence, duplicateAnimationClipRipple, effectiveAnimationClips, extendTimelineDuration, insertAnimationClipRipple, linkAudioToSubtitle, linkedSubtitleForAudio, matchAudioAndSubtitleLength, matchedAnimationEndpoint, moveAnimationClipRipple, moveSequenceBy, moveSequenceId, nextTalkSequenceId, nextTalkSequenceIdForProject, openingTimelineDuration, replaceSubtitleImport, resolveTimelineSnap, sequenceDisplayName, sequenceIdsForProject, snapToTargets, splitCue, switchSequence } from "./sequenceModel";
 import { advanceSpineTimeline, normalizeColorClipFades, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineLayerAnimation, timelineMainAnimation, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimelineAudioPreloadState } from "@ba-spine/spine-runtime/spine/spineTimeline";
-import { evaluateCompositionFrame } from "@ba-spine/spine-runtime/spine/spineComposition";
-import { compositionFrameToTimeline } from "@ba-spine/spine-runtime/spine/spineCompositionTimeline";
+import { evaluateCompositionFrame, validateComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
+import { compositionCameraTrackAt, compositionFrameToTimeline } from "@ba-spine/spine-runtime/spine/spineCompositionTimeline";
+import { compositionEvaluationContextAt } from "@ba-spine/spine-runtime/spine/spineComposition";
 import { SpineTimelineLayerCanvas } from "@ba-spine/spine-runtime/ui/SpineTimelineLayerCanvas";
 import { spineAudioPathCandidates } from "@ba-spine/spine-runtime/spine/spineAudio";
 import { createLegacyCompositionSchedule, DEFAULT_FULL_SEQUENCE_ARRANGEMENT } from "@ba-spine/spine-runtime/spine/spineCompositionMigration";
@@ -52,6 +53,8 @@ import { missingManifestAssetFiles, validateTimeline, type TimelineDiagnostic } 
 import { copyTimelineSelection, pasteTimelineSelection, type TimelineClipboard, type TimelineClipboardSelection } from "./timelineClipboard";
 import { searchSubtitleCues, type SubtitleSearchLanguage } from "./subtitleCueSearch";
 import { migrateEditorProjectComposition } from "./editorCompositionMigration";
+import { applyCompositionEdits, type CompositionEditOperation } from "./compositionEdits";
+import { CompositionTimelineEditor } from "./CompositionTimelineEditor";
 import { IconChevronDown, IconChevronLeft, IconChevronRight, IconEye, IconEyeOff, IconExpand, IconLink, IconLock, IconMinus, IconPause, IconPlay, IconPlus, IconSkipBack, IconSkipForward, IconSound, IconSync, IconUnlock, IconUnlink } from "@ba-spine/app-ui/icons";
 import "./timelineSnapFeedback.css";
 
@@ -617,11 +620,12 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const timeline = project?.timeline ?? null;
   const composition = project?.composition ?? null;
   const compositionPreviewFrame = compositionPreviewEnabled && composition
-    ? evaluateCompositionFrame(composition, { compositionTime: currentTime, transportTime: currentTime })
+    ? evaluateCompositionFrame(composition, compositionEvaluationContextAt(composition, currentTime, currentTime))
     : null;
   const compositionPreviewTimeline = composition && compositionPreviewFrame
     ? compositionFrameToTimeline(composition, compositionPreviewFrame, currentTime, timeline?.language ?? "en")
     : null;
+  const compositionDiagnostics = useMemo(() => composition ? validateComposition(composition) : [], [composition]);
   const previewTimeline = compositionPreviewTimeline ?? timeline;
   const cameraTrack = compositionPreviewEnabled ? composition?.camera ?? null : timeline?.camera ?? null;
   const selectedCameraKeyframe = cameraTrack?.keyframes.find((keyframe) => keyframe.id === selectedCameraKeyframeId) ?? null;
@@ -698,12 +702,21 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const cameraReferenceLayer = previewTimeline?.layers.find((layer) => layer.id === referenceLayerId) ?? null;
   const cameraProjectionRenderer = useMemo(() => spineRenderersRef.current.get(referenceLayerId) ?? null, [cameraProjectionRevision, referenceLayerId]);
   const cameraProjectionSize = cameraProjectionRenderer?.canvasClientSize() ?? null;
+  const evaluatedCameraTrack = compositionPreviewEnabled && composition && compositionPreviewFrame
+    ? compositionCameraTrackAt(
+      composition,
+      compositionPreviewFrame,
+      currentTime,
+      cameraTrack,
+      cameraProjectionRenderer?.getArtworkCameraFrame(cameraAspectValue(cameraTrack?.aspectRatio ?? "16:9")) ?? null,
+    )
+    : cameraTrack;
   const cameraSequenceKey = compositionPreviewEnabled ? "unified-composition" : timeline?.sequenceId ?? "legacy";
-  const sampledCamera = cameraTrack
-    ? sampleSpineCameraTrackWithFallback(cameraTrack, currentTime, cameraProjectionRenderer?.getArtworkCameraFrame(cameraAspectValue(cameraTrack.aspectRatio)) ?? null)
+  const sampledCamera = evaluatedCameraTrack
+    ? sampleSpineCameraTrackWithFallback(evaluatedCameraTrack, currentTime, cameraProjectionRenderer?.getArtworkCameraFrame(cameraAspectValue(evaluatedCameraTrack.aspectRatio)) ?? null)
     : null;
-  const solvedCamera = cameraTrack
-    ? evaluateSpineCameraTrack(cameraTrack, currentTime, 1, 1, cameraProjectionRenderer?.getArtworkCameraFrame(cameraAspectValue(cameraTrack.aspectRatio)) ?? null, activeCameraBoundIdRef.current.sequenceId === cameraSequenceKey ? activeCameraBoundIdRef.current.boundId : null)
+  const solvedCamera = evaluatedCameraTrack
+    ? evaluateSpineCameraTrack(evaluatedCameraTrack, currentTime, 1, 1, cameraProjectionRenderer?.getArtworkCameraFrame(cameraAspectValue(evaluatedCameraTrack.aspectRatio)) ?? null, activeCameraBoundIdRef.current.sequenceId === cameraSequenceKey ? activeCameraBoundIdRef.current.boundId : null)
     : null;
   const cameraAspect = cameraAspectValue(cameraTrack?.aspectRatio ?? "16:9");
   const referenceArtworkFrame = cameraProjectionRenderer?.getArtworkCameraFrame(cameraAspect) ?? null;
@@ -2614,8 +2627,24 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     setCompositionPreviewEnabled(enabled);
     setCurrentTime((time) => Math.min(time, enabled ? current.duration : timeline?.duration ?? time));
     onStatus(enabled
-      ? "Unified composition preview is active. Timeline clip editing remains on the legacy sequence; Camera edits target the unified composition."
+      ? "Unified composition authoring is active. Timeline and Camera previews use the shared composition evaluator."
       : "Returned to the active legacy sequence preview.");
+  }
+
+  function editComposition(operations: CompositionEditOperation[]) {
+    const current = projectRef.current?.composition;
+    if (!current) {
+      onError("This project has no unified composition to edit.");
+      return;
+    }
+    try {
+      const edited = applyCompositionEdits(current, operations);
+      onMutate((value) => value.composition?.id === current.id ? { ...value, composition: edited.composition } : value);
+      onError(null);
+      onStatus(edited.warnings.length ? `Composition edit applied with warnings: ${edited.warnings.join("; ")}` : "Composition edit applied. Use Save to persist the project.");
+    } catch (value) {
+      onError(value instanceof Error ? value.message : String(value));
+    }
   }
 
   function migrateToUnifiedComposition() {
@@ -2671,6 +2700,8 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     const confirmed = window.confirm(`Create an in-memory unified composition? The source sequences will be preserved, and saving remains explicit.\n\nSchedule:\n${scheduleSummary || "(empty)"}\n\nMigration report:\n${reportSummary || "No assumptions or diagnostics."}\n\nContinue?`);
     if (!confirmed) return;
     onMutate((value) => ({ ...value, composition: migrated.composition }));
+    setCompositionPreviewEnabled(true);
+    setCurrentTime(0);
     onStatus(`Created an unsaved unified composition draft with ${migrated.composition.sections.length} sections. Legacy sequences remain intact; use Save when ready.`);
   }
 
@@ -4916,12 +4947,12 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       {!sequencePanelCollapsed && <TimelinePanelResizer side="sequences" value={sequencePanelWidth} onChange={(sequencePanelWidth) => updateTimelineLayout({ sequencePanelWidth })} />}
         <section className="timeline-main">
             <div className="sequence-heading">
-                <div><strong>{compositionPreviewEnabled ? "Unified composition preview" : timeline.sequenceId === "opening" ? "Opening / Intro" : timeline.sequenceId ? sequenceDisplayName(timeline.sequenceId) : "Recovered composition"}</strong><small>{compositionPreviewEnabled ? "Shared evaluator · timeline rows below remain the legacy sequence" : timeline.sequenceId === "opening" ? "Layered Spine and color composition." : "Synchronized Spine composition"}</small></div>
+                <div><strong>{compositionPreviewEnabled ? "Unified composition" : timeline.sequenceId === "opening" ? "Opening / Intro" : timeline.sequenceId ? sequenceDisplayName(timeline.sequenceId) : "Recovered composition"}</strong><small>{compositionPreviewEnabled ? "Shared evaluator · persistent layers, sections, clips and keys" : timeline.sequenceId === "opening" ? "Layered Spine and color composition." : "Synchronized Spine composition"}</small></div>
                 <div className="sequence-heading-actions">
                   <button type="button" className="editor-button timeline-panel-toggle" aria-controls="timeline-sequence-browser" aria-expanded={!sequencePanelCollapsed} onClick={() => updateTimelineLayout({ sequencePanelCollapsed: !sequencePanelCollapsed })}>{sequencePanelCollapsed ? "Show sequences" : "Hide sequences"}</button>
                   {!project.composition && <button type="button" className="editor-button" onClick={migrateToUnifiedComposition} title="Review the generated migration schedule and report before creating an unsaved composition draft">Migrate to unified composition</button>}
                   {composition && <button type="button" className={`editor-button${compositionPreviewEnabled ? " active" : ""}`} aria-pressed={compositionPreviewEnabled} onClick={toggleCompositionPreview}>{compositionPreviewEnabled ? "Preview legacy sequence" : "Preview unified composition"}</button>}
-                  {compositionPreviewEnabled && <span className="opening-duration-badge" role="status">Read-only composition preview</span>}
+                  {compositionPreviewEnabled && <span className="opening-duration-badge" role="status">Composition authoring</span>}
                  {(timeline.sequenceId === "opening" || isTalkSequence) && <span className="opening-duration-badge">{timeline.durationMode === "auto" ? "AUTO" : "MANUAL"} · {seconds(duration)}</span>}
                  {timeline.sequenceId === "opening" && <><button className="editor-button" type="button" onClick={() => addColorLayer()}><IconPlus /> Color layer</button><button className="editor-button" type="button" onClick={() => setLayerPickerOpen(true)} disabled={!availableLayerDirectories.length}><IconPlus /> Spine layer</button></>}
                 <button type="button" className="editor-button timeline-panel-toggle" aria-controls="timeline-inspector" aria-expanded={!inspectorPanelCollapsed} onClick={() => updateTimelineLayout({ inspectorPanelCollapsed: !inspectorPanelCollapsed })}>{inspectorPanelCollapsed ? "Show inspector" : "Hide inspector"}</button>
@@ -4990,7 +5021,18 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
            getFlexibleHeight={() => (stageWrapRef.current?.getBoundingClientRect().height ?? 0) + (scrollRef.current?.getBoundingClientRect().height ?? 0)}
          />
 
-           <div className="timeline-editor-scroll" ref={scrollRef} tabIndex={0} aria-label="Timeline tracks" aria-haspopup="menu" aria-keyshortcuts="Shift+F10 ContextMenu" style={{ flex: `${100 - previewShare} 1 0` }} onContextMenu={openTimelineContextMenu} onKeyDown={openTimelineKeyboardContextMenu} onWheel={scrollTimeline} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
+            {compositionPreviewEnabled && composition
+              ? <CompositionTimelineEditor
+                  composition={composition}
+                  currentTime={currentTime}
+                  animationNames={Object.fromEntries(composition.layers.map((layer) => [layer.id, metas[layer.id]?.animations ?? []]))}
+                  animationDurations={animationDurations}
+                  scrollRef={scrollRef}
+                  onSeek={(time) => { setPlaying(false); setCurrentTime(time); }}
+                  onEdit={editComposition}
+                />
+              : <>
+            <div className="timeline-editor-scroll" ref={scrollRef} tabIndex={0} aria-label="Timeline tracks" aria-haspopup="menu" aria-keyshortcuts="Shift+F10 ContextMenu" style={{ flex: `${100 - previewShare} 1 0` }} onContextMenu={openTimelineContextMenu} onKeyDown={openTimelineKeyboardContextMenu} onWheel={scrollTimeline} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
         <div className="timeline-ruler-row" style={{ minWidth: trackWidth + trackLabelWidth, gridTemplateColumns: `${trackLabelWidth}px minmax(0, 1fr)` }}>
           <div className="timeline-track-label timeline-ruler-label">LAYERS<button type="button" className="timeline-track-resize" aria-label={`Resize layer column, ${trackLabelWidth} pixels`} title="Drag to resize; use left and right arrow keys" onPointerDown={beginResizeTrackLabel} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); resizeTrackLabelBy(event.key === "ArrowRight" ? 8 : -8); } }} /></div>
            <div className="timeline-track timeline-ruler" style={{ width: trackWidth }} onPointerDown={seekFromEvent} onPointerMove={scrubMove} onPointerUp={endScrub} onPointerCancel={endScrub}>
@@ -5099,11 +5141,26 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
               </div>
             </details>
           </div>
+              </>}
        </section>
 
       {!inspectorPanelCollapsed && <TimelinePanelResizer side="inspector" value={inspectorPanelWidth} onChange={(inspectorPanelWidth) => updateTimelineLayout({ inspectorPanelWidth })} />}
-        <aside id="timeline-inspector" className="editor-panel timeline-inspector" hidden={inspectorPanelCollapsed}>
-           <section className="editor-section timeline-subtitle-search" aria-label="Find subtitle cue">
+         <aside id="timeline-inspector" className="editor-panel timeline-inspector" hidden={inspectorPanelCollapsed}>
+          {compositionPreviewEnabled && composition ? <>
+            <section className="editor-section editor-inspector">
+              <div className="editor-section-title"><strong>Composition</strong><span>v{composition.schemaVersion}</span></div>
+              <p className="editor-muted">One authored range, shared layer identities, sections, animation clips, property keys, audio, subtitles, and camera.</p>
+              <div className="timeline-context-summary"><span>Duration <b>{seconds(composition.duration)}</b></span><span>Frame rate <b>{composition.frameRate}</b></span></div>
+              <label>Entry section<select value={composition.entrySectionId ?? ""} onChange={(event) => editComposition([{ kind: "set_entry_section", sectionId: event.target.value || null }])}><option value="">None</option>{composition.sections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}</select></label>
+              <label>Idle section<select value={composition.idleSectionId ?? ""} onChange={(event) => editComposition([{ kind: "set_idle_section", sectionId: event.target.value || null }])}><option value="">None</option>{composition.sections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}</select></label>
+              <div className="editor-subheading">Sections</div>
+              {composition.sections.length ? <div className="composition-inspector-sections">{composition.sections.map((section) => <button key={section.id} type="button" className="editor-button" onClick={() => setCurrentTime(section.start)}><b>{section.name}</b><small>{seconds(section.start)}–{seconds(section.end)} · {section.route?.role ?? "range"}</small></button>)}</div> : <p className="editor-muted">Add a section from the composition timeline below.</p>}
+              <div className="editor-subheading">Diagnostics</div>
+              {compositionDiagnostics.length ? <div className="editor-validation-list">{compositionDiagnostics.map((diagnostic, index) => <div key={`${diagnostic.code}-${diagnostic.targetId ?? index}`} className={`editor-validation-issue is-${diagnostic.severity}`}><b>{diagnostic.code.replaceAll("-", " ")}</b><span>{diagnostic.message}</span></div>)}</div> : <p className="editor-muted">No composition diagnostics.</p>}
+              <button className="editor-button" type="button" onClick={() => onWorkspaceChange("camera")}>Open composition Camera workspace</button>
+            </section>
+          </> : <>
+            <section className="editor-section timeline-subtitle-search" aria-label="Find subtitle cue">
              <div className="editor-section-title"><strong>Find subtitle cue</strong><span>{timeline.subtitles.length} cue{timeline.subtitles.length === 1 ? "" : "s"}</span></div>
              <div className="timeline-subtitle-search-controls">
                <label>Text<input type="search" aria-label="Search subtitle text" placeholder="Search translations…" value={subtitleSearchQuery} onChange={(event) => setSubtitleSearchQuery(event.target.value)} /></label>
@@ -5308,8 +5365,9 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
           <p className="editor-muted" title={selectedAudio.path}>{selectedAudio.path}</p>
         </section>}
 
-        {((inspector === "layer" && !selectedLayer) || (inspector === "color-layer" && !selectedColorLayer) || (inspector === "color-clip" && !selectedColorClip) || (inspector === "animation" && !selectedAnimationClip) || (inspector === "cue" && !selectedCue) || (inspector === "audio" && !selectedAudio)) && <div className="timeline-empty timeline-inspector-empty"><strong>Select a clip</strong><span>Choose a Spine/color layer, animation, subtitle, or audio clip in the timeline.</span></div>}
-      </aside>
+         {((inspector === "layer" && !selectedLayer) || (inspector === "color-layer" && !selectedColorLayer) || (inspector === "color-clip" && !selectedColorClip) || (inspector === "animation" && !selectedAnimationClip) || (inspector === "cue" && !selectedCue) || (inspector === "audio" && !selectedAudio)) && <div className="timeline-empty timeline-inspector-empty"><strong>Select a clip</strong><span>Choose a Spine/color layer, animation, subtitle, or audio clip in the timeline.</span></div>}
+          </>}
+       </aside>
     </div>
      <AssetPickerModal open={layerPickerOpen} title="Add Spine layer" eyebrow="TIMELINE LAYER" description="Search the loaded catalog and add another background, scene, character, or overlay set." directories={availableLayerDirectories} assetRoot={source?.rootPath ?? ""} directoryInfo={directoryInfo} emptyLabel="Every available asset set is already on this timeline." renderLabel={(item) => characterDirectoryLabel(item, directoryLabels)} getSearchText={(item) => characterDirectoryLabel(item, directoryLabels)} onClose={() => setLayerPickerOpen(false)} onSelect={(next) => { setLayerPickerOpen(false); addLayer(next); }} />
      {renderCameraContextMenu()}

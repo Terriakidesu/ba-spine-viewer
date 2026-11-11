@@ -3,6 +3,7 @@ import { BoneData, IkConstraintData, Skeleton, SkeletonData, Skin } from "@esote
 import {
   COMPOSITION_PROPERTY_REGISTRY,
   applySpineSkeletalOverrides,
+  compositionEvaluationContextAt,
   compositionTargetKey,
   createEmptySpineComposition,
   defaultTalkSectionRoute,
@@ -17,6 +18,9 @@ import {
   type CompositionPropertyTrack,
   type SpineComposition,
 } from "./spineComposition";
+import { sampleSpineCameraTrack } from "./spineCameraMotion";
+import { compositionCameraTrackAt } from "./spineCompositionTimeline";
+import { compositionFrameToTimeline } from "./spineCompositionTimeline";
 
 function composition(): SpineComposition {
   const value = createEmptySpineComposition("test", "Test", 10, 30);
@@ -58,6 +62,8 @@ test("property registry covers first-release layer, camera, audio, bone, slot, a
   expect(ids.has("constraint.path.spacing")).toBe(true);
   expect(ids.has("constraint.physics.gravity")).toBe(true);
   expect(ids.has("slot.attachment")).toBe(true);
+  expect(COMPOSITION_PROPERTY_REGISTRY.find((item) => item.id === "camera.frameHeight")?.defaultValue).toBeGreaterThan(0);
+  expect(COMPOSITION_PROPERTY_REGISTRY.find((item) => item.id === "constraint.ik.bendDirection")?.defaultValue).toBe(1);
   expect(COMPOSITION_PROPERTY_REGISTRY.find((item) => item.id === "slot.attachment")?.interpolations).toEqual(["step"]);
 });
 
@@ -158,6 +164,169 @@ test("composition evaluation shares section, clip, and audio/subtitle activity a
   expect(sampled.activeAudio.map((clip) => clip.id)).toEqual(["voice"]);
   expect(sampled.activeSubtitles.map((cue) => cue.id)).toEqual(["cue"]);
   expect(evaluateComposition(value, { compositionTime: 4 }).activeAudio).toHaveLength(0);
+});
+
+test("canonical linear contexts map section-instance clocks from section-local time", () => {
+  const value = composition();
+  value.sections.push({ id: "talk", name: "Talk", start: 2, end: 5 });
+  value.propertyTracks.push(track({
+    id: "talk-property",
+    property: "layer.position.x",
+    target: { kind: "layer", layerId: "character" },
+    clock: { kind: "section-instance", sectionId: "talk" },
+    keys: [
+      { id: "start", time: 0, value: 10, interpolation: "linear" },
+      { id: "end", time: 3, value: 16, interpolation: "linear" },
+    ],
+  }));
+
+  const middle = compositionEvaluationContextAt(value, 3.5, 9);
+  expect(middle).toMatchObject({ compositionTime: 3.5, transportTime: 9, sectionInstanceTimes: { talk: 1.5 } });
+  expect(evaluateComposition(value, middle).properties.get(compositionTargetKey({ kind: "layer", layerId: "character" }, "layer.position.x"))).toBe(13);
+  expect(compositionEvaluationContextAt(value, 5).sectionInstanceTimes).toEqual({});
+});
+
+test("camera property tracks override the sampled camera frame without mutating authored keys", () => {
+  const value = composition();
+  value.camera = {
+    enabled: true,
+    aspectRatio: "16:9",
+    constraint: { mode: "automatic" },
+    safeBounds: [],
+    keyframes: [
+      { id: "camera-a", time: 0, centerX: 0, centerY: 0, frameHeight: 10, easing: "linear" },
+      { id: "camera-b", time: 10, centerX: 100, centerY: 20, frameHeight: 30, easing: "linear" },
+    ],
+  };
+  value.propertyTracks.push(track({
+    id: "camera-x",
+    target: { kind: "camera" },
+    property: "camera.centerX",
+    keys: [{ id: "center", time: 0, value: 50, interpolation: "step" }],
+  }));
+  const frame = evaluateCompositionFrame(value, compositionEvaluationContextAt(value, 5));
+  const evaluatedTrack = compositionCameraTrackAt(value, frame, 5)!;
+  expect(sampleSpineCameraTrack(evaluatedTrack, 5)).toMatchObject({ centerX: 50, centerY: 10, frameHeight: 20 });
+  expect(value.camera.keyframes).toHaveLength(2);
+
+  value.sections.push({ id: "talk", name: "Talk", start: 0, end: 10 });
+  value.propertyTracks[0] = {
+    ...value.propertyTracks[0]!,
+    clock: { kind: "section-instance", sectionId: "talk" },
+    keys: [{ id: "center", time: 0, value: 200, interpolation: "step" }],
+  };
+  const blendedFrame = evaluateCompositionFrame(value, {
+    compositionTime: 5,
+    activeSectionId: "talk",
+    activeSectionChannels: ["camera"],
+    activeSectionWeight: 0.5,
+    sectionInstanceTimes: { talk: 5 },
+  });
+  const blendedTrack = compositionCameraTrackAt(value, blendedFrame, 5)!;
+  expect(sampleSpineCameraTrack(blendedTrack, 5)?.centerX).toBeCloseTo(125);
+});
+
+test("the renderer timeline adapter maps section-local audio and subtitles onto the live instance clock", () => {
+  const value = composition();
+  value.sections.push({ id: "talk", name: "Talk", start: 2, end: 5, route: defaultTalkSectionRoute("idle") });
+  value.audio.push({ id: "voice", name: "Voice", path: "voice.ogg", start: 0.5, end: 1.5, sourceOffset: 0, volume: 1, enabled: true, sectionId: "talk" });
+  value.subtitles.push({ id: "cue", start: 0.5, end: 1.5, enabled: true, text: { en: "Hello", ja: "こんにちは", ko: "안녕" }, sectionId: "talk" });
+  value.propertyTracks.push(track({
+    id: "voice-gain",
+    target: { kind: "audio", audioId: "voice" },
+    property: "audio.volume",
+    clock: { kind: "section-instance", sectionId: "talk" },
+    keys: [
+      { id: "quiet", time: 0, value: 0.2, interpolation: "linear" },
+      { id: "loud", time: 2, value: 0.8, interpolation: "linear" },
+    ],
+  }));
+
+  const frame = evaluateCompositionFrame(value, {
+    ...compositionEvaluationContextAt(value, 20),
+    activeSectionId: "talk",
+    activeSectionChannels: defaultTalkSectionRoute("idle").ownedChannels,
+    sectionInstanceTimes: { talk: 1 },
+  });
+  const timeline = compositionFrameToTimeline(value, frame, 20, "en", { talk: 17 }, "talk");
+  expect(timeline.audio[0]).toMatchObject({ start: 17.5, end: 18.5, enabled: true, volume: 0.5 });
+  expect(timeline.subtitles[0]).toMatchObject({ start: 17.5, end: 18.5, enabled: true, text: { en: "Hello" } });
+
+  const unownedFrame = evaluateCompositionFrame(value, {
+    compositionTime: 20,
+    activeSectionId: "talk",
+    activeSectionChannels: ["body"],
+    sectionInstanceTimes: { talk: 1 },
+  });
+  const unownedTimeline = compositionFrameToTimeline(value, unownedFrame, 20, "en", { talk: 17 }, "talk");
+  expect(unownedTimeline.audio[0]?.enabled).toBe(false);
+  expect(unownedTimeline.subtitles[0]?.enabled).toBe(false);
+});
+
+test("interactive section instances overlay continuous tracks, honor ownership, and use route blend weight", () => {
+  const value = composition();
+  value.sections.push({ id: "talk", name: "Talk", start: 4, end: 8, route: defaultTalkSectionRoute("idle") });
+  expect(value.sections[0]?.route?.ownedChannels).not.toContain("scene");
+  value.sections.push({ id: "idle", name: "Idle", start: 0, end: 10, route: { ...defaultTalkSectionRoute("idle"), role: "idle", returnToSectionId: null } });
+  value.layers.push({ ...value.layers[0]!, id: "background", name: "Background", role: "background", assetDirectory: "B_home", assetIdentity: "asset:B_home@revision-1" });
+  value.animationClips = [
+    {
+      id: "persistent", layerId: "character", animation: "Persistent", clock: { kind: "composition" }, sourceClock: { kind: "clip-source" },
+      start: 0, end: 10, sourceStart: 0, sourceEnd: 10, sourceOriginTime: 0, sourceOffset: 0, speed: 1, loop: true,
+      endBehavior: "clear", blendIn: 0, blendOut: 0, mixingMode: "replace", weight: 1, priority: 0, enabled: true,
+    },
+    {
+      id: "talk-instance", layerId: "character", animation: "Talk", clock: { kind: "section-instance", sectionId: "talk" }, sourceClock: { kind: "clip-source" },
+      start: 0, end: 4, sourceStart: 0, sourceEnd: 4, sourceOriginTime: 0, sourceOffset: 0, speed: 1, loop: false,
+      endBehavior: "clear", blendIn: 0, blendOut: 0, mixingMode: "replace", weight: 1, priority: 2, enabled: true,
+    },
+    {
+      id: "other-instance", layerId: "character", animation: "Other", clock: { kind: "section-instance", sectionId: "other" }, sourceClock: { kind: "clip-source" },
+      start: 0, end: 4, sourceStart: 0, sourceEnd: 4, sourceOriginTime: 0, sourceOffset: 0, speed: 1, loop: false,
+      endBehavior: "clear", blendIn: 0, blendOut: 0, mixingMode: "replace", weight: 1, priority: 3, enabled: true,
+    },
+    {
+      id: "background-instance", layerId: "background", animation: "BackgroundTalk", clock: { kind: "section-instance", sectionId: "talk" }, sourceClock: { kind: "clip-source" },
+      start: 0, end: 4, sourceStart: 0, sourceEnd: 4, sourceOriginTime: 0, sourceOffset: 0, speed: 1, loop: false,
+      endBehavior: "clear", blendIn: 0, blendOut: 0, mixingMode: "replace", weight: 1, priority: 4, enabled: true,
+    },
+  ];
+  value.propertyTracks.push(track({
+    id: "talk-bone", property: "bone.x", target: { kind: "bone", layerId: "character", path: "root/hand", assetIdentity: "asset:A_home@revision-1" },
+    clock: { kind: "section-instance", sectionId: "talk" }, keys: [{ id: "talk-bone-key", time: 0, value: 10, interpolation: "linear" }],
+  }));
+  value.audio.push({ id: "talk-audio", name: "Talk", path: "talk.ogg", start: 0.5, end: 2, sourceOffset: 0, volume: 1, enabled: true, sectionId: "talk" });
+  value.subtitles.push({ id: "talk-caption", start: 0.5, end: 2, enabled: true, text: { en: "Talk", ja: "", ko: "" }, sectionId: "talk" });
+
+  const sampled = evaluateComposition(value, {
+    compositionTime: 7,
+    transportTime: 7,
+    activeSectionId: "talk",
+    activeSectionChannels: defaultTalkSectionRoute("idle").ownedChannels,
+    activeSectionWeight: 0.5,
+    sectionInstanceTimes: { talk: 1 },
+  });
+  expect(sampled.activeAnimationClips.map(({ clip }) => clip.id)).toEqual(["persistent", "talk-instance"]);
+  expect(sampled.activeAnimationClips.find(({ clip }) => clip.id === "talk-instance")?.weight).toBe(0.5);
+  expect(sampled.propertyContributions.find(({ trackId }) => trackId === "talk-bone")?.weight).toBe(0.5);
+  expect(sampled.activeAudio.map(({ id }) => id)).toEqual(["talk-audio"]);
+  expect(sampled.activeSubtitles.map(({ id }) => id)).toEqual(["talk-caption"]);
+
+  const withoutAudio = evaluateComposition(value, {
+    compositionTime: 7,
+    activeSectionId: "talk",
+    activeSectionChannels: ["body"],
+    sectionInstanceTimes: { talk: 1 },
+  });
+  expect(withoutAudio.activeAudio).toHaveLength(0);
+  expect(withoutAudio.activeSubtitles).toHaveLength(0);
+  const sceneOwned = evaluateComposition(value, {
+    compositionTime: 7,
+    activeSectionId: "talk",
+    activeSectionChannels: [...defaultTalkSectionRoute("idle").ownedChannels, "scene"],
+    sectionInstanceTimes: { talk: 1 },
+  });
+  expect(sceneOwned.activeAnimationClips.map(({ clip }) => clip.id)).toContain("background-instance");
 });
 
 test("animation-name binding does not copy source clip time, speed, or looping", () => {

@@ -1,5 +1,7 @@
 import type { EvaluatedCompositionFrame, SpineComposition } from "./spineComposition";
 import { compositionTargetKey } from "./spineComposition";
+import { sampleSpineCameraTrack, type SpineCameraTrack } from "./spineCameraMotion";
+import type { SpineCameraFrame } from "./spineRuntime";
 import type { SpineTimeline, SpineTimelineLayer } from "./spineTimeline";
 
 function linearToSrgb(channel: number): number {
@@ -12,12 +14,71 @@ function compositionColorHex(color: { r: number; g: number; b: number }): string
   return `#${hex(color.r)}${hex(color.g)}${hex(color.b)}`.toUpperCase();
 }
 
+/** Apply evaluated camera property tracks at one sample without mutating authored camera keys. */
+export function compositionCameraTrackAt(
+  composition: SpineComposition,
+  frame: EvaluatedCompositionFrame,
+  time: number,
+  fallback: SpineCameraTrack | null = composition.camera ?? null,
+  artworkFrame: SpineCameraFrame | null = null,
+): SpineCameraTrack | null {
+  if (!Number.isFinite(time)) return fallback;
+  const properties = new Set(["camera.centerX", "camera.centerY", "camera.frameHeight"]);
+  const contributions = frame.evaluation.propertyContributions.filter((item) => item.target.kind === "camera" && properties.has(item.property));
+  if (contributions.length === 0) return fallback;
+
+  const authored = fallback ?? {
+    enabled: true,
+    aspectRatio: "16:9" as const,
+    constraint: { mode: "automatic" as const },
+    safeBounds: [],
+    keyframes: [],
+  };
+  const sampleTrack = authored.keyframes.length
+    ? sampleSpineCameraTrack({ ...authored, enabled: true }, time)
+    : null;
+  const firstKey = authored.keyframes[0];
+  const values = new Map<string, number>([
+    ["camera.centerX", sampleTrack?.centerX ?? firstKey?.centerX ?? artworkFrame?.centerX ?? 0],
+    ["camera.centerY", sampleTrack?.centerY ?? firstKey?.centerY ?? artworkFrame?.centerY ?? 0],
+    ["camera.frameHeight", sampleTrack?.frameHeight ?? firstKey?.frameHeight ?? artworkFrame?.height ?? 1],
+  ]);
+  for (const contribution of contributions) {
+    if (typeof contribution.value !== "number" || !Number.isFinite(contribution.value)) continue;
+    const base = values.get(contribution.property);
+    if (base === undefined) continue;
+    const weight = Math.max(0, Math.min(1, contribution.weight));
+    const value = contribution.blendMode === "additive"
+      ? contribution.property === "camera.frameHeight"
+        ? base * (1 + (contribution.value - 1) * weight)
+        : base + contribution.value * weight
+      : base + (contribution.value - base) * weight;
+    values.set(contribution.property, value);
+  }
+  const keyframe = {
+    id: "__composition-evaluated-camera__",
+    time,
+    centerX: values.get("camera.centerX")!,
+    centerY: values.get("camera.centerY")!,
+    frameHeight: values.get("camera.frameHeight")!,
+    easing: "linear" as const,
+    ...(sampleTrack?.constraint ? { constraint: sampleTrack.constraint } : {}),
+  };
+  return {
+    ...authored,
+    keyframes: [...authored.keyframes.filter((item) => Math.abs(item.time - time) > 1e-6), keyframe]
+      .sort((left, right) => left.time - right.time || left.id.localeCompare(right.id)),
+  };
+}
+
 /** Adapt evaluated canonical data to the renderer's established scene surface. */
 export function compositionFrameToTimeline(
   composition: SpineComposition,
   frame: EvaluatedCompositionFrame,
   time: number,
   language: SpineTimeline["language"],
+  sectionInstanceStartTimes: Readonly<Record<string, number>> = {},
+  activeSectionId?: string,
 ): SpineTimeline {
   const layers: SpineTimelineLayer[] = frame.layers.map((layerFrame) => {
     const layer = layerFrame.layer;
@@ -80,15 +141,32 @@ export function compositionFrameToTimeline(
   }));
   const audio = composition.audio.map((clip) => {
     const volume = frame.evaluation.properties.get(compositionTargetKey({ kind: "audio", audioId: clip.id }, "audio.volume"));
+    const isActive = frame.evaluation.activeAudio.some((active) => active.id === clip.id);
+    const sectionStart = clip.sectionId
+      ? sectionInstanceStartTimes[clip.sectionId] ?? composition.sections.find((section) => section.id === clip.sectionId)?.start ?? 0
+      : undefined;
     return {
       id: clip.id,
       name: clip.name,
       path: clip.path,
-      start: clip.start,
-      end: clip.end,
+      start: sectionStart === undefined ? clip.start : sectionStart + clip.start,
+      end: sectionStart === undefined ? clip.end : sectionStart + clip.end,
       sourceOffset: clip.sourceOffset,
-      enabled: clip.enabled,
+      enabled: clip.enabled && (!activeSectionId || !clip.sectionId || clip.sectionId === activeSectionId && isActive),
       volume: typeof volume === "number" ? volume : clip.volume,
+    };
+  });
+  const subtitles = composition.subtitles.map((cue) => {
+    const isActive = frame.evaluation.activeSubtitles.some((active) => active.id === cue.id);
+    const sectionStart = cue.sectionId
+      ? sectionInstanceStartTimes[cue.sectionId] ?? composition.sections.find((section) => section.id === cue.sectionId)?.start ?? 0
+      : undefined;
+    return {
+      ...cue,
+      start: sectionStart === undefined ? cue.start : sectionStart + cue.start,
+      end: sectionStart === undefined ? cue.end : sectionStart + cue.end,
+      enabled: cue.enabled && (!activeSectionId || !cue.sectionId || cue.sectionId === activeSectionId && isActive),
+      text: { ...cue.text },
     };
   });
   return {
@@ -101,7 +179,7 @@ export function compositionFrameToTimeline(
     loop: false,
     layers,
     colorLayers,
-    subtitles: composition.subtitles.map((cue) => ({ ...cue, text: { ...cue.text } })),
+    subtitles,
     audio,
     language,
     ...(composition.camera ? { camera: composition.camera } : {}),

@@ -211,6 +211,7 @@ export async function addDesktopFfmpegAudioTrack(sessionId: string, track: {
   duration: number;
   volume: number;
   sourceOffset: number;
+  gainAutomation?: readonly { time: number; volume: number }[];
   extension: string;
   file: Blob;
 }): Promise<void> {
@@ -224,6 +225,10 @@ export async function addDesktopFfmpegAudioTrack(sessionId: string, track: {
       "x-ba-spine-audio-volume": String(track.volume),
       "x-ba-spine-audio-source-offset": String(track.sourceOffset),
       "x-ba-spine-audio-extension": track.extension,
+      ...(track.gainAutomation ? {
+        // Compact tuple encoding keeps the authenticated metadata within normal header limits.
+        "x-ba-spine-audio-gain": JSON.stringify(track.gainAutomation.map(({ time, volume }) => [time, volume])),
+      } : {}),
     },
     body: track.file,
   });

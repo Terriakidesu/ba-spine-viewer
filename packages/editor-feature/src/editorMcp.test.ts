@@ -7,15 +7,18 @@ describe("editor MCP command validation", () => {
   test("shares typed operation policy, revision requirements, and stable result/error envelopes", () => {
     const getProject = EDITOR_MCP_OPERATION_REGISTRY.get_project;
     const evaluateComposition = EDITOR_MCP_OPERATION_REGISTRY.evaluate_composition;
+    const editComposition = EDITOR_MCP_OPERATION_REGISTRY.edit_composition;
     const deleteInteraction = EDITOR_MCP_OPERATION_REGISTRY.delete_interaction;
     const migrateComposition = EDITOR_MCP_OPERATION_REGISTRY.migrate_legacy_composition;
     expect(getProject.inputSchema({ name: "get_project" })).toEqual({ name: "get_project" });
     expect(() => getProject.inputSchema({ name: "get_project", extra: true })).toThrow();
     expect(getProject).toMatchObject({ mutation: "none", revisionRequired: false, domain: "project", workspace: "any", handler: "editor", resultShape: "EditorMcpResultEnvelope<unknown>" });
     expect(evaluateComposition).toMatchObject({ mutation: "none", revisionRequired: false, workspace: "any", handler: "editor" });
+    expect(editComposition).toMatchObject({ mutation: "authored", revisionRequired: true, domain: "timeline", workspace: "any", handler: "editor" });
+    expect(EDITOR_MCP_REVISION_REQUIRED_COMMANDS.has(editComposition.name)).toBe(true);
     expect(deleteInteraction).toMatchObject({ mutation: "authored", revisionRequired: true, domain: "interaction" });
     expect(EDITOR_MCP_REVISION_REQUIRED_COMMANDS.has(deleteInteraction.name)).toBe(true);
-    expect(migrateComposition).toMatchObject({ mutation: "authored", revisionRequired: true, domain: "project", workspace: "any", handler: "editor" });
+    expect(migrateComposition).toMatchObject({ mutation: "authored", revisionRequired: true, domain: "timeline", workspace: "any", handler: "editor" });
 
     const identity = { hostPid: 123, assetRoot: "D:/assets", directory: "Aru_home", projectName: "Aru" };
     expect(createEditorMcpResultEnvelope({
@@ -66,6 +69,19 @@ describe("editor MCP command validation", () => {
     expect(normalizeEditorMcpCommand({ name: "undo" })).toEqual({ name: "undo" });
     expect(normalizeEditorMcpCommand({ name: "redo" })).toEqual({ name: "redo" });
     expect(() => normalizeEditorMcpCommand({ name: "undo", revision: 4 })).toThrow();
+  });
+
+  test("normalizes atomic typed composition edits and rejects untyped payload fields", () => {
+    expect(EDITOR_MCP_OPERATION_REGISTRY.edit_composition.inputSchema({ name: "edit_composition", operations: [{ kind: "set_duration", duration: 12 }] })).toEqual({
+      name: "edit_composition", operations: [{ kind: "set_duration", duration: 12 }],
+    });
+    expect(normalizeEditorMcpCommand({
+      name: "preview_change_set",
+      operations: [{ name: "edit_composition", operations: [{ kind: "remove_section", sectionId: "talk-1" }] }],
+    })).toMatchObject({ name: "preview_change_set", operations: [{ name: "edit_composition" }] });
+    expect(() => normalizeEditorMcpCommand({ name: "edit_composition", operations: [] })).toThrow(/between 1 and 100/);
+    expect(() => normalizeEditorMcpCommand({ name: "edit_composition", operations: [{ kind: "set_duration", duration: 12, objectPath: "layers[0]" }] })).toThrow(/unsupported field/);
+    expect(() => normalizeEditorMcpCommand({ name: "edit_composition", operations: [{ kind: "set_layer_base_property", layerId: "layer", property: "layer.position.x", value: 4, rawPath: "x" }] })).toThrow(/unsupported field/);
   });
 
   test("requires an explicit, typed legacy migration schedule", () => {
