@@ -52,11 +52,12 @@ import { AudioWaveform, type AudioWaveformMeasurement } from "./AudioWaveform";
 import { missingManifestAssetFiles, validateTimeline, type TimelineDiagnostic } from "./timelineDiagnostics";
 import { copyTimelineSelection, pasteTimelineSelection, type TimelineClipboard, type TimelineClipboardSelection } from "./timelineClipboard";
 import { searchSubtitleCues, type SubtitleSearchLanguage } from "./subtitleCueSearch";
-import { migrateEditorProjectComposition } from "./editorCompositionMigration";
+import { migrateEditorProjectComposition, type EditorCompositionMigrationResult } from "./editorCompositionMigration";
 import { applyCompositionEdits, type CompositionEditOperation } from "./compositionEdits";
 import { CompositionTimelineEditor } from "./CompositionTimelineEditor";
 import { IconChevronDown, IconChevronLeft, IconChevronRight, IconEye, IconEyeOff, IconExpand, IconLink, IconLock, IconMinus, IconPause, IconPlay, IconPlus, IconSkipBack, IconSkipForward, IconSound, IconSync, IconUnlock, IconUnlink } from "@ba-spine/app-ui/icons";
 import "./timelineSnapFeedback.css";
+import "./compositionMigrationReview.css";
 
 const TIMELINE_SCALE = 96;
 const MIN_TIMELINE_DURATION = 1;
@@ -422,6 +423,8 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [compositionPreviewEnabled, setCompositionPreviewEnabled] = useState(false);
+  const [migrationReview, setMigrationReview] = useState<{ sourceProject: EditorProject; result: EditorCompositionMigrationResult } | null>(null);
+  const migrationReviewDialogRef = useRef<HTMLElement | null>(null);
   const [speed, setSpeed] = useState(1);
   const [subtitleSearchQuery, setSubtitleSearchQuery] = useState("");
   const [subtitleSearchLanguage, setSubtitleSearchLanguage] = useState<SubtitleSearchLanguage>("all");
@@ -557,6 +560,37 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       localStorage.setItem(TIMELINE_LAYOUT_PREFERENCES_KEY, JSON.stringify(timelineLayout));
     } catch { /* The split remains adjustable for this session. */ }
   }, [timelineLayout]);
+
+  useEffect(() => {
+    if (!migrationReview) return;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = migrationReviewDialogRef.current;
+    const handleDialogKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMigrationReview(null);
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const focusable = [...dialog.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')];
+      if (!focusable.length) return;
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    dialog?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+    window.addEventListener("keydown", handleDialogKeydown);
+    return () => {
+      window.removeEventListener("keydown", handleDialogKeydown);
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, [migrationReview]);
 
   function updateTimelineLayout(patch: Partial<TimelineLayoutPreferences>) {
     setTimelineLayout((current) => normalizeTimelineLayoutPreferences({ ...current, ...patch }));
@@ -2692,17 +2726,90 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
       persistentTimeMapping: DEFAULT_FULL_SEQUENCE_ARRANGEMENT.persistentTimeMapping,
       persistentBackgrounds: DEFAULT_FULL_SEQUENCE_ARRANGEMENT.persistentBackgrounds,
     });
-    const scheduleSummary = migrated.report.schedule.map((entry) => `${entry.id}: ${entry.kind} ${entry.start.toFixed(2)}–${(entry.start + entry.duration).toFixed(2)}s${entry.sequenceId ? ` (${entry.sequenceId})` : ""}`).join("\n");
-    const reportSummary = [
-      ...migrated.report.assumptions.map((assumption) => `• ${assumption}`),
-      ...migrated.report.diagnostics.map((item) => `• ${item.severity.toUpperCase()} ${item.code}: ${item.message}`),
-    ].join("\n");
-    const confirmed = window.confirm(`Create an in-memory unified composition? The source sequences will be preserved, and saving remains explicit.\n\nSchedule:\n${scheduleSummary || "(empty)"}\n\nMigration report:\n${reportSummary || "No assumptions or diagnostics."}\n\nContinue?`);
-    if (!confirmed) return;
+    setMigrationReview({ sourceProject: current, result: migrated });
+  }
+
+  function applyMigrationReview() {
+    if (!migrationReview) return;
+    if (projectRef.current !== migrationReview.sourceProject) {
+      setMigrationReview(null);
+      onError("The project changed while migration was under review. Review the latest source project and try again.");
+      return;
+    }
+    const migrated = migrationReview.result;
     onMutate((value) => ({ ...value, composition: migrated.composition }));
+    setMigrationReview(null);
     setCompositionPreviewEnabled(true);
     setCurrentTime(0);
     onStatus(`Created an unsaved unified composition draft with ${migrated.composition.sections.length} sections. Legacy sequences remain intact; use Save when ready.`);
+  }
+
+  function renderMigrationReview() {
+    if (!migrationReview) return null;
+    const { composition: draft, report } = migrationReview.result;
+    const stale = projectRef.current !== migrationReview.sourceProject;
+    const errors = report.diagnostics.filter((item) => item.severity === "error").length;
+    const warnings = report.diagnostics.filter((item) => item.severity === "warning").length;
+    return <div className="timeline-migration-backdrop" role="presentation" onPointerDown={(event) => {
+      if (event.target === event.currentTarget) setMigrationReview(null);
+    }}>
+      <section ref={migrationReviewDialogRef} className="timeline-migration-dialog" role="dialog" aria-modal="true" aria-labelledby="timeline-migration-title" aria-describedby="timeline-migration-description" tabIndex={-1}>
+        <header className="timeline-migration-header">
+          <div><span className="timeline-migration-eyebrow">LEGACY PROJECT REVIEW</span><h2 id="timeline-migration-title">Review unified composition draft</h2></div>
+          <button type="button" className="editor-modal-close" aria-label="Close migration review" onClick={() => setMigrationReview(null)}>×</button>
+        </header>
+        <div className="timeline-migration-summary" aria-label="Migration summary">
+          <div><span>Duration</span><strong>{seconds(draft.duration)}</strong></div>
+          <div><span>Sections</span><strong>{draft.sections.length}</strong></div>
+          <div><span>Layers</span><strong>{draft.layers.length}</strong></div>
+          <div><span>Animation clips</span><strong>{draft.animationClips.length}</strong></div>
+          <div><span>Audio / subtitles</span><strong>{draft.audio.length} / {draft.subtitles.length}</strong></div>
+          <div className={errors ? "has-errors" : "has-no-errors"}><span>Errors</span><strong>{errors}</strong></div>
+          <div className={warnings ? "has-warnings" : "has-no-errors"}><span>Warnings</span><strong>{warnings}</strong></div>
+        </div>
+        <p className="timeline-migration-description" id="timeline-migration-description">
+          This creates an in-memory draft only. Original sequences and source assets remain unchanged; use the ordinary Save action when you decide to persist it.
+        </p>
+        <div className="timeline-migration-content">
+          <section className="timeline-migration-section">
+            <h3>Output schedule <span>{report.schedule.length} ranges</span></h3>
+            {report.schedule.length ? <div className="timeline-migration-table-wrap"><table className="timeline-migration-table">
+              <thead><tr><th>Output</th><th>Section</th><th>Source range</th></tr></thead>
+              <tbody>{report.schedule.map((entry) => <tr key={entry.id}>
+                <td>{seconds(entry.start)}–{seconds(entry.start + entry.duration)} <small>({seconds(entry.duration)})</small></td>
+                <td><strong>{entry.kind}</strong><small>{entry.sequenceId ?? "Gap"}</small></td>
+                <td>{entry.sequenceId ? `${seconds(entry.sourceStart)}–${seconds(entry.sourceStart + entry.duration)}` : "—"}</td>
+              </tr>)}</tbody>
+            </table></div> : <p className="timeline-migration-empty">The generated schedule is empty.</p>}
+          </section>
+          <section className="timeline-migration-section">
+            <h3>Source sequences <span>{report.sourceSequenceIds.length}</span></h3>
+            {report.sourceSequenceIds.length
+              ? <ul className="timeline-migration-sequences">{report.sourceSequenceIds.map((id) => <li key={id}>{sequenceDisplayName(id)} <code>{id}</code></li>)}</ul>
+              : <p className="timeline-migration-empty">No legacy sequences were found.</p>}
+          </section>
+          <section className="timeline-migration-section">
+            <h3>Assumptions <span>{report.assumptions.length}</span></h3>
+            {report.assumptions.length
+              ? <ul className="timeline-migration-assumptions">{report.assumptions.map((assumption, index) => <li key={`${index}-${assumption}`}>{assumption}</li>)}</ul>
+              : <p className="timeline-migration-empty">No migration assumptions were required.</p>}
+          </section>
+          <section className="timeline-migration-section">
+            <h3>Diagnostics <span>{report.diagnostics.length}</span></h3>
+            {report.diagnostics.length
+              ? <ul className="timeline-migration-diagnostics">{report.diagnostics.map((item, index) => <li className={`is-${item.severity}`} key={`${index}-${item.code}-${item.targetId ?? ""}`}>
+                <strong>{item.severity} · {item.code}</strong><span>{item.message}</span>{item.targetId && <code>{item.targetId}</code>}
+              </li>)}</ul>
+              : <p className="timeline-migration-empty">No migration diagnostics.</p>}
+          </section>
+          {stale && <p className="timeline-migration-stale" role="alert">The project changed while this review was open. Close it and generate a fresh migration review.</p>}
+        </div>
+        <footer className="timeline-migration-actions">
+          <button type="button" className="editor-button" onClick={() => setMigrationReview(null)}>Cancel</button>
+          <button type="button" className="editor-button active" disabled={stale} onClick={applyMigrationReview}>Create unsaved composition draft</button>
+        </footer>
+      </section>
+    </div>;
   }
 
   function addTalkSequenceToProject() {
@@ -4950,7 +5057,7 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
                 <div><strong>{compositionPreviewEnabled ? "Unified composition" : timeline.sequenceId === "opening" ? "Opening / Intro" : timeline.sequenceId ? sequenceDisplayName(timeline.sequenceId) : "Recovered composition"}</strong><small>{compositionPreviewEnabled ? "Shared evaluator · persistent layers, sections, clips and keys" : timeline.sequenceId === "opening" ? "Layered Spine and color composition." : "Synchronized Spine composition"}</small></div>
                 <div className="sequence-heading-actions">
                   <button type="button" className="editor-button timeline-panel-toggle" aria-controls="timeline-sequence-browser" aria-expanded={!sequencePanelCollapsed} onClick={() => updateTimelineLayout({ sequencePanelCollapsed: !sequencePanelCollapsed })}>{sequencePanelCollapsed ? "Show sequences" : "Hide sequences"}</button>
-                  {!project.composition && <button type="button" className="editor-button" onClick={migrateToUnifiedComposition} title="Review the generated migration schedule and report before creating an unsaved composition draft">Migrate to unified composition</button>}
+                   {!project.composition && <button type="button" className="editor-button" onClick={migrateToUnifiedComposition} title="Review the generated schedule, assumptions, and diagnostics before creating a draft">Review migration</button>}
                   {composition && <button type="button" className={`editor-button${compositionPreviewEnabled ? " active" : ""}`} aria-pressed={compositionPreviewEnabled} onClick={toggleCompositionPreview}>{compositionPreviewEnabled ? "Preview legacy sequence" : "Preview unified composition"}</button>}
                   {compositionPreviewEnabled && <span className="opening-duration-badge" role="status">Composition authoring</span>}
                  {(timeline.sequenceId === "opening" || isTalkSequence) && <span className="opening-duration-badge">{timeline.durationMode === "auto" ? "AUTO" : "MANUAL"} · {seconds(duration)}</span>}
@@ -5371,13 +5478,14 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     </div>
      <AssetPickerModal open={layerPickerOpen} title="Add Spine layer" eyebrow="TIMELINE LAYER" description="Search the loaded catalog and add another background, scene, character, or overlay set." directories={availableLayerDirectories} assetRoot={source?.rootPath ?? ""} directoryInfo={directoryInfo} emptyLabel="Every available asset set is already on this timeline." renderLabel={(item) => characterDirectoryLabel(item, directoryLabels)} getSearchText={(item) => characterDirectoryLabel(item, directoryLabels)} onClose={() => setLayerPickerOpen(false)} onSelect={(next) => { setLayerPickerOpen(false); addLayer(next); }} />
      {renderCameraContextMenu()}
-     {timelineContextMenu && <ContextMenu
-      x={timelineContextMenu.x}
-      y={timelineContextMenu.y}
-      label={timelineContextMenu.target.kind === "preview" ? "Timeline preview actions" : "Timeline actions"}
-      actions={timelineContextActions(timelineContextMenu.target)}
-      onClose={() => setTimelineContextMenu(null)}
-      returnFocusTo={timelineContextMenu.returnFocusTo}
-    />}
-  </>;
+      {timelineContextMenu && <ContextMenu
+       x={timelineContextMenu.x}
+       y={timelineContextMenu.y}
+       label={timelineContextMenu.target.kind === "preview" ? "Timeline preview actions" : "Timeline actions"}
+       actions={timelineContextActions(timelineContextMenu.target)}
+       onClose={() => setTimelineContextMenu(null)}
+       returnFocusTo={timelineContextMenu.returnFocusTo}
+     />}
+      {renderMigrationReview()}
+   </>;
 }
