@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { Animation, AnimationState, AnimationStateData, BoneData, Event, EventData, EventTimeline, Skeleton, SkeletonData, TranslateTimeline } from "@esotericsoftware/spine-core";
+import { Animation, AnimationState, AnimationStateData, BoneData, Event, EventData, EventTimeline, Physics, Skeleton, SkeletonData, TranslateTimeline } from "@esotericsoftware/spine-core";
+import { PhysicsConstraintData } from "@esotericsoftware/spine-core/dist/PhysicsConstraintData.js";
 import { defaultSpineAnimation, findIdleAnimation, findIntroAnimation, INTRO_ANIMATION, SpineRenderer, talkEventTimes } from "./spineRuntime";
 import { normalizeSpineInteractionProject } from "./spineInteraction";
-import { createEmptySpineComposition, evaluateComposition } from "./spineComposition";
+import { createEmptySpineComposition, evaluateComposition, runFixedStepPreroll } from "./spineComposition";
 
 test("composition renderer samples weighted clips before applying non-destructive skeletal overrides", () => {
   const data = new SkeletonData();
@@ -70,6 +71,120 @@ test("composition renderer samples weighted clips before applying non-destructiv
   expect(state.getCurrent(1)?.animation?.name).toBe("Move_Y");
   expect(skeleton.bones[0]?.x).toBeCloseTo(20);
   expect(skeleton.bones[0]?.y).toBeCloseTo(5);
+});
+
+test("composition physics preroll advances Spine time and is repeatable for random-access samples", () => {
+  const data = new SkeletonData();
+  const root = new BoneData(0, "root", null);
+  const child = new BoneData(1, "child", root);
+  child.x = 10;
+  child.length = 20;
+  data.bones.push(root, child);
+
+  const physics = new PhysicsConstraintData("spring");
+  physics.bone = child;
+  physics.x = 1;
+  physics.limit = 100;
+  physics.step = 1 / 60;
+  physics.inertia = 1;
+  physics.strength = 20;
+  physics.damping = 0.8;
+  physics.massInverse = 1;
+  physics.mix = 1;
+  data.physicsConstraints.push(physics);
+
+  const motion = new TranslateTimeline(2, 0, 0);
+  motion.setFrame(0, 0, 0, 0);
+  motion.setFrame(1, 1, 100, 0);
+  data.animations.push(new Animation("Move", [motion], 1));
+
+  const composition = createEmptySpineComposition("physics-test", "Physics test", 2, 60);
+  composition.layers.push({
+    id: "character", name: "Character", role: "character", order: 0, assetDirectory: "character", assetIdentity: "asset:character",
+    transformParentId: null, baseProperties: {}, enabled: true, locked: false,
+  });
+  composition.animationClips.push({
+    id: "move", layerId: "character", animation: "Move", clock: { kind: "composition" }, sourceClock: { kind: "clip-source" },
+    start: 0, end: 2, sourceStart: 0, sourceEnd: 1, sourceOriginTime: 0, sourceOffset: 0, speed: 1, loop: false,
+    endBehavior: "hold", blendIn: 0, blendOut: 0, mixingMode: "replace", weight: 1, priority: 0, enabled: true,
+  });
+
+  const sample = (mode: "preroll" | "sequential" | "reset") => {
+    const skeleton = new Skeleton(data);
+    const state = new AnimationState(new AnimationStateData(data));
+    const renderer = Object.assign(Object.create(SpineRenderer.prototype), { bundle: { skeleton, state } }) as SpineRenderer;
+    const evaluateStep = (time: number, deltaSeconds: number) => {
+      const evaluation = evaluateComposition(composition, { compositionTime: time });
+      renderer.sampleEditorComposition(
+        evaluation.activeAnimationClips, [], "character", "asset:character", false,
+        deltaSeconds === 0 || mode === "reset" ? Physics.reset : Physics.update,
+        mode === "reset" ? 0 : deltaSeconds,
+        time,
+      );
+    };
+    let result: ReturnType<typeof runFixedStepPreroll>;
+    if (mode === "sequential") {
+      const stepSeconds = 1 / 60;
+      for (let frame = 0; frame <= 60; frame += 1) evaluateStep(frame * stepSeconds, frame === 0 ? 0 : stepSeconds);
+      result = { steps: 60, sampledTime: 1 };
+    } else {
+      result = runFixedStepPreroll(1, { stepSeconds: 1 / 60, maxSteps: 120 }, () => {}, evaluateStep);
+    }
+    expect(result).toEqual({ steps: 60, sampledTime: 1 });
+    return { time: skeleton.time, worldX: skeleton.findBone("child")!.worldX };
+  };
+
+  const first = sample("preroll");
+  const second = sample("preroll");
+  const sequential = sample("sequential");
+  const resetOnly = sample("reset");
+  expect(first.time).toBeCloseTo(1);
+  expect(first.worldX).toBeLessThan(resetOnly.worldX - 1);
+  expect(second.time).toBeCloseTo(first.time);
+  expect(second.worldX).toBeCloseTo(first.worldX, 5);
+  expect(sequential.time).toBeCloseTo(first.time);
+  expect(sequential.worldX).toBeCloseTo(first.worldX, 5);
+
+  const freshSample = (targetTime: number) => {
+    const skeleton = new Skeleton(data);
+    const state = new AnimationState(new AnimationStateData(data));
+    const renderer = Object.assign(Object.create(SpineRenderer.prototype), { bundle: { skeleton, state } }) as SpineRenderer;
+    const result = runFixedStepPreroll(targetTime, { stepSeconds: 1 / 60, maxSteps: 120 }, () => {}, (time, delta, _final, physicsMode) => {
+      const evaluation = evaluateComposition(composition, { compositionTime: time });
+      renderer.sampleEditorComposition(evaluation.activeAnimationClips, [], "character", "asset:character", false, physicsMode, delta, time);
+    });
+    return { result, time: skeleton.time, worldX: skeleton.findBone("child")!.worldX };
+  };
+
+  const cachedSkeleton = new Skeleton(data);
+  const cachedState = new AnimationState(new AnimationStateData(data));
+  const cachedRenderer = Object.assign(Object.create(SpineRenderer.prototype), { bundle: { skeleton: cachedSkeleton, state: cachedState } }) as SpineRenderer;
+  const cacheScope = {};
+  const cachedSample = (targetTime: number) => {
+    let calls = 0;
+    const result = cachedRenderer.sampleEditorCompositionWithPhysicsPreroll(
+      targetTime,
+      { stepSeconds: 1 / 60, maxSteps: 120 },
+      cacheScope,
+      (time, delta, _final, physicsMode) => {
+        calls += 1;
+        const evaluation = evaluateComposition(composition, { compositionTime: time });
+        cachedRenderer.sampleEditorComposition(evaluation.activeAnimationClips, [], "character", "asset:character", false, physicsMode, delta, time);
+      },
+    );
+    return { result, calls, time: cachedSkeleton.time, worldX: cachedSkeleton.findBone("child")!.worldX };
+  };
+  const cachedAtOne = cachedSample(1);
+  expect(cachedAtOne.calls).toBe(61);
+  expect(cachedAtOne.worldX).toBeCloseTo(first.worldX, 5);
+  const cachedNextFrame = cachedSample(61 / 60);
+  const freshNextFrame = freshSample(61 / 60);
+  expect(cachedNextFrame.calls).toBe(1);
+  expect(cachedNextFrame.worldX).toBeCloseTo(freshNextFrame.worldX, 5);
+  const cachedSeek = cachedSample(0.5);
+  const freshSeek = freshSample(0.5);
+  expect(cachedSeek.worldX).toBeCloseTo(freshSeek.worldX, 5);
+  expect(cachedSeek.calls).toBeLessThanOrEqual(31);
 });
 
 test("authored talks sample both moving body and face while preserving interaction tracks", () => {

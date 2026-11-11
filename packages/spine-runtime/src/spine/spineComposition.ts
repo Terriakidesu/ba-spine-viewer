@@ -1150,29 +1150,85 @@ export interface FixedStepPrerollPolicy {
   maxSteps: number;
 }
 
+export interface FixedStepPrerollCheckpoint<State> {
+  nearestStep(maxStepIndex: number): { stepIndex: number; state: State } | null;
+  restore(state: State, stepIndex: number): void;
+  shouldCapture(stepIndex: number): boolean;
+  capture(stepIndex: number): void;
+}
+
+export function combineFixedStepPrerollCheckpoints<State>(
+  checkpoints: readonly FixedStepPrerollCheckpoint<State>[],
+): FixedStepPrerollCheckpoint<State[]> | undefined {
+  if (checkpoints.length === 0) return undefined;
+  return {
+    nearestStep: (maxStepIndex) => {
+      let stepIndex = maxStepIndex;
+      while (stepIndex >= 0) {
+        const candidates = checkpoints.map((checkpoint) => checkpoint.nearestStep(stepIndex));
+        if (candidates.some((candidate) => candidate === null)) return null;
+        const commonStep = Math.min(...candidates.map((candidate) => candidate!.stepIndex));
+        if (candidates.every((candidate) => candidate!.stepIndex === commonStep)) {
+          return { stepIndex: commonStep, state: candidates.map((candidate) => candidate!.state) };
+        }
+        if (commonStep === stepIndex) return null;
+        stepIndex = commonStep;
+      }
+      return null;
+    },
+    restore: (states, stepIndex) => checkpoints.forEach((checkpoint, index) => checkpoint.restore(states[index]!, stepIndex)),
+    shouldCapture: (stepIndex) => checkpoints.every((checkpoint) => checkpoint.shouldCapture(stepIndex)),
+    capture: (stepIndex) => checkpoints.forEach((checkpoint) => checkpoint.capture(stepIndex)),
+  };
+}
+
 /**
  * Deterministic stateful-constraint sampling contract. Callers reset the skeleton/runtime,
  * sample the complete pose at each fixed simulation step, then sample the requested residual.
  */
-export function runFixedStepPreroll(
+export function runFixedStepPreroll<State = unknown>(
   targetTime: number,
   policy: FixedStepPrerollPolicy,
   reset: () => void,
-  evaluateStep: (time: number, deltaSeconds: number, final: boolean) => void,
+  evaluateStep: (time: number, deltaSeconds: number, final: boolean, physics: Physics) => void,
+  checkpoint?: FixedStepPrerollCheckpoint<State>,
 ): { steps: number; sampledTime: number } | null {
   if (!Number.isFinite(targetTime) || targetTime < 0 || !Number.isFinite(policy.stepSeconds) || policy.stepSeconds <= 0 || !Number.isInteger(policy.maxSteps) || policy.maxSteps < 1) return null;
   const steps = Math.ceil(targetTime / policy.stepSeconds);
   if (steps > policy.maxSteps) return null;
-  reset();
-  let time = 0;
-  evaluateStep(0, 0, targetTime === 0);
-  for (let index = 1; index <= steps; index += 1) {
-    const next = Math.min(targetTime, index * policy.stepSeconds);
-    const delta = next - time;
-    evaluateStep(next, delta, next === targetTime);
-    time = next;
+
+  // Preserve the same exact timestamp sequence as a reset-based preroll. The
+  // last full grid step may be just below targetTime due to floating-point
+  // representation (for example, 0.3 / 0.1), in which case targetTime remains
+  // a final residual sample.
+  let fullStepCount = Math.floor(targetTime / policy.stepSeconds);
+  while (fullStepCount > 0 && fullStepCount * policy.stepSeconds > targetTime) fullStepCount -= 1;
+  while ((fullStepCount + 1) * policy.stepSeconds <= targetTime) fullStepCount += 1;
+
+  const cached = targetTime > 0 ? checkpoint?.nearestStep(fullStepCount) ?? null : null;
+  let currentStep = 0;
+  if (cached && cached.stepIndex >= 0 && cached.stepIndex <= fullStepCount) {
+    checkpoint!.restore(cached.state, cached.stepIndex);
+    currentStep = cached.stepIndex;
+    const time = currentStep * policy.stepSeconds;
+    if (time === targetTime && currentStep === fullStepCount) evaluateStep(time, 0, true, Physics.pose);
+  } else {
+    reset();
+    evaluateStep(0, 0, targetTime === 0, Physics.reset);
+    checkpoint?.capture(0);
   }
-  return { steps: Math.max(1, steps), sampledTime: time };
+
+  for (let index = currentStep + 1; index <= fullStepCount; index += 1) {
+    const time = index * policy.stepSeconds;
+    const delta = time - (index - 1) * policy.stepSeconds;
+    evaluateStep(time, delta, time === targetTime && index === fullStepCount, Physics.update);
+    if (checkpoint && (index === fullStepCount || checkpoint.shouldCapture(index))) checkpoint.capture(index);
+  }
+
+  const gridTime = fullStepCount * policy.stepSeconds;
+  if (gridTime !== targetTime) evaluateStep(targetTime, targetTime - gridTime, true, Physics.update);
+
+  return { steps: Math.max(1, steps), sampledTime: targetTime };
 }
 
 export interface SpineSkeletalOverride {

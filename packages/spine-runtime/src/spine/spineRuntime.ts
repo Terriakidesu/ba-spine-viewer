@@ -15,6 +15,7 @@ import {
   TextureAtlas,
   Vector2,
 } from "@esotericsoftware/spine-core";
+import type { PhysicsConstraint } from "@esotericsoftware/spine-core/dist/PhysicsConstraint.js";
 import {
   GLTexture,
   ManagedWebGLRenderingContext,
@@ -30,7 +31,7 @@ import { DEFAULT_EFFECTS_STRENGTH, drawWithEffectsStrength } from "./spineEffect
 import { authoredInteraction, authoredInteractionAction, authoredRegions, clearInteractionTrack, DEFAULT_INTERACTION_PHASE_MIX, DEFAULT_SPINE_LOOK_FOLLOW_SETTINGS, DEFAULT_TALK_MIX_DURATION, interactionKind, interactionPhaseAfterStart, interactionPressReady, lookFollowRotation, lookFollowTarget, normalizeAnimationMixDuration, normalizeSpineLookFollowSettings, profileFromProject, queueInteractionFadeOut, setInteractionTrack, smoothLookFollowPoint, type SpineAnimationPair, type SpineInteractionAction, type SpineInteractionProfile, type SpineInteractionProject, type SpineAuthoredInteraction, type SpineAuthoredRegion, type SpineLookFollowSettings } from "./spineInteraction";
 import { SpineBehaviorRuntime, type SpineBehaviorDebugMachine, type SpineBehaviorRuntimeContext } from "./spineBehaviorRuntime";
 import { normalizeSpineBehaviorMachines, type SpineBehaviorAction, type SpineBehaviorEvent, type SpineBehaviorMachine, type SpineBehaviorState } from "./spineBehavior";
-import { applySpineSkeletalOverrides, type EvaluatedComposition, type SpineSkeletalOverride } from "./spineComposition";
+import { applySpineSkeletalOverrides, runFixedStepPreroll, type EvaluatedComposition, type FixedStepPrerollCheckpoint, type FixedStepPrerollPolicy, type SpineSkeletalOverride } from "./spineComposition";
 import {
   applyInteractionMotion,
   applyInteractionMotionReturn,
@@ -57,6 +58,65 @@ const MIN_TOUCH_FOLLOW_Y = 35;
 const MAX_TOUCH_FOLLOW_X = 90;
 const MAX_TOUCH_FOLLOW_Y = 65;
 const TOUCH_FOLLOW_SCENE_RATIO = 0.025;
+const PHYSICS_STATE_FIELDS = [
+  "ux", "uy", "cx", "cy", "tx", "ty", "xOffset", "xVelocity", "yOffset", "yVelocity",
+  "rotateOffset", "rotateVelocity", "scaleOffset", "scaleVelocity", "remaining", "lastTime",
+] as const satisfies readonly (keyof PhysicsConstraint)[];
+const PHYSICS_STATE_STRIDE = PHYSICS_STATE_FIELDS.length + 1;
+const PHYSICS_CHECKPOINT_INTERVAL_SECONDS = 1;
+const MAX_PHYSICS_CHECKPOINTS = 600;
+
+interface PhysicsPrerollSnapshot {
+  stepIndex: number;
+  state: Float64Array;
+}
+
+interface CompositionPhysicsPrerollCache {
+  scope: object;
+  skeleton: Skeleton;
+  stepSeconds: number;
+  checkpoints: Map<number, Float64Array>;
+  recent: PhysicsPrerollSnapshot | null;
+  frontier: PhysicsPrerollSnapshot | null;
+}
+
+function capturePhysicsPrerollState(skeleton: Skeleton): Float64Array {
+  const state = new Float64Array(skeleton.physicsConstraints.length * PHYSICS_STATE_STRIDE);
+  skeleton.physicsConstraints.forEach((constraint, index) => {
+    const offset = index * PHYSICS_STATE_STRIDE;
+    state[offset] = constraint._reset ? 1 : 0;
+    PHYSICS_STATE_FIELDS.forEach((field, fieldIndex) => {
+      state[offset + fieldIndex + 1] = constraint[field];
+    });
+  });
+  return state;
+}
+
+function restorePhysicsPrerollState(skeleton: Skeleton, state: Float64Array) {
+  if (state.length !== skeleton.physicsConstraints.length * PHYSICS_STATE_STRIDE) return false;
+  skeleton.physicsConstraints.forEach((constraint, index) => {
+    const offset = index * PHYSICS_STATE_STRIDE;
+    constraint._reset = state[offset] === 1;
+    PHYSICS_STATE_FIELDS.forEach((field, fieldIndex) => {
+      constraint[field] = state[offset + fieldIndex + 1]!;
+    });
+  });
+  return true;
+}
+
+function resetPhysicsPrerollState(skeleton: Skeleton) {
+  // PhysicsConstraint.update skips zero-mix constraints, so reset their hidden
+  // simulation state explicitly before a later sample can enable them.
+  for (const constraint of skeleton.physicsConstraints) {
+    constraint.reset();
+    constraint.ux = 0;
+    constraint.uy = 0;
+    constraint.cx = 0;
+    constraint.cy = 0;
+    constraint.tx = 0;
+    constraint.ty = 0;
+  }
+}
 export type SpineCameraMode = "fit" | "fill" | "game" | "authored" | "artwork";
 export type SpineInteractionMode = "free" | "interaction";
 
@@ -731,6 +791,7 @@ export class SpineRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly callbacks: SpineRendererCallbacks;
   private bundle: LoadedBundle | null = null;
+  private compositionPhysicsPrerollCache: CompositionPhysicsPrerollCache | null = null;
   private animationSelection = "";
   private playing = true;
   private loop = true;
@@ -984,6 +1045,7 @@ export class SpineRenderer {
     this.restoreInteractionPose();
     bundle.state.update(deltaSeconds);
     bundle.state.apply(bundle.skeleton);
+    bundle.skeleton.update(deltaSeconds);
     bundle.skeleton.updateWorldTransform(Physics.update);
     this.callbacks.onEditorUpdate?.(deltaSeconds, bundle.skeleton, bundle.state);
     if (this.interactionMode === "interaction") {
@@ -1677,6 +1739,8 @@ export class SpineRenderer {
     const { skeleton, state, meta } = bundle;
     this.resetInteractionTargets();
     skeleton.setToSetupPose();
+    skeleton.time = 0;
+    resetPhysicsPrerollState(skeleton);
     state.clearTracks();
     if (animation === INTRO_ANIMATION && meta.introAnimation && meta.idleAnimation) {
       const intro = state.setAnimation(0, meta.introAnimation, false);
@@ -1690,7 +1754,7 @@ export class SpineRenderer {
       meta.duration = entry.animation?.duration ?? 0;
     }
     state.apply(skeleton);
-    skeleton.updateWorldTransform(Physics.update);
+    skeleton.updateWorldTransform(Physics.reset);
     if (bundle.eyeTarget) {
       bundle.eyeTarget.baseX = bundle.eyeTarget.bone.x;
       bundle.eyeTarget.baseY = bundle.eyeTarget.bone.y;
@@ -2080,6 +2144,8 @@ export class SpineRenderer {
     this.animationSelection = INTRO_ANIMATION;
     const { skeleton, state } = bundle;
     skeleton.setToSetupPose();
+    skeleton.time = 0;
+    resetPhysicsPrerollState(skeleton);
     state.clearTracks();
     state.setAnimation(0, introAnimation, false);
     state.addAnimation(0, idleAnimation, this.loop, 0);
@@ -2087,7 +2153,7 @@ export class SpineRenderer {
     this.introEventIndex = 0;
     this.attachIntroAudio(state.getCurrent(0));
     state.apply(skeleton);
-    skeleton.updateWorldTransform(Physics.update);
+    skeleton.updateWorldTransform(Physics.reset);
     if (bundle.eyeTarget) {
       bundle.eyeTarget.baseX = bundle.eyeTarget.bone.x;
       bundle.eyeTarget.baseY = bundle.eyeTarget.bone.y;
@@ -2106,6 +2172,7 @@ export class SpineRenderer {
   sampleEditorAnimation(animation: string, face: string, time: number, loop: boolean, idleUnderlay = false, preserveInteractions = false, animationAlpha = 1, faceAlpha = animationAlpha, idleTime = time, sequenceId = "legacy") {
     const bundle = this.bundle;
     if (!bundle) return;
+    this.compositionPhysicsPrerollCache = null;
     const sequenceChanged = preserveInteractions && sequenceId !== this.sampledEditorSequenceId;
     const openingIntro = Boolean(bundle.meta.introAnimation && bundle.meta.idleAnimation && animation === bundle.meta.introAnimation);
     if (preserveInteractions && (sequenceChanged || (openingIntro && this.interactionReady))) this.resetTimelineInteractionState();
@@ -2123,6 +2190,8 @@ export class SpineRenderer {
     const introListener = animation === bundle.meta.introAnimation && sameAnimation ? previousBase?.listener ?? null : null;
     if (previousAnimation === bundle.meta.introAnimation && !sameAnimation) this.introAudioEntry = null;
     bundle.skeleton.setToSetupPose();
+    bundle.skeleton.time = 0;
+    resetPhysicsPrerollState(bundle.skeleton);
     if (preserveInteractions) {
       bundle.state.clearTrack(0);
       bundle.state.clearTrack(7);
@@ -2201,6 +2270,8 @@ export class SpineRenderer {
     assetIdentity: string,
     preserveInteractions = false,
     physics: Physics = Physics.reset,
+    physicsDeltaSeconds = 0,
+    physicsSampleTime?: number,
   ) {
     const bundle = this.bundle;
     if (!bundle) return [];
@@ -2249,6 +2320,11 @@ export class SpineRenderer {
     }
     this.sampledEditorFace = sampledFace;
     state.apply(skeleton);
+    if (physics === Physics.reset) {
+      skeleton.time = 0;
+      resetPhysicsPrerollState(skeleton);
+    } else if (physics === Physics.update && Number.isFinite(physicsSampleTime)) skeleton.time = physicsSampleTime!;
+    else if (physics === Physics.update && Number.isFinite(physicsDeltaSeconds) && physicsDeltaSeconds > 0) skeleton.update(physicsDeltaSeconds);
     const diagnostics = applySpineSkeletalOverrides(skeleton, layerId, assetIdentity, overrides);
     skeleton.updateWorldTransform(physics);
     if (preserveInteractions) rebaseInteractionMotion(this.motionState());
@@ -2257,6 +2333,77 @@ export class SpineRenderer {
 
   hasPhysicsConstraints(): boolean {
     return (this.bundle?.skeleton.physicsConstraints.length ?? 0) > 0;
+  }
+
+  sampleEditorCompositionWithPhysicsPreroll(
+    targetTime: number,
+    policy: FixedStepPrerollPolicy,
+    cacheScope: object | null,
+    evaluateStep: (time: number, deltaSeconds: number, final: boolean, physics: Physics) => void,
+  ) {
+    const checkpoint = this.getCompositionPhysicsPrerollCheckpoints(cacheScope, policy);
+    return runFixedStepPreroll(targetTime, policy, () => undefined, evaluateStep, checkpoint);
+  }
+
+  getCompositionPhysicsPrerollCheckpoints(
+    scope: object | null,
+    policy: FixedStepPrerollPolicy,
+  ): FixedStepPrerollCheckpoint<Float64Array> | undefined {
+    const skeleton = this.bundle?.skeleton;
+    if (!scope || !skeleton) {
+      this.compositionPhysicsPrerollCache = null;
+      return undefined;
+    }
+
+    let cache = this.compositionPhysicsPrerollCache;
+    if (cache?.scope !== scope || cache.skeleton !== skeleton || cache.stepSeconds !== policy.stepSeconds) {
+      cache = {
+        scope,
+        skeleton,
+        stepSeconds: policy.stepSeconds,
+        checkpoints: new Map(),
+        recent: null,
+        frontier: null,
+      };
+      this.compositionPhysicsPrerollCache = cache;
+    }
+
+    const intervalSteps = Math.max(1, Math.round(PHYSICS_CHECKPOINT_INTERVAL_SECONDS / policy.stepSeconds));
+    return {
+      nearestStep: (maxStepIndex) => {
+        let nearest = cache!.recent && cache!.recent.stepIndex <= maxStepIndex ? cache!.recent : null;
+        const frontier = cache!.frontier;
+        if (frontier && frontier.stepIndex <= maxStepIndex && (!nearest || frontier.stepIndex > nearest.stepIndex)) nearest = frontier;
+        const checkpointIndex = Math.floor(maxStepIndex / intervalSteps) * intervalSteps;
+        for (let index = checkpointIndex; index >= 0; index -= intervalSteps) {
+          const state = cache!.checkpoints.get(index);
+          if (state) {
+            if (!nearest || index > nearest.stepIndex) nearest = { stepIndex: index, state };
+            break;
+          }
+        }
+        return nearest ? { stepIndex: nearest.stepIndex, state: nearest.state } : null;
+      },
+      restore: (state, stepIndex) => {
+        if (!restorePhysicsPrerollState(skeleton, state)) {
+          this.compositionPhysicsPrerollCache = null;
+          return;
+        }
+        skeleton.time = stepIndex * policy.stepSeconds;
+      },
+      shouldCapture: (stepIndex) => stepIndex % intervalSteps === 0,
+      capture: (stepIndex) => {
+        const snapshot = { stepIndex, state: capturePhysicsPrerollState(skeleton) };
+        cache!.recent = snapshot;
+        if (!cache!.frontier || stepIndex >= cache!.frontier.stepIndex) cache!.frontier = snapshot;
+        if (stepIndex % intervalSteps !== 0) return;
+        cache!.checkpoints.set(stepIndex, snapshot.state);
+        while (cache!.checkpoints.size > MAX_PHYSICS_CHECKPOINTS) {
+          const oldestStep = Math.min(...cache!.checkpoints.keys());
+          cache!.checkpoints.delete(oldestStep);
+        }
+      },
+    };
   }
 
   private resetTimelineInteractionState() {
@@ -2300,6 +2447,8 @@ export class SpineRenderer {
     // afterward still restores a regular base-track preview.
     this.animationSelection = "";
     bundle.skeleton.setToSetupPose();
+    bundle.skeleton.time = 0;
+    resetPhysicsPrerollState(bundle.skeleton);
     bundle.state.clearTracks();
     const apply = (name: string | null | undefined, track: number, repeat: boolean) => {
       if (!name) return;
@@ -2603,6 +2752,7 @@ export class SpineRenderer {
   }
 
   private disposeBundle() {
+    this.compositionPhysicsPrerollCache = null;
     if (!this.bundle) return;
     resetInteractionMotion(this.motionState());
     this.bundle.behaviorRuntime.dispose();
@@ -2735,7 +2885,11 @@ export class SpineRenderer {
         this.callbacks.onBeforeEditorUpdate?.(bundle.skeleton);
         this.restoreInteractionPose();
         this.restoreBehaviorBoneControlPose();
-        if (this.playing) bundle.state.update(delta * this.speed);
+        if (this.playing) {
+          const deltaSeconds = delta * this.speed;
+          bundle.state.update(deltaSeconds);
+          bundle.skeleton.update(deltaSeconds);
+        }
         this.resetEyeFollowTargetForAnimation(bundle);
         bundle.state.apply(bundle.skeleton);
         bundle.skeleton.updateWorldTransform(Physics.update);

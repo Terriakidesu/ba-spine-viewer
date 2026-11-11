@@ -3,7 +3,7 @@ import { Physics } from "@esotericsoftware/spine-core";
 import { SpineRenderer, type SpineCameraFrame, type SpineCameraMode, type SpineCameraPose, type SpineFiles, type SpineInteractionOverlay, type SpineLoadProgress, type SpineMeta } from "./spineRuntime";
 import { DEFAULT_TALK_MIX_DURATION, normalizeAnimationMixDuration, type SpineInteractionProject } from "./spineInteraction";
 import { timelineActiveAnimationClip, timelineAnimationClipPlaybackEnd, timelineAnimationClipSampleTime, timelineBlendModeCss, timelineFaceAnimation, timelineGlobalAnimationSampleTime, timelineIdleAnimation, timelineTalkIdleStart, timelineAnimationNeedsIdleUnderlay, timelineLayerAnimation, timelineLayerAnimationClips, timelineLayerPlaybackEnd, timelineLayerSampleTime, timelineLayerTransform, type SpineTimeline, type SpineTimelineLayer } from "./spineTimeline";
-import { compositionEvaluationContextAt, evaluateCompositionFrame, runFixedStepPreroll, type EvaluatedCompositionLayer, type SpineComposition } from "./spineComposition";
+import { compositionEvaluationContextAt, evaluateCompositionFrame, type EvaluatedCompositionLayer, type SpineComposition } from "./spineComposition";
 
 export interface SpineTimelineLayerCanvasProps {
   layer: SpineTimelineLayer;
@@ -258,7 +258,7 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
     const renderer = rendererRef.current;
     if (!renderer) return;
     if (compositionSample) {
-      const sampleAt = (sampleTime: number, physics: Physics) => {
+      const sampleAt = (sampleTime: number, physics: Physics, deltaSeconds = 0) => {
         const frame = composition
           ? evaluateCompositionFrame(composition, compositionEvaluationContextAt(composition, sampleTime, sampleTime))
           : null;
@@ -270,14 +270,16 @@ export function SpineTimelineLayerCanvas({ layer, files, currentTime, mainAnimat
           layerFrame.layer.assetIdentity,
           interactionEnabled,
           physics,
+          deltaSeconds,
+          sampleTime,
         );
       };
       if (composition && renderer.hasPhysicsConstraints()) {
-        const result = runFixedStepPreroll(
+        const result = renderer.sampleEditorCompositionWithPhysicsPreroll(
           currentTime,
           composition.physicsSampling,
-          () => undefined,
-          (sampleTime, deltaSeconds) => sampleAt(sampleTime, deltaSeconds === 0 ? Physics.reset : Physics.update),
+          interactionEnabled ? null : composition,
+          (sampleTime, deltaSeconds, _final, physics) => sampleAt(sampleTime, physics, deltaSeconds),
         );
         if (!result) onErrorRef.current(`Composition physics preroll at ${currentTime.toFixed(3)}s exceeds the configured step limit.`);
       } else {

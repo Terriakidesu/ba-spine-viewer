@@ -3,6 +3,7 @@ import { BoneData, IkConstraintData, Skeleton, SkeletonData, Skin } from "@esote
 import {
   COMPOSITION_PROPERTY_REGISTRY,
   applySpineSkeletalOverrides,
+  combineFixedStepPrerollCheckpoints,
   compositionEvaluationContextAt,
   compositionTargetKey,
   createEmptySpineComposition,
@@ -536,4 +537,30 @@ test("fixed-step physics preroll resets and samples deterministic integer multip
   expect(result).toEqual({ steps: 3, sampledTime: 0.25 });
   expect(calls).toEqual([[0, 0, false], [0.1, 0.1, false], [0.2, 0.1, false], [0.25, 0.04999999999999999, true]]);
   expect(runFixedStepPreroll(1, { stepSeconds: 0.01, maxSteps: 2 }, () => {}, () => {})).toBeNull();
+});
+
+test("combined physics checkpoints restore only a timestamp shared by every layer", () => {
+  const restored: Array<[string, number]> = [];
+  const captureRequests: Array<[string, number]> = [];
+  const makeCheckpoint = (id: string, values: Array<[number, string]>) => ({
+    nearestStep: (maxStepIndex: number) => {
+      const candidate = values.filter(([step]) => step <= maxStepIndex).at(-1);
+      return candidate ? { stepIndex: candidate[0], state: candidate[1] } : null;
+    },
+    restore: (state: string, stepIndex: number) => restored.push([`${id}:${state}`, stepIndex]),
+    shouldCapture: (stepIndex: number) => stepIndex % 2 === 0,
+    capture: (stepIndex: number) => captureRequests.push([id, stepIndex]),
+  });
+  const combined = combineFixedStepPrerollCheckpoints([
+    makeCheckpoint("body", [[0, "body-zero"], [4, "body-four"], [8, "body-eight"]]),
+    makeCheckpoint("dress", [[0, "dress-zero"], [6, "dress-six"], [8, "dress-eight"]]),
+  ])!;
+
+  expect(combined.nearestStep(7)).toEqual({ stepIndex: 0, state: ["body-zero", "dress-zero"] });
+  expect(combined.nearestStep(8)).toEqual({ stepIndex: 8, state: ["body-eight", "dress-eight"] });
+  combined.restore(["body-eight", "dress-eight"], 8);
+  expect(restored).toEqual([["body:body-eight", 8], ["dress:dress-eight", 8]]);
+  expect(combined.shouldCapture(4)).toBe(true);
+  combined.capture(4);
+  expect(captureRequests).toEqual([["body", 4], ["dress", 4]]);
 });

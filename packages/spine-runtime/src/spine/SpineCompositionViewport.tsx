@@ -7,7 +7,7 @@ import { spineAudioPathCandidates } from "./spineAudio";
 import { advanceSpineTimeline, timelineActiveColorClip, timelineActiveSubtitleTexts, timelineAudioPlaybackDecision, timelineAudioPreloadsReady, timelineBlendModeCss, timelineColorClipOpacity, timelineIdleAnimation, timelineLayerAnimation, timelineLayerAnimationClips, timelineLayerAnimationPlaybackEnd, timelineLayerTransform, timelineMainAnimation, timelineOpeningContinuationStart, timelinePlaybackDuration, timelineReferenceLayerId, timelineSceneHidesCharacter, timelineVisualLayers, type SpineTimeline, type SpineTimelineLayer, type SpineTimelineAudioPreloadState } from "./spineTimeline";
 import { SpineTimelineLayerCanvas } from "./SpineTimelineLayerCanvas";
 import { cameraAspectValue, changeSpineCameraAspectRatio, evaluateSpineCameraTrack, type SpineCameraAspectRatio, type SpineCameraTrack } from "./spineCameraMotion";
-import { compositionEvaluationContextAt, evaluateCompositionFrame, runFixedStepPreroll, type CompositionEvaluationContext, type SpineComposition } from "./spineComposition";
+import { combineFixedStepPrerollCheckpoints, compositionEvaluationContextAt, evaluateCompositionFrame, runFixedStepPreroll, type CompositionEvaluationContext, type SpineComposition } from "./spineComposition";
 import { compositionCameraTrackAt, compositionFrameToTimeline } from "./spineCompositionTimeline";
 import { compositionScheduleSampleAt, type SpineCompositionSchedule } from "./spineCompositionSchedule";
 
@@ -132,6 +132,12 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   }, [recordingClock]);
 
   const compositionTime = recordingClock ? currentTimeRef.current : currentTime;
+  const compositionPhysicsCacheScope = useMemo(
+    () => composition && interactionMode !== "interaction"
+      ? { composition, schedule: recordingCompositionSchedule, activeSectionInstance, recordingClock }
+      : null,
+    [activeSectionInstance, composition, interactionMode, recordingClock, recordingCompositionSchedule],
+  );
   // Export samples the authored range, not whichever temporary Viewer section
   // happened to be active before recording began.
   const activeCompositionSection = !recordingClock && activeSectionInstance && composition
@@ -321,7 +327,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
     if (!composition || !compositionFrame || !compositionReady) return;
     const renderers = [...layerRenderersRef.current.entries()];
     if (renderers.length === 0) return;
-    const sampleAt = (sampleTime: number, physics: Physics) => {
+    const sampleAt = (sampleTime: number, physics: Physics, deltaSeconds = 0) => {
       const sampleContext = compositionContextAt(sampleTime);
       const frame = sampleTime === compositionTime
         ? compositionFrame
@@ -337,21 +343,29 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
           layerFrame.layer.assetIdentity,
           interactionMode === "interaction",
           physics,
+          deltaSeconds,
+          sampleTime,
         );
       }
     };
     if (renderers.some(([, renderer]) => renderer.hasPhysicsConstraints())) {
+      const checkpoints = renderers.flatMap(([, renderer]) => {
+        if (!renderer.hasPhysicsConstraints()) return [];
+        const checkpoint = renderer.getCompositionPhysicsPrerollCheckpoints(compositionPhysicsCacheScope, composition.physicsSampling);
+        return checkpoint ? [checkpoint] : [];
+      });
       const result = runFixedStepPreroll(
         compositionTime,
         composition.physicsSampling,
         () => undefined,
-        (sampleTime, deltaSeconds) => sampleAt(sampleTime, deltaSeconds === 0 ? Physics.reset : Physics.update),
+        (sampleTime, deltaSeconds, _final, physics) => sampleAt(sampleTime, physics, deltaSeconds),
+        combineFixedStepPrerollCheckpoints(checkpoints),
       );
       if (!result) onErrorRef.current(new Error(`Composition physics preroll at ${compositionTime.toFixed(3)}s exceeds the configured step limit.`));
     } else {
       sampleAt(compositionTime, Physics.reset);
     }
-  }, [composition, compositionFrame, compositionReady, compositionTime, interactionMode]);
+  }, [composition, compositionFrame, compositionPhysicsCacheScope, compositionReady, compositionTime, interactionMode]);
 
   useEffect(() => {
     const loaded = timeline.audio.filter((clip) => currentAudioPreloadStates[clip.id] !== undefined && currentAudioPreloadStates[clip.id] !== "loading").length;

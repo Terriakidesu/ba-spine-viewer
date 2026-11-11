@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
 import { isPathWithinLibrary, isSupportedEditorWritePath, normalizeLibraryRelativePath, resolveLibraryPath } from "./pathPolicy";
 
 describe("native library path policy", () => {
@@ -10,8 +11,9 @@ describe("native library path policy", () => {
   });
 
   test("resolves only a contained relative path", () => {
-    expect(resolveLibraryPath("D:/library", "lobbies/Airi_home/manifest.json")).toBe("D:\\library\\lobbies\\Airi_home\\manifest.json");
-    expect(() => resolveLibraryPath("D:/library", "../../outside.json")).toThrow();
+    const root = process.platform === "win32" ? "D:/library" : "/tmp/library";
+    expect(resolveLibraryPath(root, "lobbies/Airi_home/manifest.json")).toBe(resolve(root, "lobbies", "Airi_home", "manifest.json"));
+    expect(() => resolveLibraryPath(root, "../../outside.json")).toThrow();
   });
 
   test("checks resolved paths using platform-aware containment", () => {
