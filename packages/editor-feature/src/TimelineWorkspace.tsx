@@ -4414,6 +4414,25 @@ export function TimelineWorkspace({ mode = "timeline", onWorkspaceChange = () =>
     if (mode === "camera") return;
     if (isTextEditingTarget(event.target)) return;
     const key = event.key.toLowerCase();
+    const compositionEditorFocused = compositionPreviewEnabled
+      && event.target instanceof HTMLElement
+      && event.target.closest(".composition-editor-panel") !== null;
+    if (compositionEditorFocused) {
+      if (event.defaultPrevented) return;
+      if ((event.ctrlKey || event.metaKey) && key === "s") { event.preventDefault(); void onSave(); }
+      else if ((event.ctrlKey || event.metaKey) && ["z", "y"].includes(key)) return;
+      else if (key === " ") { event.preventDefault(); setPlaying((value) => !value); }
+      else if (key === "arrowleft" || key === "arrowright") {
+        event.preventDefault();
+        setPlaying(false);
+        setCurrentTime((value) => Math.max(0, Math.min(composition?.duration ?? duration, value + (key === "arrowright" ? 1 : -1) / (composition?.frameRate ?? 30))));
+      } else if (key === "home" || key === "end") {
+        event.preventDefault();
+        setPlaying(false);
+        setCurrentTime(key === "home" ? 0 : composition?.duration ?? duration);
+      }
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && ["z", "y"].includes(key)) return;
     if ((event.ctrlKey || event.metaKey) && key === "s") { event.preventDefault(); void onSave(); }
     else if ((event.ctrlKey || event.metaKey) && key === "c" && selectedClips.some((item) => item.kind === "animation" || item.kind === "color" || item.kind === "cue" || item.kind === "audio")) { event.preventDefault(); copySelectedTimelineClips(); }

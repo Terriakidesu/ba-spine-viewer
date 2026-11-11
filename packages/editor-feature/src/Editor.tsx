@@ -1220,6 +1220,7 @@ export function Editor() {
   }, [recoveryPrompt, saveState]);
 
   editorKeydownRef.current = (event: KeyboardEvent) => {
+    if (event.defaultPrevented) return;
     const key = event.key.toLowerCase();
     const modifier = event.ctrlKey || event.metaKey;
     if (aboutPage) {

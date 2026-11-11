@@ -141,12 +141,23 @@
   border: 1px solid #fff;
   border-radius: 1px;
   background: #d29eff;
-  cursor: pointer;
+  cursor: grab;
+  touch-action: none;
 }
 
 .composition-keyframe.is-selected {
   background: #fff;
   box-shadow: 0 0 0 3px rgb(210 158 255 / 45%);
+}
+
+.composition-keyframe.is-primary { border-color: #62e2ff; }
+.composition-keyframe.is-bezier { border-radius: 50%; }
+.composition-keyframe:active { cursor: grabbing; }
+.composition-keyframe:focus-visible { outline: 2px solid #62e2ff; outline-offset: 4px; }
+
+.composition-editor-toolbar > small {
+  color: var(--app-accent, #c39aff);
+  font-size: 10px;
 }
 
 .composition-playhead {

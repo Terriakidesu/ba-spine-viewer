@@ -1,7 +1,8 @@
 import { timelineForSequence, timelineSubtitleText, type SpineTimeline, type SpineTimelineProject } from "@ba-spine/spine-runtime/spine/spineTimeline";
 import type { SpineCameraAspectRatio } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
 import { createLegacyCompositionSchedule } from "@ba-spine/spine-runtime/spine/spineCompositionMigration";
-import { compositionEvaluationContextAt, compositionTargetKey, evaluateComposition, type SpineComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
+import { compositionEvaluationContextAt, compositionTargetKey, evaluateComposition, type CompositionAudioClip, type SpineComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
+import { compositionScheduleSampleAt, compositionScheduleSampleForSegment, createCanonicalCompositionSchedule, createCompositionArrangementSchedule, type CompositionArrangementOptions, type CompositionScheduleSegment, type SpineCompositionSchedule } from "@ba-spine/spine-runtime/spine/spineCompositionSchedule";
 
 export type VideoRecordingMode = "full-sequence" | "opening-idle" | "idle-only";
 export type VideoRecordingFormat = "webm" | "mp4";
@@ -42,6 +43,7 @@ export interface VideoRecordingSettings {
   idleLoops: number;
   includeOpening: boolean;
   talkSequenceIds: string[];
+  compositionArrangement: VideoCompositionArrangementSettings;
   initialIdleLoops: number;
   betweenTalkIdleSeconds: number;
   finalIdleLoops: number;
@@ -55,6 +57,16 @@ export interface VideoRecordingSettings {
   quality: VideoRecordingQuality;
 }
 
+export interface VideoCompositionArrangementSettings extends CompositionArrangementOptions {
+  enabled: boolean;
+  sectionIds: string[];
+  idleSectionId: string | null;
+  initialIdleLoops: number;
+  betweenSectionIdleSeconds: number;
+  finalIdleLoops: number;
+  persistentTimeMapping: "continuous-output" | "original-authored-time";
+}
+
 export interface VideoRecordingPlan {
   mode: VideoRecordingMode;
   openingDuration: number;
@@ -62,19 +74,24 @@ export interface VideoRecordingPlan {
   idleLoops: number;
   totalDuration: number;
   segments?: VideoRecordingSegment[];
+  /** Shared evaluator schedule; legacy sequence plans continue using their existing segments. */
+  compositionSchedule?: SpineCompositionSchedule;
 }
 
 export interface VideoRecordingSegment {
-  kind: "composition" | "opening" | "initial-idle" | "between-idle" | "talk" | "final-idle" | "idle";
+  kind: "composition" | "composition-section" | "opening" | "initial-idle" | "between-idle" | "talk" | "final-idle" | "idle" | "gap";
   duration: number;
   sequenceId?: string;
+  sectionId?: string;
+  scheduleSegmentId?: string;
   talkNumber?: number;
   talkCount?: number;
 }
 
 /** Export the canonical composition's authored range without rebuilding a legacy arrangement. */
-export function createUnifiedCompositionRecordingPlan(duration: number): VideoRecordingPlan {
+export function createUnifiedCompositionRecordingPlan(duration: number, frameRate = 30): VideoRecordingPlan {
   const safeDuration = Number.isFinite(duration) ? Math.max(0.01, duration) : 0.01;
+  const compositionSchedule = createCanonicalCompositionSchedule(safeDuration, frameRate);
   return {
     mode: "full-sequence",
     openingDuration: safeDuration,
@@ -82,6 +99,37 @@ export function createUnifiedCompositionRecordingPlan(duration: number): VideoRe
     idleLoops: 1,
     totalDuration: safeDuration,
     segments: [{ kind: "composition", sequenceId: "__unified-composition__", duration: safeDuration }],
+    compositionSchedule,
+  };
+}
+
+/** Export selected composition sections as explicit instances with shared clocks. */
+export function createCompositionArrangementRecordingPlan(
+  composition: SpineComposition,
+  options: CompositionArrangementOptions,
+): VideoRecordingPlan {
+  const compositionSchedule = createCompositionArrangementSchedule(composition, options);
+  const idleDuration = options.idleSectionId
+    ? Math.max(0.01, (composition.sections.find((section) => section.id === options.idleSectionId)?.end ?? 0)
+      - (composition.sections.find((section) => section.id === options.idleSectionId)?.start ?? 0))
+    : 0.01;
+  const segments: VideoRecordingSegment[] = compositionSchedule.segments.map((segment) => ({
+    kind: segment.kind === "composition" ? "composition"
+      : segment.kind === "section" ? "composition-section"
+        : segment.kind,
+    duration: segment.duration,
+    sequenceId: "__unified-composition__",
+    ...(segment.sectionId ? { sectionId: segment.sectionId } : {}),
+    ...(segment.id ? { scheduleSegmentId: segment.id } : {}),
+  }));
+  return {
+    mode: "full-sequence",
+    openingDuration: 0,
+    idleDuration,
+    idleLoops: Math.max(1, Math.min(20, Math.floor(options.finalIdleLoops ?? 1))),
+    totalDuration: compositionSchedule.duration,
+    segments,
+    compositionSchedule,
   };
 }
 
@@ -312,6 +360,138 @@ export function videoRecordingCompositionSubtitleSpans(
     return [{ id: `${composition.id}:${cue.id}`, text, start, end }];
   }).sort((a, b) => a.start - b.start || a.end - b.end || a.id.localeCompare(b.id));
   return stackVideoRecordingSubtitleSpans(spans);
+}
+
+/** Map composition-global and section-local audio cues onto each scheduled instance. */
+export function videoRecordingCompositionScheduleAudioSpans(
+  composition: SpineComposition,
+  schedule: SpineCompositionSchedule,
+  frameRate: number,
+): Array<{ clip: CompositionAudioClip; start: number; end: number; sourceOffset: number; gainAutomation?: Array<{ time: number; volume: number }> }> {
+  const spans: Array<{ clip: CompositionAudioClip; start: number; end: number; sourceOffset: number; gainAutomation?: Array<{ time: number; volume: number }> }> = [];
+  for (const clip of composition.audio) {
+    if (!clip.enabled) continue;
+    for (const segment of schedule.segments) {
+      let start: number;
+      let end: number;
+      let sourceOffset: number;
+      if (clip.sectionId) {
+        if (segment.kind === "composition") {
+          const section = composition.sections.find((item) => item.id === clip.sectionId);
+          if (!section) continue;
+          const localStart = Math.max(clip.start, 0);
+          const localEnd = Math.min(clip.end, section.end - section.start);
+          if (localEnd <= localStart) continue;
+          start = section.start + localStart;
+          end = section.start + localEnd;
+          sourceOffset = clip.sourceOffset + localStart - clip.start;
+        } else {
+          if (segment.sectionId !== clip.sectionId) continue;
+          const section = composition.sections.find((item) => item.id === segment.sectionId);
+          if (section?.route && !section.route.ownedChannels.includes("audio")) continue;
+          const localStart = Math.max(segment.sectionTimeStart, clip.start);
+          const localEnd = Math.min(segment.sectionTimeStart + segment.duration, clip.end);
+          if (localEnd <= localStart) continue;
+          start = segment.start + localStart - segment.sectionTimeStart;
+          end = segment.start + localEnd - segment.sectionTimeStart;
+          sourceOffset = clip.sourceOffset + localStart - clip.start;
+        }
+      } else {
+        // Unfilled gaps have no authored section source, but the evaluator maps
+        // their composition clock to output time. Keep global cues in parity.
+        const sourceStart = segment.sourceTimeStart ?? segment.start;
+        const sourceEnd = sourceStart + segment.duration;
+        const overlapStart = Math.max(sourceStart, clip.start);
+        const overlapEnd = Math.min(sourceEnd, clip.end);
+        if (overlapEnd <= overlapStart) continue;
+        start = segment.start + overlapStart - sourceStart;
+        end = segment.start + overlapEnd - sourceStart;
+        sourceOffset = clip.sourceOffset + overlapStart - clip.start;
+      }
+      const gainAutomation = videoRecordingCompositionScheduleGainAutomation(composition, schedule, segment, clip.id, start, end, frameRate, clip.volume);
+      spans.push({ clip, start, end, sourceOffset, ...(gainAutomation ? { gainAutomation } : {}) });
+    }
+  }
+  return spans.sort((left, right) => left.start - right.start || left.end - right.end || left.clip.id.localeCompare(right.clip.id));
+}
+
+/** Map canonical or arranged section-local/global subtitle cues onto output time. */
+export function videoRecordingCompositionScheduleSubtitleSpans(
+  composition: SpineComposition,
+  schedule: SpineCompositionSchedule,
+  language: SpineTimeline["language"],
+): VideoRecordingSubtitleSpan[] {
+  const spans: Omit<VideoRecordingSubtitleSpan, "row">[] = [];
+  for (const cue of composition.subtitles) {
+    if (!cue.enabled) continue;
+    const text = cue.text[language]?.trim() ?? "";
+    if (!text) continue;
+    for (const segment of schedule.segments) {
+      let start: number;
+      let end: number;
+      if (cue.sectionId) {
+        if (segment.kind === "composition") {
+          const section = composition.sections.find((item) => item.id === cue.sectionId);
+          if (!section) continue;
+          const localStart = Math.max(cue.start, 0);
+          const localEnd = Math.min(cue.end, section.end - section.start);
+          if (localEnd <= localStart) continue;
+          start = section.start + localStart;
+          end = section.start + localEnd;
+        } else {
+          if (segment.sectionId !== cue.sectionId) continue;
+          const section = composition.sections.find((item) => item.id === segment.sectionId);
+          if (section?.route && !section.route.ownedChannels.includes("subtitles")) continue;
+          const localStart = Math.max(segment.sectionTimeStart, cue.start);
+          const localEnd = Math.min(segment.sectionTimeStart + segment.duration, cue.end);
+          if (localEnd <= localStart) continue;
+          start = segment.start + localStart - segment.sectionTimeStart;
+          end = segment.start + localEnd - segment.sectionTimeStart;
+        }
+      } else {
+        // Match compositionScheduleSampleForSegment: source-less gaps evaluate
+        // global composition content on the continuous output clock.
+        const sourceStart = segment.sourceTimeStart ?? segment.start;
+        const overlapStart = Math.max(sourceStart, cue.start);
+        const overlapEnd = Math.min(sourceStart + segment.duration, cue.end);
+        if (overlapEnd <= overlapStart) continue;
+        start = segment.start + overlapStart - sourceStart;
+        end = segment.start + overlapEnd - sourceStart;
+      }
+      spans.push({ id: `${composition.id}:${cue.id}:${segment.id}`, text, start, end });
+    }
+  }
+  return stackVideoRecordingSubtitleSpans(spans.sort((a, b) => a.start - b.start || a.end - b.end || a.id.localeCompare(b.id)));
+}
+
+/** Sample gain automation using the exact schedule context for one clip instance. */
+export function videoRecordingCompositionScheduleGainAutomation(
+  composition: SpineComposition,
+  schedule: SpineCompositionSchedule,
+  segment: CompositionScheduleSegment,
+  audioId: string,
+  start: number,
+  end: number,
+  frameRate: number,
+  baseVolume: number,
+): Array<{ time: number; volume: number }> | undefined {
+  if (!composition.propertyTracks.some((track) => track.enabled && track.target.kind === "audio" && track.target.audioId === audioId && track.property === "audio.volume")) return undefined;
+  if (![start, end, frameRate, baseVolume].every(Number.isFinite) || end <= start || frameRate <= 0) throw new Error("Audio gain automation requires a valid scheduled range and frame rate.");
+  const frameCount = Math.ceil((end - start) * frameRate);
+  if (frameCount > 108_000) throw new Error(`Audio gain automation for ${audioId} exceeds the 30-minute export sampling limit.`);
+  const propertyKey = compositionTargetKey({ kind: "audio", audioId }, "audio.volume");
+  const points: Array<{ time: number; volume: number }> = [];
+  for (let frame = 0; frame <= frameCount; frame += 1) {
+    const localTime = Math.min(end - start, frame / frameRate);
+    const sample = compositionScheduleSampleForSegment(composition, schedule, segment, start + localTime);
+    const evaluation = evaluateComposition(composition, sample.context);
+    const sampled = evaluation.properties.get(propertyKey);
+    const volume = typeof sampled === "number" && Number.isFinite(sampled) ? Math.max(0, Math.min(1, sampled)) : Math.max(0, Math.min(1, baseVolume));
+    points.push({ time: localTime, volume });
+  }
+  const reduced = simplifyGainCurve(points, 0.001);
+  if (reduced.length > 512) throw new Error(`Audio gain automation for ${audioId} is too dense to export safely (${reduced.length} samples; maximum 512).`);
+  return reduced.every((point) => Math.abs(point.volume - reduced[0]!.volume) < 1e-7) ? undefined : reduced;
 }
 
 function stackVideoRecordingSubtitleSpans(spans: Omit<VideoRecordingSubtitleSpan, "row">[]): VideoRecordingSubtitleSpan[] {

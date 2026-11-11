@@ -1,7 +1,8 @@
-import { useMemo, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import {
   COMPOSITION_PROPERTY_REGISTRY,
   type CompositionAnimationClip,
+  type CompositionKeyframe,
   type CompositionPropertyTrack,
   type CompositionSection,
   type CompositionSectionRoute,
@@ -10,8 +11,21 @@ import {
   type SpineComposition,
 } from "@ba-spine/spine-runtime/spine/spineComposition";
 import type { CompositionEditOperation } from "./compositionEdits";
+import { clampCompositionKeyDelta, frameSnappedCompositionKeyDelta, moveCompositionKeyLocations, snapCompositionTimeToFrame, type CompositionKeyframeLocation } from "./compositionKeyframeModel";
+import { CompositionCurveEditor } from "./CompositionCurveEditor";
 import { NumberField } from "./components/NumberField";
 import "./compositionTimelineEditor.css";
+
+interface SelectedCompositionKey { trackId: string; keyId: string }
+
+interface CompositionKeyDrag {
+  pointerId: number;
+  originClientX: number;
+  anchorGlobalTime: number;
+  keys: CompositionKeyframeLocation[];
+  latestDelta: number;
+  moved: boolean;
+}
 
 interface CompositionTimelineEditorProps {
   composition: SpineComposition;
@@ -46,6 +60,8 @@ export function CompositionTimelineEditor({ composition, currentTime, animationN
   const [selectedProperty, setSelectedProperty] = useState("layer.position.x");
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null);
+  const [selectedKeys, setSelectedKeys] = useState<SelectedCompositionKey[]>([]);
+  const [keyPreviewTimes, setKeyPreviewTimes] = useState<Record<string, number>>({});
   const [keyValueDraft, setKeyValueDraft] = useState("");
   const [keyTimeDraft, setKeyTimeDraft] = useState("0");
   const [keyInterpolation, setKeyInterpolation] = useState<"step" | "linear" | "bezier">("linear");
@@ -56,6 +72,11 @@ export function CompositionTimelineEditor({ composition, currentTime, animationN
   const [selectedAnimationClipId, setSelectedAnimationClipId] = useState<string | null>(null);
   const [selectedAudioClipId, setSelectedAudioClipId] = useState<string | null>(null);
   const [selectedSubtitleCueId, setSelectedSubtitleCueId] = useState<string | null>(null);
+  const [hasKeyClipboard, setHasKeyClipboard] = useState(false);
+  const keyDragRef = useRef<CompositionKeyDrag | null>(null);
+  const selectionAnchorRef = useRef<SelectedCompositionKey | null>(null);
+  const suppressKeyClickRef = useRef(false);
+  const keyClipboardRef = useRef<CompositionKeyframeLocation[]>([]);
 
   const scale = 72;
   const trackWidth = Math.max(640, Math.ceil(composition.duration * scale));
@@ -64,6 +85,26 @@ export function CompositionTimelineEditor({ composition, currentTime, animationN
   const selectedPropertySection = composition.sections.find((section) => section.id === propertySectionId) ?? null;
   const selectedTrack = composition.propertyTracks.find((track) => track.id === selectedTrackId) ?? null;
   const selectedKey = selectedTrack?.keys.find((key) => key.id === selectedKeyId) ?? null;
+  const selectedTrackSectionId = selectedTrack?.clock.kind === "section-instance" ? selectedTrack.clock.sectionId : null;
+  const selectedTrackSection = selectedTrackSectionId
+    ? composition.sections.find((section) => section.id === selectedTrackSectionId) ?? null
+    : null;
+  const selectedTrackMaximumTime = selectedTrackSection ? selectedTrackSection.end - selectedTrackSection.start : composition.duration;
+  const selectedKeyLocations = selectedKeys.flatMap((selection) => {
+    const track = composition.propertyTracks.find((item) => item.id === selection.trackId);
+    const key = track?.keys.find((item) => item.id === selection.keyId);
+    if (!track || !key) return [];
+    const sectionId = track.clock.kind === "section-instance" ? track.clock.sectionId : undefined;
+    const section = sectionId ? composition.sections.find((item) => item.id === sectionId) : null;
+    const minimumGlobalTime = section ? section.start : 0;
+    const maximumGlobalTime = section ? section.end : composition.duration;
+    const globalTime = globalSectionTime(sectionId, key.time);
+    return [{ trackId: track.id, key, globalTime, minimumGlobalTime, maximumGlobalTime }];
+  });
+  useEffect(() => {
+    setSelectedKeys((current) => current.filter((selection) => composition.propertyTracks.some((track) =>
+      track.id === selection.trackId && track.keys.some((key) => key.id === selection.keyId))));
+  }, [composition]);
   const selectedAnimationClip = composition.animationClips.find((clip) => clip.id === selectedAnimationClipId) ?? null;
   const selectedAudioClip = composition.audio.find((clip) => clip.id === selectedAudioClipId) ?? null;
   const selectedSubtitleCue = composition.subtitles.find((cue) => cue.id === selectedSubtitleCueId) ?? null;
@@ -75,6 +116,236 @@ export function CompositionTimelineEditor({ composition, currentTime, animationN
 
   function edit(operation: CompositionEditOperation) {
     onEdit([operation]);
+  }
+
+  function editMany(operations: CompositionEditOperation[]) {
+    if (operations.length) onEdit(operations);
+  }
+
+  function keyLocation(track: CompositionPropertyTrack, key: CompositionKeyframe): CompositionKeyframeLocation {
+    const sectionId = track.clock.kind === "section-instance" ? track.clock.sectionId : undefined;
+    const section = sectionId ? composition.sections.find((item) => item.id === sectionId) : null;
+    return {
+      trackId: track.id,
+      key,
+      globalTime: globalSectionTime(sectionId, key.time),
+      minimumGlobalTime: section?.start ?? 0,
+      maximumGlobalTime: section?.end ?? composition.duration,
+    };
+  }
+
+  function focusKey(track: CompositionPropertyTrack, key: CompositionKeyframe, globalTime = globalSectionTime(track.clock.kind === "section-instance" ? track.clock.sectionId : undefined, key.time)) {
+    setSelectedTrackId(track.id);
+    setSelectedKeyId(key.id);
+    setSelectedProperty(track.property);
+    setTargetKind(track.target.kind);
+    setPropertySectionId(track.clock.kind === "section-instance" ? track.clock.sectionId : "");
+    if (track.target.kind === "audio") setTargetItemId(track.target.audioId);
+    else if (track.target.kind === "clip") setTargetItemId(track.target.clipId);
+    else if (track.target.kind === "layer" || track.target.kind === "bone" || track.target.kind === "constraint" || track.target.kind === "slot") setSelectedLayerId(track.target.layerId);
+    setKeyValueDraft(initialValue(key.value));
+    setKeyTimeDraft(key.time.toFixed(3));
+    setKeyInterpolation(key.interpolation);
+    onSeek(globalTime);
+  }
+
+  function selectKey(track: CompositionPropertyTrack, key: CompositionKeyframe, event: ReactMouseEvent<HTMLButtonElement>) {
+    if (suppressKeyClickRef.current) {
+      suppressKeyClickRef.current = false;
+      event.preventDefault();
+      return;
+    }
+    const clicked = { trackId: track.id, keyId: key.id };
+    const additive = event.metaKey || event.ctrlKey;
+    let next: SelectedCompositionKey[];
+    if (event.shiftKey && selectionAnchorRef.current?.trackId === track.id) {
+      const ordered = [...track.keys].sort((left, right) => left.time - right.time || left.id.localeCompare(right.id));
+      const anchorIndex = ordered.findIndex((item) => item.id === selectionAnchorRef.current?.keyId);
+      const keyIndex = ordered.findIndex((item) => item.id === key.id);
+      const range = anchorIndex >= 0 && keyIndex >= 0
+        ? ordered.slice(Math.min(anchorIndex, keyIndex), Math.max(anchorIndex, keyIndex) + 1).map((item) => ({ trackId: track.id, keyId: item.id }))
+        : [clicked];
+      next = additive
+        ? [...selectedKeys, ...range.filter((item) => !selectedKeys.some((selected) => selected.trackId === item.trackId && selected.keyId === item.keyId))]
+        : range;
+    } else if (additive) {
+      next = selectedKeys.some((item) => item.trackId === clicked.trackId && item.keyId === clicked.keyId)
+        ? selectedKeys.filter((item) => item.trackId !== clicked.trackId || item.keyId !== clicked.keyId)
+        : [...selectedKeys, clicked];
+    } else {
+      next = [clicked];
+      selectionAnchorRef.current = clicked;
+    }
+    setSelectedKeys(next);
+    const primary = next.some((item) => item.trackId === clicked.trackId && item.keyId === clicked.keyId)
+      ? clicked
+      : next.at(-1) ?? null;
+    if (!primary) {
+      setSelectedKeyId(null);
+      return;
+    }
+    const primaryTrack = composition.propertyTracks.find((item) => item.id === primary.trackId);
+    const primaryKey = primaryTrack?.keys.find((item) => item.id === primary.keyId);
+    if (primaryTrack && primaryKey) focusKey(primaryTrack, primaryKey);
+  }
+
+  function commitKeyMove(locations: readonly CompositionKeyframeLocation[], requestedDelta: number) {
+    const delta = clampCompositionKeyDelta(locations, requestedDelta);
+    if (Math.abs(delta) < 1e-9) return 0;
+    const moved = moveCompositionKeyLocations(locations, delta).map(({ trackId, key }) => ({ trackId, key: { ...key, time: Number(key.time.toFixed(6)) } }));
+    editMany(moved.map(({ trackId, key }) => ({ kind: "upsert_keyframe", trackId, key })));
+    const primary = selectedKeyLocations.find((item) => item.trackId === selectedTrackId && item.key.id === selectedKeyId);
+    if (primary) setKeyTimeDraft((primary.key.time + delta).toFixed(3));
+    return delta;
+  }
+
+  function duplicateKeyLocations(locations: readonly CompositionKeyframeLocation[], requestedDelta: number) {
+    if (!locations.length) return;
+    let delta = clampCompositionKeyDelta(locations, requestedDelta);
+    if (Math.abs(delta) < 1e-9) return;
+    let copies = moveCompositionKeyLocations(locations, delta).map(({ trackId, key }) => ({
+      trackId,
+      key: { ...key, id: itemId("key"), time: Number(key.time.toFixed(6)) },
+    }));
+    editMany(copies.map(({ trackId, key }) => ({ kind: "upsert_keyframe", trackId, key })));
+    setSelectedKeys(copies.map(({ trackId, key }) => ({ trackId, keyId: key.id })));
+    const primary = copies.at(-1);
+    const track = primary ? composition.propertyTracks.find((item) => item.id === primary.trackId) : null;
+    if (primary && track) focusKey(track, primary.key, globalSectionTime(track.clock.kind === "section-instance" ? track.clock.sectionId : undefined, primary.key.time));
+  }
+
+  function duplicateSelectedKeysByFrame(direction = 1, locations = selectedKeyLocations) {
+    const primary = locations.find((item) => item.trackId === selectedTrackId && item.key.id === selectedKeyId) ?? locations[0];
+    if (!primary) return;
+    let delta = clampCompositionKeyDelta(locations, frameSnappedCompositionKeyDelta(primary.globalTime, direction, composition.frameRate));
+    if (Math.abs(delta) < 1e-9) {
+      delta = clampCompositionKeyDelta(locations, frameSnappedCompositionKeyDelta(primary.globalTime, -direction, composition.frameRate));
+    }
+    duplicateKeyLocations(locations, delta);
+  }
+
+  function deleteSelectedKeys() {
+    if (!selectedKeyLocations.length) return;
+    editMany(selectedKeyLocations.map(({ trackId, key }) => ({ kind: "remove_keyframe", trackId, keyId: key.id })));
+    setSelectedKeys([]);
+    setSelectedKeyId(null);
+  }
+
+  function copySelectedKeys() {
+    if (!selectedKeyLocations.length) return;
+    keyClipboardRef.current = selectedKeyLocations.map((item) => ({ ...item, key: { ...item.key } }));
+    setHasKeyClipboard(true);
+  }
+
+  function handleCompositionKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const target = event.target;
+    if (target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable='true']")) return;
+    if (event.key === "Escape" && (keyDragRef.current || selectedKeyLocations.length)) {
+      event.preventDefault();
+      if (keyDragRef.current) {
+        const captureTarget = target instanceof HTMLElement ? target : null;
+        if (captureTarget?.hasPointerCapture(keyDragRef.current.pointerId)) captureTarget.releasePointerCapture(keyDragRef.current.pointerId);
+        suppressKeyClickRef.current = true;
+        keyDragRef.current = null;
+        setKeyPreviewTimes({});
+      } else {
+        setSelectedKeys([]);
+        setSelectedKeyId(null);
+      }
+      return;
+    }
+    const modifier = event.metaKey || event.ctrlKey;
+    const key = event.key.toLocaleLowerCase();
+    if (modifier && key === "c" && selectedKeyLocations.length) {
+      event.preventDefault();
+      copySelectedKeys();
+      return;
+    }
+    if (modifier && key === "v" && keyClipboardRef.current.length) {
+      event.preventDefault();
+      const available = keyClipboardRef.current.flatMap((item) => {
+        const track = composition.propertyTracks.find((candidate) => candidate.id === item.trackId);
+        return track ? [{ ...item, ...keyLocation(track, item.key) }] : [];
+      });
+      if (!available.length) return;
+      const origin = Math.min(...available.map((item) => item.globalTime));
+      const targetTime = snapCompositionTimeToFrame(currentTime, composition.frameRate);
+      duplicateKeyLocations(available, targetTime - origin);
+      return;
+    }
+    if (modifier && key === "d" && selectedKeyLocations.length) {
+      event.preventDefault();
+      duplicateSelectedKeysByFrame(1);
+      return;
+    }
+    if ((event.key === "Delete" || event.key === "Backspace") && selectedKeyLocations.length) {
+      event.preventDefault();
+      deleteSelectedKeys();
+      return;
+    }
+    if ((event.key === "ArrowLeft" || event.key === "ArrowRight")
+      && target instanceof HTMLElement && target.closest(".composition-keyframe") && selectedKeyLocations.length) {
+      event.preventDefault();
+      const frames = event.shiftKey ? 10 : 1;
+      const primary = selectedKeyLocations.find((item) => item.trackId === selectedTrackId && item.key.id === selectedKeyId) ?? selectedKeyLocations[0];
+      if (!primary) return;
+      const frameOffset = (event.key === "ArrowRight" ? 1 : -1) * frames;
+      commitKeyMove(selectedKeyLocations, frameSnappedCompositionKeyDelta(primary.globalTime, frameOffset, composition.frameRate));
+    }
+  }
+
+  function beginKeyDrag(event: ReactPointerEvent<HTMLButtonElement>, track: CompositionPropertyTrack, key: CompositionKeyframe) {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) return;
+    const selection = { trackId: track.id, keyId: key.id };
+    const alreadySelected = selectedKeys.some((item) => item.trackId === track.id && item.keyId === key.id);
+    const locations = alreadySelected ? selectedKeyLocations : [keyLocation(track, key)];
+    if (!alreadySelected) {
+      setSelectedKeys([selection]);
+      selectionAnchorRef.current = selection;
+    }
+    focusKey(track, key);
+    const anchor = locations.find((item) => item.trackId === track.id && item.key.id === key.id) ?? keyLocation(track, key);
+    keyDragRef.current = {
+      pointerId: event.pointerId,
+      originClientX: event.clientX,
+      anchorGlobalTime: anchor.globalTime,
+      keys: locations,
+      latestDelta: 0,
+      moved: false,
+    };
+    suppressKeyClickRef.current = false;
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveKeyDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    const drag = keyDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const rawDelta = (event.clientX - drag.originClientX) / scale;
+    if (Math.abs(rawDelta) * scale >= 2) drag.moved = true;
+    if (!drag.moved) return;
+    const requestedTime = drag.anchorGlobalTime + rawDelta;
+    const snappedTime = event.altKey ? requestedTime : snapCompositionTimeToFrame(requestedTime, composition.frameRate);
+    drag.latestDelta = clampCompositionKeyDelta(drag.keys, snappedTime - drag.anchorGlobalTime);
+    setKeyPreviewTimes(Object.fromEntries(drag.keys.map((item) => [keyPreviewId(item.trackId, item.key.id), item.globalTime + drag.latestDelta])));
+  }
+
+  function finishKeyDrag(event: ReactPointerEvent<HTMLButtonElement>, cancelled = false) {
+    const drag = keyDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!cancelled && drag.moved && Math.abs(drag.latestDelta) >= 1e-9) {
+      const moved = moveCompositionKeyLocations(drag.keys, drag.latestDelta);
+      editMany(moved.map(({ trackId, key }) => ({ kind: "upsert_keyframe", trackId, key: { ...key, time: Number(key.time.toFixed(6)) } })));
+      const primary = moved.find((item) => item.trackId === selectedTrackId && item.key.id === selectedKeyId);
+      if (primary) setKeyTimeDraft(primary.key.time.toFixed(3));
+      suppressKeyClickRef.current = true;
+    }
+    keyDragRef.current = null;
+    setKeyPreviewTimes({});
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+
+  function keyPreviewId(trackId: string, keyId: string): string {
+    return `${trackId}:${keyId}`;
   }
 
   function addSection() {
@@ -131,6 +402,7 @@ export function CompositionTimelineEditor({ composition, currentTime, animationN
     edit({ kind: "upsert_property_track", track });
     setSelectedTrackId(track.id);
     setSelectedKeyId(null);
+    setSelectedKeys([]);
     setKeyTimeDraft((selectedPropertySection ? Math.max(0, currentTime - selectedPropertySection.start) : currentTime).toFixed(3));
     setKeyValueDraft(initialValue(selectedDefinition.defaultValue));
   }
@@ -163,19 +435,20 @@ export function CompositionTimelineEditor({ composition, currentTime, animationN
     if (!selectedTrack) return;
     const value = keyValue();
     const time = timeOverride;
-    if (value === null || !Number.isFinite(time) || time < 0) return;
+    if (value === null || !Number.isFinite(time) || time < 0 || time > selectedTrackMaximumTime) return;
     const interpolation = selectedTrackDefinition?.interpolations.includes(keyInterpolation) ? keyInterpolation
       : selectedTrackDefinition?.interpolations.includes("linear") ? "linear" : "step";
     const key = { id: itemId("key"), time: Number(time.toFixed(3)), value, interpolation };
     edit({ kind: "upsert_keyframe", trackId: selectedTrack.id, key });
     setSelectedKeyId(key.id);
+    setSelectedKeys([{ trackId: selectedTrack.id, keyId: key.id }]);
   }
 
   function updateSelectedKey() {
     if (!selectedTrack || !selectedKey) return;
     const value = keyValue();
     const time = Number(keyTimeDraft);
-    if (value === null || !Number.isFinite(time) || time < 0) return;
+    if (value === null || !Number.isFinite(time) || time < 0 || time > selectedTrackMaximumTime) return;
     const interpolation = selectedTrackDefinition?.interpolations.includes(keyInterpolation) ? keyInterpolation : selectedKey.interpolation;
     edit({ kind: "upsert_keyframe", trackId: selectedTrack.id, key: { ...selectedKey, time: Number(time.toFixed(3)), value, interpolation } });
   }
@@ -207,11 +480,12 @@ export function CompositionTimelineEditor({ composition, currentTime, animationN
 
   const laneStyle = { width: `${trackWidth}px` };
 
-  return <div className="composition-editor-panel" ref={scrollRef} aria-label="Unified composition timeline">
+  return <div className="composition-editor-panel" ref={scrollRef} aria-label="Unified composition timeline" tabIndex={0} onKeyDown={handleCompositionKeyDown}>
     <div className="composition-editor-toolbar">
       <strong>Unified composition timeline</strong>
       <NumberField label="Composition duration" value={composition.duration} min={0.01} step={0.1} precision={3} unit="s" onCommit={(duration) => edit({ kind: "set_duration", duration })} />
       <span>{composition.sections.length} sections · {composition.layers.length} layers · {composition.animationClips.length} animation clips</span>
+      {selectedKeyLocations.length > 1 && <small>{selectedKeyLocations.length} keys selected · drag or use arrow keys to move</small>}
     </div>
     <div className="composition-lanes-scroll">
       <div className="composition-lanes" style={laneStyle}>
@@ -241,12 +515,14 @@ export function CompositionTimelineEditor({ composition, currentTime, animationN
           const sectionId = track.clock.kind === "section-instance" ? track.clock.sectionId : undefined;
           const section = sectionId ? composition.sections.find((item) => item.id === sectionId) : null;
           return <div className="composition-lane-row" key={track.id}>
-          <button type="button" className={`composition-track-label${selectedTrackId === track.id ? " is-selected" : ""}`} title={`${track.target.kind} · ${track.property}`} onClick={() => { setSelectedTrackId(track.id); setSelectedKeyId(null); setSelectedProperty(track.property); setTargetKind(track.target.kind); setPropertySectionId(sectionId ?? ""); setKeyTimeDraft((section ? Math.max(0, currentTime - section.start) : currentTime).toFixed(3)); if (track.target.kind === "audio") setTargetItemId(track.target.audioId); else if (track.target.kind === "clip") setTargetItemId(track.target.clipId); else if (track.target.kind === "layer" || track.target.kind === "bone" || track.target.kind === "constraint" || track.target.kind === "slot") setSelectedLayerId(track.target.layerId); setKeyValueDraft(initialValue(track.keys.at(-1)?.value ?? track.baseValue ?? COMPOSITION_PROPERTY_REGISTRY.find((property) => property.id === track.property)?.defaultValue ?? 0)); }}>{track.property}</button>
-          <div className="composition-lane-content composition-key-lane">
-            {track.keys.map((key) => {
-              const time = globalSectionTime(track.clock.kind === "section-instance" ? track.clock.sectionId : undefined, key.time);
-              return <button key={key.id} type="button" className={`composition-keyframe${selectedKeyId === key.id ? " is-selected" : ""}`} style={{ left: time * scale }} title={`${time.toFixed(3)}s · ${initialValue(key.value)}`} aria-label={`${track.property} key at ${time.toFixed(3)} seconds`} onClick={() => { setSelectedTrackId(track.id); setSelectedKeyId(key.id); setKeyValueDraft(initialValue(key.value)); setKeyTimeDraft(key.time.toFixed(3)); setKeyInterpolation(key.interpolation); onSeek(time); }} />;
-            })}
+           <button type="button" className={`composition-track-label${selectedTrackId === track.id ? " is-selected" : ""}`} title={`${track.target.kind} · ${track.property}`} onClick={() => { setSelectedTrackId(track.id); setSelectedKeyId(null); setSelectedKeys([]); setSelectedProperty(track.property); setTargetKind(track.target.kind); setPropertySectionId(sectionId ?? ""); setKeyTimeDraft((section ? Math.max(0, currentTime - section.start) : currentTime).toFixed(3)); if (track.target.kind === "audio") setTargetItemId(track.target.audioId); else if (track.target.kind === "clip") setTargetItemId(track.target.clipId); else if (track.target.kind === "layer" || track.target.kind === "bone" || track.target.kind === "constraint" || track.target.kind === "slot") setSelectedLayerId(track.target.layerId); setKeyValueDraft(initialValue(track.keys.at(-1)?.value ?? track.baseValue ?? COMPOSITION_PROPERTY_REGISTRY.find((property) => property.id === track.property)?.defaultValue ?? 0)); }}>{track.property}</button>
+           <div className="composition-lane-content composition-key-lane">
+             {track.keys.map((key) => {
+                const time = globalSectionTime(track.clock.kind === "section-instance" ? track.clock.sectionId : undefined, key.time);
+               const previewTime = keyPreviewTimes[keyPreviewId(track.id, key.id)] ?? time;
+               const isSelected = selectedKeys.some((item) => item.trackId === track.id && item.keyId === key.id);
+               return <button key={key.id} type="button" className={`composition-keyframe${isSelected ? " is-selected" : ""}${selectedTrackId === track.id && selectedKeyId === key.id ? " is-primary" : ""}${key.interpolation === "bezier" ? " is-bezier" : ""}`} style={{ left: previewTime * scale }} title={`${time.toFixed(3)}s · ${initialValue(key.value)} · ${key.interpolation}`} aria-label={`${track.property} ${key.interpolation} key at ${time.toFixed(3)} seconds`} aria-pressed={isSelected} aria-keyshortcuts="ArrowLeft ArrowRight Shift+ArrowLeft Shift+ArrowRight Delete Control+C Control+V Control+D" onPointerDown={(event) => beginKeyDrag(event, track, key)} onPointerMove={moveKeyDrag} onPointerUp={(event) => finishKeyDrag(event)} onPointerCancel={(event) => finishKeyDrag(event, true)} onClick={(event) => selectKey(track, key, event)} />;
+              })}
             <i className="composition-playhead" style={{ left: currentTime * scale }} />
           </div>
         </div>;
@@ -371,20 +647,34 @@ export function CompositionTimelineEditor({ composition, currentTime, animationN
           {selectedTrackDefinition?.valueType === "boolean" ? <select aria-label="Key value" value={keyValueDraft} onChange={(event) => setKeyValueDraft(event.target.value)}><option value="true">True</option><option value="false">False</option></select>
             : selectedTrackDefinition?.enumValues ? <select aria-label="Key value" value={keyValueDraft} onChange={(event) => setKeyValueDraft(event.target.value)}>{selectedTrackDefinition.enumValues.map((value) => <option key={value} value={value}>{value || "None"}</option>)}</select>
               : <input aria-label="Key value" type={selectedTrackDefinition?.valueType === "number" ? "number" : "text"} step={selectedTrackDefinition?.valueType === "number" ? "any" : undefined} value={keyValueDraft} onChange={(event) => setKeyValueDraft(event.target.value)} />}
-          <NumberField label="Key time" value={Number(keyTimeDraft) || 0} min={0} max={composition.duration} step={0.001} precision={3} unit="s" onCommit={(time) => setKeyTimeDraft(time.toFixed(3))} />
+          <NumberField label="Key time" value={Number(keyTimeDraft) || 0} min={0} max={selectedTrackMaximumTime} step={0.001} precision={3} unit="s" onCommit={(time) => setKeyTimeDraft(Math.min(selectedTrackMaximumTime, time).toFixed(3))} />
           <select aria-label="Key interpolation" value={keyInterpolation} onChange={(event) => setKeyInterpolation(event.target.value as typeof keyInterpolation)}>{(selectedTrackDefinition?.interpolations ?? ["step"]).map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select>
           <button type="button" className="editor-button" onClick={() => addKeyframe()}>Add key at time</button>
           <button type="button" className="editor-button" onClick={() => addKeyframe(keyTimeAtPlayhead())}>Key at playhead</button>
           <button type="button" className="editor-button" disabled={!selectedKey} onClick={updateSelectedKey}>Update selected key</button>
-          <button type="button" className="editor-button danger" disabled={!selectedKey} onClick={() => { if (!selectedKey) return; edit({ kind: "remove_keyframe", trackId: selectedTrack.id, keyId: selectedKey.id }); setSelectedKeyId(null); }}>Remove key</button>
-          <button type="button" className="editor-button danger" onClick={() => { edit({ kind: "remove_property_track", trackId: selectedTrack.id }); setSelectedTrackId(null); }}>Remove track</button>
+          <button type="button" className="editor-button" disabled={!selectedKeyLocations.length} onClick={() => duplicateSelectedKeysByFrame()}>Duplicate keys</button>
+          <button type="button" className="editor-button" disabled={!selectedKeyLocations.length} onClick={copySelectedKeys}>Copy keys</button>
+          <button type="button" className="editor-button" disabled={!hasKeyClipboard} onClick={() => {
+            const available = keyClipboardRef.current.flatMap((item) => {
+              const track = composition.propertyTracks.find((candidate) => candidate.id === item.trackId);
+              return track ? [{ ...item, ...keyLocation(track, item.key) }] : [];
+            });
+            if (available.length) duplicateKeyLocations(available, snapCompositionTimeToFrame(currentTime, composition.frameRate) - Math.min(...available.map((item) => item.globalTime)));
+          }}>Paste keys at playhead</button>
+          <button type="button" className="editor-button danger" disabled={!selectedKeys.length} onClick={deleteSelectedKeys}>Remove selected keys</button>
+          <button type="button" className="editor-button danger" onClick={() => { edit({ kind: "remove_property_track", trackId: selectedTrack.id }); setSelectedTrackId(null); setSelectedKeyId(null); setSelectedKeys((items) => items.filter((item) => item.trackId !== selectedTrack.id)); }}>Remove track</button>
         </div>}
-        {selectedTrack && selectedKey && <div className="composition-tool-row composition-tangent-controls" aria-label="Keyframe tangent controls">
+        {selectedTrack && selectedKey && selectedKey.interpolation === "bezier" && <div className="composition-tool-row composition-tangent-controls" aria-label="Keyframe tangent controls">
           <NumberField label="In tangent time" value={selectedKey.inTangent?.time ?? 1 / 3} min={0} max={1} step={0.01} precision={3} onCommit={(time) => edit({ kind: "upsert_keyframe", trackId: selectedTrack.id, key: { ...selectedKey, inTangent: { time, value: selectedKey.inTangent?.value ?? 2 / 3 } } })} />
           <NumberField label="In tangent value" value={selectedKey.inTangent?.value ?? 2 / 3} step={0.01} precision={3} onCommit={(value) => edit({ kind: "upsert_keyframe", trackId: selectedTrack.id, key: { ...selectedKey, inTangent: { time: selectedKey.inTangent?.time ?? 1 / 3, value } } })} />
           <NumberField label="Out tangent time" value={selectedKey.outTangent?.time ?? 1 / 3} min={0} max={1} step={0.01} precision={3} onCommit={(time) => edit({ kind: "upsert_keyframe", trackId: selectedTrack.id, key: { ...selectedKey, outTangent: { time, value: selectedKey.outTangent?.value ?? 1 / 3 } } })} />
           <NumberField label="Out tangent value" value={selectedKey.outTangent?.value ?? 1 / 3} step={0.01} precision={3} onCommit={(value) => edit({ kind: "upsert_keyframe", trackId: selectedTrack.id, key: { ...selectedKey, outTangent: { time: selectedKey.outTangent?.time ?? 1 / 3, value } } })} />
         </div>}
+        {selectedTrack && selectedKey && selectedTrackDefinition?.valueType === "number" && <CompositionCurveEditor
+          track={selectedTrack}
+          selectedKeyId={selectedKey.id}
+          onUpdateKey={(key) => edit({ kind: "upsert_keyframe", trackId: selectedTrack.id, key })}
+        />}
       </section>
       <section className="composition-authoring-section">
         <strong>Audio and subtitle cues</strong>

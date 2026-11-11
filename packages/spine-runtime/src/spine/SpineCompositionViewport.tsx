@@ -9,6 +9,7 @@ import { SpineTimelineLayerCanvas } from "./SpineTimelineLayerCanvas";
 import { cameraAspectValue, changeSpineCameraAspectRatio, evaluateSpineCameraTrack, type SpineCameraAspectRatio, type SpineCameraTrack } from "./spineCameraMotion";
 import { compositionEvaluationContextAt, evaluateCompositionFrame, runFixedStepPreroll, type CompositionEvaluationContext, type SpineComposition } from "./spineComposition";
 import { compositionCameraTrackAt, compositionFrameToTimeline } from "./spineCompositionTimeline";
+import { compositionScheduleSampleAt, type SpineCompositionSchedule } from "./spineCompositionSchedule";
 
 export interface SpineCompositionRecordingCueTimeline {
   timeline: SpineTimeline;
@@ -60,6 +61,7 @@ interface SpineCompositionViewportProps {
   idleMode?: "none" | "persistent" | "bridge";
   recordingIdleOverride?: boolean;
   recordingClock?: boolean;
+  recordingCompositionSchedule?: SpineCompositionSchedule;
   recordingCameraTrack?: SpineCameraTrack | null;
   recordingCameraTime?: number;
   recordingIdleOffset?: number;
@@ -81,7 +83,7 @@ interface SpineCompositionViewportProps {
   onBehaviorSubtitle?: (machineId: string, cueId: string, visible: boolean) => void;
 }
 
-export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandle, SpineCompositionViewportProps>(function SpineCompositionViewport({ source, timeline: authoredTimeline, composition, preloadTimelines = [], interactionMode, interactionProject, showInteractionPoints, currentTime, playing, speed, effectsStrength, cameraMode = "fit", aspectRatio = "16:9", idleMode = "none", recordingIdleOverride = false, recordingClock = false, recordingCameraTrack, recordingCameraTime, recordingIdleOffset, recordingCueTimelines, recordingCueAudioEnabled = true, recordingCueSubtitlesEnabled = true, preserveDrawingBuffer = false, onMeta, onProgress, onLoading, onLoadProgress, onError, onFinished, onTalk, onTalkClip, onIntro, onIntroClip, onBehaviorAudio, onBehaviorSubtitle }, ref) {
+export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandle, SpineCompositionViewportProps>(function SpineCompositionViewport({ source, timeline: authoredTimeline, composition, preloadTimelines = [], interactionMode, interactionProject, showInteractionPoints, currentTime, playing, speed, effectsStrength, cameraMode = "fit", aspectRatio = "16:9", idleMode = "none", recordingIdleOverride = false, recordingClock = false, recordingCompositionSchedule, recordingCameraTrack, recordingCameraTime, recordingIdleOffset, recordingCueTimelines, recordingCueAudioEnabled = true, recordingCueSubtitlesEnabled = true, preserveDrawingBuffer = false, onMeta, onProgress, onLoading, onLoadProgress, onError, onFinished, onTalk, onTalkClip, onIntro, onIntroClip, onBehaviorAudio, onBehaviorSubtitle }, ref) {
   const stageRef = useRef<HTMLDivElement>(null);
   const currentTimeRef = useRef(currentTime);
   const idleAnimationTimeRef = useRef(0);
@@ -139,6 +141,10 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   const activeSectionDuration = activeCompositionSection ? Math.max(0.01, activeCompositionSection.end - activeCompositionSection.start) : 0;
   const compositionContextAt = (sampleTime: number): CompositionEvaluationContext | null => {
     if (!composition) return null;
+    if (recordingCompositionSchedule) {
+      const sample = compositionScheduleSampleAt(composition, recordingCompositionSchedule, sampleTime);
+      if (sample) return sample.context;
+    }
     const context = compositionEvaluationContextAt(composition, sampleTime, sampleTime);
     if (!activeSectionInstance || !activeCompositionSection || sampleTime < activeSectionInstance.startedAt) return context;
     const elapsed = Math.max(0, sampleTime - activeSectionInstance.startedAt);
@@ -159,12 +165,25 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
     };
   };
   const sectionInstanceStartTimes = composition
-    ? Object.fromEntries(composition.sections.map((section) => [section.id, section.id === activeCompositionSection?.id ? activeSectionInstance!.startedAt : section.start]))
+    ? recordingCompositionSchedule
+      ? compositionScheduleSampleAt(composition, recordingCompositionSchedule, compositionTime)?.sectionInstanceStartTimes ?? {}
+      : Object.fromEntries(composition.sections.map((section) => [section.id, section.id === activeCompositionSection?.id ? activeSectionInstance!.startedAt : section.start]))
     : {};
   const frameContext = compositionContextAt(compositionTime);
   const compositionFrame = composition && frameContext ? evaluateCompositionFrame(composition, frameContext) : null;
+  const recordingScheduleSample = composition && recordingCompositionSchedule
+    ? compositionScheduleSampleAt(composition, recordingCompositionSchedule, compositionTime)
+    : null;
   const timeline = composition && compositionFrame
-    ? compositionFrameToTimeline(composition, compositionFrame, compositionTime, authoredTimeline.language, sectionInstanceStartTimes, activeCompositionSection?.id)
+    ? compositionFrameToTimeline(
+      composition,
+      compositionFrame,
+      compositionTime,
+      authoredTimeline.language,
+      sectionInstanceStartTimes,
+      recordingCompositionSchedule ? recordingScheduleSample?.segment.sectionId : activeCompositionSection?.id,
+      recordingScheduleSample?.globalTimeOffset ?? 0,
+    )
     : authoredTimeline;
   const compositionLayerFrames = new Map(compositionFrame?.layers.map((layer) => [layer.layer.id, layer]) ?? []);
   const timelineIdentity = composition ?? authoredTimeline;
@@ -172,7 +191,7 @@ export const SpineCompositionViewport = forwardRef<SpineCompositionViewportHandl
   const visualLayers = useMemo(() => timelineVisualLayers(timeline), [timeline.layers, timeline.colorLayers]);
   const authoredCameraTrack = recordingCameraTrack === undefined ? timeline.camera ?? null : recordingCameraTrack;
   const cameraTrack = composition && compositionFrame
-    ? compositionCameraTrackAt(composition, compositionFrame, compositionTime, authoredCameraTrack, referenceArtworkFrame)
+    ? compositionCameraTrackAt(composition, compositionFrame, compositionFrame.evaluation.time, authoredCameraTrack, referenceArtworkFrame)
     : authoredCameraTrack;
   const referenceLayerId = timelineReferenceLayerId(timeline, cameraTrack);
   const timelineClockTime = recordingClock ? currentTimeRef.current : currentTime;

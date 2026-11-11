@@ -1,0 +1,52 @@
+.composition-curve-editor {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--app-border, #34363d);
+  border-radius: 6px;
+  background: var(--app-surface-raised, #202126);
+}
+
+.composition-curve-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  font-size: 10px;
+}
+
+.composition-curve-heading span,
+.composition-curve-editor > small,
+.composition-curve-empty {
+  color: var(--app-muted, #a3a5ad);
+  font-size: 10px;
+}
+
+.composition-curve-editor svg {
+  display: block;
+  width: min(100%, 520px);
+  height: auto;
+  overflow: visible;
+  margin: 0 auto;
+  touch-action: none;
+}
+
+.composition-curve-grid,
+.composition-curve-axis,
+.composition-curve-handle-line {
+  fill: none;
+  stroke: rgb(255 255 255 / 11%);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.composition-curve-axis { stroke: rgb(255 255 255 / 26%); }
+.composition-curve-handle-line { stroke: #62e2ff88; stroke-dasharray: 3 3; }
+.composition-curve-path { fill: none; stroke: #d29eff; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.composition-curve-key { fill: #fff; stroke: #35244a; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.composition-curve-handle { fill: #62e2ff; stroke: #091722; stroke-width: 1.5; cursor: grab; vector-effect: non-scaling-stroke; }
+.composition-curve-handle:active { cursor: grabbing; }
+.composition-curve-handle:focus-visible { stroke: #fff; stroke-width: 2.5; outline: none; }
+.composition-curve-label, .composition-curve-value { fill: var(--app-muted, #a3a5ad); font: 9px ui-monospace, monospace; }
+.composition-curve-empty { padding: 8px; border: 1px dashed var(--app-border, #34363d); border-radius: 4px; }

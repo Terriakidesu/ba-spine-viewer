@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createFullSequenceRecordingPlan, createUnifiedCompositionRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, normalizeVideoRecordingQuality, readVideoRecordingQuality, VIDEO_RECORDING_QUALITY_STORAGE_KEY, VIDEO_RECORDING_SUBTITLE_SELECTOR, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingCompositionGainAutomation, videoRecordingCompositionSubtitleSpans, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingSubtitleSpans, videoRecordingTimelineOffsets, writeVideoRecordingQuality } from "./videoRecorder";
+import { createCompositionArrangementRecordingPlan, createFullSequenceRecordingPlan, createUnifiedCompositionRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, normalizeVideoRecordingQuality, readVideoRecordingQuality, VIDEO_RECORDING_QUALITY_STORAGE_KEY, VIDEO_RECORDING_SUBTITLE_SELECTOR, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingCompositionGainAutomation, videoRecordingCompositionScheduleAudioSpans, videoRecordingCompositionScheduleSubtitleSpans, videoRecordingCompositionSubtitleSpans, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingSubtitleSpans, videoRecordingTimelineOffsets, writeVideoRecordingQuality } from "./videoRecorder";
 import { createEmptySpineComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
 
 describe("Viewer video quality preference", () => {
@@ -85,8 +85,93 @@ describe("Viewer video recording plans", () => {
       idleLoops: 1,
       totalDuration: 12.5,
       segments: [{ kind: "composition", sequenceId: "__unified-composition__", duration: 12.5 }],
+      compositionSchedule: {
+        duration: 12.5,
+        frameRate: 30,
+        persistentTimeMapping: "continuous-output",
+        segments: [{ id: "composition", kind: "composition", start: 0, duration: 12.5, sectionTimeStart: 0, sourceTimeStart: 0 }],
+      },
     });
     expect(videoRecordingSegmentAt(plan, 8)).toMatchObject({ index: 0, segment: { kind: "composition" }, elapsed: 8 });
+  });
+
+  test("composition arrangement plans are shared schedules with section instances and idle gaps", () => {
+    const composition = createEmptySpineComposition("canonical", "Canonical", 10, 30);
+    composition.sections = [
+      { id: "idle", name: "Idle", start: 0, end: 2, route: { role: "idle", returnToSectionId: null, ownedChannels: [], duplicateTrigger: "ignore", interruption: "replace", blendIn: 0, blendOut: 0, cameraReturn: "persistent" } },
+      { id: "talk", name: "Talk", start: 3, end: 5, route: { role: "talk", returnToSectionId: "idle", ownedChannels: ["body", "audio", "subtitles"], duplicateTrigger: "ignore", interruption: "replace", blendIn: 0, blendOut: 0, cameraReturn: "blend" } },
+      { id: "scene", name: "Scene", start: 7, end: 8 },
+    ];
+    composition.audio = [
+      { id: "global", name: "Global", path: "global.wav", start: 3.5, end: 4.5, sourceOffset: 1, volume: 0.8, enabled: true },
+      { id: "voice", name: "Voice", path: "voice.wav", start: 0.5, end: 1.5, sourceOffset: 0, volume: 1, enabled: true, sectionId: "talk" },
+    ];
+    composition.subtitles = [
+      { id: "global-cue", start: 3.5, end: 4.5, enabled: true, text: { en: "Global", ja: "全体", ko: "전체" } },
+      { id: "talk-cue", start: 0.5, end: 1.5, enabled: true, text: { en: "Talk", ja: "会話", ko: "대화" }, sectionId: "talk" },
+    ];
+    composition.propertyTracks = [{
+      id: "voice-gain", target: { kind: "audio", audioId: "voice" }, property: "audio.volume", clock: { kind: "section-instance", sectionId: "talk" },
+      enabled: true, priority: 0, blendMode: "override", weight: 1, holdBefore: true, holdAfter: true,
+      keys: [{ id: "quiet", time: 0, value: 0.2, interpolation: "linear" }, { id: "loud", time: 2, value: 0.8, interpolation: "linear" }],
+    }];
+    const plan = createCompositionArrangementRecordingPlan(composition, {
+      sectionIds: ["talk", "scene"], idleSectionId: "idle", initialIdleLoops: 1, betweenSectionIdleSeconds: 0.5, finalIdleLoops: 0,
+    });
+    expect(plan.totalDuration).toBe(5.5);
+    expect(plan.segments?.map((segment) => [segment.kind, segment.sectionId, segment.duration])).toEqual([
+      ["initial-idle", "idle", 2],
+      ["composition-section", "talk", 2],
+      ["between-idle", "idle", 0.5],
+      ["composition-section", "scene", 1],
+    ]);
+    const schedule = plan.compositionSchedule!;
+    const audioSpans = videoRecordingCompositionScheduleAudioSpans(composition, schedule, 2);
+    expect(audioSpans.map(({ clip, start, end, sourceOffset }) => [clip.id, start, end, sourceOffset])).toEqual([
+      ["global", 2.5, 3.5, 1],
+      ["voice", 2.5, 3.5, 0],
+    ]);
+    expect(audioSpans[1]?.gainAutomation?.map((point) => point.time)).toEqual([0, 1]);
+    expect(audioSpans[1]?.gainAutomation?.[0]?.volume).toBeCloseTo(0.35);
+    expect(audioSpans[1]?.gainAutomation?.[1]?.volume).toBeCloseTo(0.65);
+    expect(videoRecordingCompositionScheduleSubtitleSpans(composition, schedule, "en")).toMatchObject([
+      { text: "Global", start: 2.5, end: 3.5 },
+      { text: "Talk", start: 2.5, end: 3.5 },
+    ]);
+  });
+
+  test("global cues in unfilled arrangement gaps follow the output-time evaluator clock", () => {
+    const composition = createEmptySpineComposition("gap-cues", "Gap cues", 8, 30);
+    composition.sections = [
+      { id: "first", name: "First", start: 0, end: 1 },
+      { id: "second", name: "Second", start: 4, end: 5 },
+    ];
+    composition.audio = [{ id: "global", name: "Global", path: "global.wav", start: 1.1, end: 1.4, sourceOffset: 0, volume: 1, enabled: true }];
+    composition.subtitles = [{ id: "global-cue", start: 1.1, end: 1.4, enabled: true, text: { en: "Gap", ja: "", ko: "" } }];
+    const plan = createCompositionArrangementRecordingPlan(composition, {
+      sectionIds: ["first", "second"], idleSectionId: null, initialIdleLoops: 0, betweenSectionIdleSeconds: 0.5, finalIdleLoops: 0,
+    });
+
+    expect(videoRecordingCompositionScheduleAudioSpans(composition, plan.compositionSchedule!, 30).map(({ start, end }) => [start, end])).toEqual([[1.1, 1.4]]);
+    expect(videoRecordingCompositionScheduleSubtitleSpans(composition, plan.compositionSchedule!, "en")).toMatchObject([
+      { text: "Gap", start: 1.1, end: 1.4 },
+    ]);
+  });
+
+  test("arrangement cues respect each section route's audio and subtitle ownership", () => {
+    const composition = createEmptySpineComposition("owned-cues", "Owned cues", 4, 30);
+    composition.sections = [{
+      id: "visual-only", name: "Visual only", start: 1, end: 3,
+      route: { role: "talk", returnToSectionId: null, ownedChannels: ["body"], duplicateTrigger: "ignore", interruption: "replace", blendIn: 0, blendOut: 0, cameraReturn: "persistent" },
+    }];
+    composition.audio = [{ id: "voice", name: "Voice", path: "voice.wav", start: 0.25, end: 0.75, sourceOffset: 0, volume: 1, enabled: true, sectionId: "visual-only" }];
+    composition.subtitles = [{ id: "cue", start: 0.25, end: 0.75, enabled: true, text: { en: "Hidden", ja: "", ko: "" }, sectionId: "visual-only" }];
+    const plan = createCompositionArrangementRecordingPlan(composition, {
+      sectionIds: ["visual-only"], idleSectionId: null, initialIdleLoops: 0, finalIdleLoops: 0,
+    });
+
+    expect(videoRecordingCompositionScheduleAudioSpans(composition, plan.compositionSchedule!, 30)).toEqual([]);
+    expect(videoRecordingCompositionScheduleSubtitleSpans(composition, plan.compositionSchedule!, "en")).toEqual([]);
   });
 
   test("maps Opening and Talk cue timelines onto one clock without replaying idle cues", () => {

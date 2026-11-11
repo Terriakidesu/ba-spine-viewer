@@ -781,6 +781,8 @@ export function compositionTargetKey(target: CompositionTarget, property: string
 export interface CompositionEvaluationContext {
   compositionTime: number;
   transportTime?: number;
+  /** Optional arrangement clock for persistent scene/background content. */
+  persistentTime?: number;
   sectionInstanceTimes?: Readonly<Record<string, number>>;
   /** Optional live section owner used by the interactive Viewer. */
   activeSectionId?: string;
@@ -821,6 +823,16 @@ export function compositionClockTime(clock: CompositionClock, context: Compositi
   if (clock.kind === "composition") return context.compositionTime;
   if (clock.kind === "transport") return context.transportTime ?? null;
   return context.sectionInstanceTimes?.[clock.sectionId] ?? null;
+}
+
+function compositionClockTimeForLayer(
+  clock: CompositionClock,
+  layer: CompositionLayer | null,
+  context: CompositionEvaluationContext,
+): number | null {
+  if (clock.kind === "composition" && context.persistentTime !== undefined
+    && (layer?.role === "background" || layer?.role === "scene")) return context.persistentTime;
+  return compositionClockTime(clock, context);
 }
 
 function targetLayer(composition: SpineComposition, target: CompositionTarget): CompositionLayer | null {
@@ -898,7 +910,8 @@ export function evaluateComposition(composition: SpineComposition, context: Comp
     if (sectionClock && context.activeSectionChannels && !context.activeSectionChannels.includes(channel)
       && !(channel === "body" && context.activeSectionChannels.includes("face"))) continue;
     const mapped = track.clock.kind === "composition" ? routedCompositionTime(composition, context, track.target, definition) : null;
-    const clockTime = mapped?.time ?? compositionClockTime(track.clock, context);
+    const layer = targetLayer(composition, track.target);
+    const clockTime = mapped?.time ?? compositionClockTimeForLayer(track.clock, layer, context);
     if (clockTime === null) continue;
     const value = sampleCompositionTrack(track, clockTime);
     if (value === undefined) continue;
@@ -929,7 +942,7 @@ export function evaluateComposition(composition: SpineComposition, context: Comp
       && context.activeSectionChannels?.includes(channel)
       ? { time: section.start + sectionElapsed, weight: clamp01(context.activeSectionWeight ?? 1) }
       : null;
-    const time = mapped?.time ?? compositionClockTime(clip.clock, context);
+    const time = mapped?.time ?? compositionClockTimeForLayer(clip.clock, clipLayer ?? null, context);
     if (time === null || time < clip.start || (time >= clip.end && clip.endBehavior !== "hold")) return [];
     const clipActive = clip.clock.kind === "composition"
       ? compositionActive(clip.start, clip.end, time, composition.duration, composition.finalFramePolicy)
@@ -941,7 +954,7 @@ export function evaluateComposition(composition: SpineComposition, context: Comp
     const rateTrack = speedTracks.at(-1);
     const sourceClockTime = clip.sourceClock.kind === "clip-source"
       ? Math.max(0, Math.min(time, clip.end) - clip.start)
-      : compositionClockTime(clip.sourceClock, context);
+      : compositionClockTimeForLayer(clip.sourceClock, clipLayer ?? null, context);
     if (sourceClockTime === null) return [];
     const rateStart = clip.sourceClock.kind === "clip-source" ? clip.start : clip.sourceOriginTime;
     const rateEnd = clip.sourceClock.kind === "clip-source" ? Math.min(time, clip.end) : sourceClockTime;

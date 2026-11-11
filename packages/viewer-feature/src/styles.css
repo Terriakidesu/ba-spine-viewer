@@ -786,6 +786,7 @@ body:has(.spine-page) { height: 100dvh; overflow: hidden; }
 .spine-recorder-timeline-visual { position: relative; display: grid; min-width: 0; gap: 3px; padding: 3px 0; }
 .spine-recorder-timeline-track { position: relative; display: block; width: 100%; height: 14px; margin: 0; padding: 0; overflow: hidden; border-radius: 3px; list-style: none; }
 .spine-recorder-timeline-segment { position: absolute; top: 0; bottom: 0; min-width: 0; box-sizing: border-box; overflow: hidden; border-radius: 2px; outline-offset: 2px; }
+.spine-recorder-timeline-segment.is-sampleable { cursor: pointer; }
 .spine-recorder-timeline-segment.is-opening { background: color-mix(in srgb, var(--cyan) 82%, var(--surface-alt)); }
 .spine-recorder-timeline-segment.is-idle { background: color-mix(in srgb, var(--gold) 82%, var(--surface-alt)); }
 .spine-recorder-timeline-segment.is-talk { background: color-mix(in srgb, var(--pink) 82%, var(--surface-alt)); }

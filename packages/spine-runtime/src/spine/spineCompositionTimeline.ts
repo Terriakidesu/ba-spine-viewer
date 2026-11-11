@@ -79,6 +79,7 @@ export function compositionFrameToTimeline(
   language: SpineTimeline["language"],
   sectionInstanceStartTimes: Readonly<Record<string, number>> = {},
   activeSectionId?: string,
+  globalTimeOffset = 0,
 ): SpineTimeline {
   const layers: SpineTimelineLayer[] = frame.layers.map((layerFrame) => {
     const layer = layerFrame.layer;
@@ -149,8 +150,8 @@ export function compositionFrameToTimeline(
       id: clip.id,
       name: clip.name,
       path: clip.path,
-      start: sectionStart === undefined ? clip.start : sectionStart + clip.start,
-      end: sectionStart === undefined ? clip.end : sectionStart + clip.end,
+      start: sectionStart === undefined ? clip.start + globalTimeOffset : sectionStart + clip.start,
+      end: sectionStart === undefined ? clip.end + globalTimeOffset : sectionStart + clip.end,
       sourceOffset: clip.sourceOffset,
       enabled: clip.enabled && (!activeSectionId || !clip.sectionId || clip.sectionId === activeSectionId && isActive),
       volume: typeof volume === "number" ? volume : clip.volume,
@@ -163,8 +164,8 @@ export function compositionFrameToTimeline(
       : undefined;
     return {
       ...cue,
-      start: sectionStart === undefined ? cue.start : sectionStart + cue.start,
-      end: sectionStart === undefined ? cue.end : sectionStart + cue.end,
+      start: sectionStart === undefined ? cue.start + globalTimeOffset : sectionStart + cue.start,
+      end: sectionStart === undefined ? cue.end + globalTimeOffset : sectionStart + cue.end,
       enabled: cue.enabled && (!activeSectionId || !cue.sectionId || cue.sectionId === activeSectionId && isActive),
       text: { ...cue.text },
     };
