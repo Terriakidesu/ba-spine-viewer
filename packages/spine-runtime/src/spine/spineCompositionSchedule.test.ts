@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { compositionEvaluationContextAt, compositionTargetKey, createEmptySpineComposition, defaultTalkSectionRoute, evaluateComposition, evaluateCompositionFrame } from "./spineComposition";
-import { compositionFrameToTimeline } from "./spineCompositionTimeline";
+import { compositionCameraTrackAt, compositionFrameToTimeline } from "./spineCompositionTimeline";
+import { sampleSpineCameraTrack } from "./spineCameraMotion";
 import { compositionScheduleSampleAt, createCanonicalCompositionSchedule, createCompositionArrangementSchedule } from "./spineCompositionSchedule";
 
 function fixture() {
@@ -25,6 +26,21 @@ function fixture() {
     id: "background-global", target: { kind: "layer", layerId: "background" }, property: "layer.position.x", clock: { kind: "composition" },
     enabled: true, priority: 0, blendMode: "override", weight: 1, holdBefore: true, holdAfter: true,
     keys: [{ id: "start", time: 0, value: 0, interpolation: "linear" }, { id: "end", time: 12, value: 12, interpolation: "linear" }],
+  });
+  composition.camera = {
+    enabled: true,
+    aspectRatio: "16:9",
+    constraint: { mode: "automatic" },
+    safeBounds: [],
+    keyframes: [
+      { id: "camera-start", time: 0, centerX: 0, centerY: 0, frameHeight: 10, easing: "linear" },
+      { id: "camera-end", time: 12, centerX: 120, centerY: 24, frameHeight: 34, easing: "linear" },
+    ],
+  };
+  composition.propertyTracks.push({
+    id: "camera-center-x", target: { kind: "camera" }, property: "camera.centerX", clock: { kind: "composition" },
+    enabled: true, priority: 0, blendMode: "override", weight: 1, holdBefore: true, holdAfter: true,
+    keys: [{ id: "camera-offset", time: 0, value: 8, interpolation: "step" }],
   });
   return composition;
 }
@@ -113,6 +129,10 @@ test("canonical schedule frames preserve evaluator and Viewer timeline parity at
     expect(scheduled.layers.map(({ layer, transform, animationClips }) => [layer.id, transform, animationClips])).toEqual(
       direct.layers.map(({ layer, transform, animationClips }) => [layer.id, transform, animationClips]),
     );
+    const directCamera = compositionCameraTrackAt(composition, direct, direct.evaluation.time);
+    const scheduledCamera = compositionCameraTrackAt(composition, scheduled, scheduled.evaluation.time);
+    expect(directCamera).not.toBeNull();
+    expect(sampleSpineCameraTrack(scheduledCamera!, time)).toEqual(sampleSpineCameraTrack(directCamera!, time));
     expect(compositionFrameToTimeline(composition, scheduled, time, "en", scheduledSample.sectionInstanceStartTimes, undefined, scheduledSample.globalTimeOffset))
       .toEqual(compositionFrameToTimeline(composition, direct, time, "en"));
   }
