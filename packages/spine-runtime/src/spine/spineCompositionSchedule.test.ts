@@ -140,19 +140,22 @@ test("canonical schedule frames preserve evaluator and Viewer timeline parity at
 
 test("dense schedule fixture evaluates fixed output samples without timing drift", () => {
   const composition = createEmptySpineComposition("dense-schedule", "Dense schedule", 3, 30);
-  for (let layerIndex = 0; layerIndex < 32; layerIndex += 1) {
+  const layers = 128;
+  const tracksPerLayer = 8;
+  const keysPerTrack = 16;
+  for (let layerIndex = 0; layerIndex < layers; layerIndex += 1) {
     const layerId = `layer-${layerIndex}`;
     composition.layers.push({
       id: layerId, name: layerId, role: "background", order: layerIndex, assetDirectory: layerId, assetIdentity: `asset:${layerId}`,
       transformParentId: null, baseProperties: { "layer.position.x": 0 }, enabled: true, locked: false,
     });
-    for (let trackIndex = 0; trackIndex < 8; trackIndex += 1) {
+    for (let trackIndex = 0; trackIndex < tracksPerLayer; trackIndex += 1) {
       composition.propertyTracks.push({
         id: `${layerId}-track-${trackIndex}`, target: { kind: "layer", layerId }, property: "layer.position.x", clock: { kind: "composition" },
         enabled: true, priority: trackIndex, blendMode: "override", weight: 1, holdBefore: true, holdAfter: true,
-        keys: Array.from({ length: 8 }, (_, keyIndex) => ({
+        keys: Array.from({ length: keysPerTrack }, (_, keyIndex) => ({
           id: `${layerId}-${trackIndex}-key-${keyIndex}`,
-          time: keyIndex * 3 / 7,
+          time: keyIndex * 3 / (keysPerTrack - 1),
           value: layerIndex + trackIndex + keyIndex,
           interpolation: "linear" as const,
         })),
@@ -167,7 +170,7 @@ test("dense schedule fixture evaluates fixed output samples without timing drift
     const sample = compositionScheduleSampleAt(composition, schedule, time);
     expect(sample).not.toBeNull();
     const evaluated = evaluateComposition(composition, sample!.context);
-    expect(evaluated.propertyContributions.length).toBe(256);
+    expect(evaluated.propertyContributions.length).toBe(layers * tracksPerLayer);
     sampledFrames += 1;
   }
   expect(sampledFrames).toBe(90);

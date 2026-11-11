@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { createCompositionArrangementRecordingPlan, createFullSequenceRecordingPlan, createUnifiedCompositionRecordingPlan, createVideoRecordingPlan, detectSupportedVideoFormats, normalizeVideoRecordingQuality, readVideoRecordingQuality, VIDEO_RECORDING_QUALITY_STORAGE_KEY, VIDEO_RECORDING_SUBTITLE_SELECTOR, videoFilenameStem, videoFrameTargetCount, videoRecordingAudioSchedule, videoRecordingCompositionGainAutomation, videoRecordingCompositionScheduleAudioSpans, videoRecordingCompositionScheduleSubtitleSpans, videoRecordingCompositionSubtitleSpans, videoRecordingDimensions, videoRecordingFrameCount, videoRecordingGlobalTime, videoRecordingProgress, videoRecordingResolutionScale, videoRecordingSegmentAt, videoRecordingSegmentStart, videoRecordingSubtitleSpans, videoRecordingTimelineOffsets, writeVideoRecordingQuality } from "./videoRecorder";
-import { createEmptySpineComposition } from "@ba-spine/spine-runtime/spine/spineComposition";
+import { compositionEvaluationContextAt, createEmptySpineComposition, evaluateCompositionFrame } from "@ba-spine/spine-runtime/spine/spineComposition";
+import { compositionCameraTrackAt, compositionFrameToTimeline } from "@ba-spine/spine-runtime/spine/spineCompositionTimeline";
+import { evaluateSpineCameraTrack, sampleSpineCameraTrack } from "@ba-spine/spine-runtime/spine/spineCameraMotion";
+import { compositionScheduleSampleAt } from "@ba-spine/spine-runtime/spine/spineCompositionSchedule";
 
 describe("Viewer video quality preference", () => {
   test("defaults safely and persists a validated quality preset", () => {
@@ -93,6 +96,94 @@ describe("Viewer video recording plans", () => {
       },
     });
     expect(videoRecordingSegmentAt(plan, 8)).toMatchObject({ index: 0, segment: { kind: "composition" }, elapsed: 8 });
+  });
+
+  test("canonical Viewer export plan preserves Timeline and Camera sample parity", () => {
+    const composition = createEmptySpineComposition("export-parity", "Export parity", 4, 30);
+    composition.layers.push({
+      id: "character", name: "Character", role: "character", order: 0, assetDirectory: "character", assetIdentity: "asset:character",
+      transformParentId: null, baseProperties: { "layer.position.x": 0 }, enabled: true, locked: false,
+    });
+    composition.propertyTracks.push({
+      id: "character-x", target: { kind: "layer", layerId: "character" }, property: "layer.position.x", clock: { kind: "composition" },
+      enabled: true, priority: 0, blendMode: "override", weight: 1, holdBefore: true, holdAfter: true,
+      keys: [{ id: "character-start", time: 0, value: 0, interpolation: "linear" }, { id: "character-end", time: 4, value: 40, interpolation: "linear" }],
+    }, {
+      id: "camera-x", target: { kind: "camera" }, property: "camera.centerX", clock: { kind: "composition" },
+      enabled: true, priority: 0, blendMode: "override", weight: 1, holdBefore: true, holdAfter: true,
+      keys: [{ id: "camera-offset-start", time: 0, value: 5, interpolation: "linear" }, { id: "camera-offset-end", time: 4, value: 25, interpolation: "linear" }],
+    });
+    composition.camera = {
+      enabled: true,
+      aspectRatio: "16:9",
+      constraint: { mode: "none" },
+      safeBounds: [],
+      keyframes: [
+        { id: "camera-start", time: 0, centerX: 0, centerY: 10, frameHeight: 12, easing: "linear" },
+        { id: "camera-end", time: 4, centerX: 40, centerY: 30, frameHeight: 20, easing: "linear" },
+      ],
+    };
+
+    const plan = createUnifiedCompositionRecordingPlan(composition.duration, composition.frameRate);
+    const schedule = plan.compositionSchedule!;
+    for (const time of [0, 1 / composition.frameRate, 1.125, 2.75, composition.duration]) {
+      const direct = evaluateCompositionFrame(composition, compositionEvaluationContextAt(composition, time, time));
+      const exportSample = compositionScheduleSampleAt(composition, schedule, time)!;
+      const scheduled = evaluateCompositionFrame(composition, exportSample.context);
+      const directTimeline = compositionFrameToTimeline(composition, direct, time, "en");
+      const scheduledTimeline = compositionFrameToTimeline(
+        composition,
+        scheduled,
+        time,
+        "en",
+        exportSample.sectionInstanceStartTimes,
+        exportSample.segment.sectionId,
+        exportSample.globalTimeOffset,
+      );
+      expect(scheduledTimeline).toEqual(directTimeline);
+
+      const directCamera = compositionCameraTrackAt(composition, direct, direct.evaluation.time);
+      const scheduledCamera = compositionCameraTrackAt(composition, scheduled, scheduled.evaluation.time);
+      expect(scheduledCamera).not.toBeNull();
+      expect(evaluateSpineCameraTrack(scheduledCamera!, time, 1920, 1080, null)).toEqual(
+        evaluateSpineCameraTrack(directCamera!, time, 1920, 1080, null),
+      );
+    }
+  });
+
+  test("arrangement export keeps section-local camera keys on the shared output schedule", () => {
+    const composition = createEmptySpineComposition("arrangement-camera", "Arrangement camera", 10, 30);
+    composition.sections.push({ id: "shot", name: "Shot", start: 5, end: 7 });
+    composition.camera = {
+      enabled: true,
+      aspectRatio: "16:9",
+      constraint: { mode: "none" },
+      safeBounds: [],
+      keyframes: [
+        { id: "camera-start", time: 0, centerX: 0, centerY: 0, frameHeight: 10, easing: "linear" },
+        { id: "camera-end", time: 10, centerX: 10, centerY: 10, frameHeight: 20, easing: "linear" },
+      ],
+    };
+    composition.propertyTracks.push({
+      id: "shot-camera-x", target: { kind: "camera" }, property: "camera.centerX", clock: { kind: "section-instance", sectionId: "shot" },
+      enabled: true, priority: 0, blendMode: "override", weight: 1, holdBefore: true, holdAfter: true,
+      keys: [{ id: "shot-start", time: 0, value: 10, interpolation: "linear" }, { id: "shot-end", time: 2, value: 30, interpolation: "linear" }],
+    });
+    const plan = createCompositionArrangementRecordingPlan(composition, {
+      sectionIds: ["shot"], idleSectionId: null, initialIdleLoops: 0, finalIdleLoops: 0,
+    });
+    const sample = compositionScheduleSampleAt(composition, plan.compositionSchedule!, 0.75)!;
+    expect(sample).toMatchObject({
+      outputTime: 0.75,
+      sourceTime: 5.75,
+      sectionLocalTime: 0.75,
+      sectionInstanceStartTimes: { shot: 0 },
+    });
+    const frame = evaluateCompositionFrame(composition, sample.context);
+    const cameraTrack = compositionCameraTrackAt(composition, frame, frame.evaluation.time);
+    expect(cameraTrack).not.toBeNull();
+    expect(sampleSpineCameraTrack(cameraTrack!, frame.evaluation.time)?.centerX).toBeCloseTo(17.5);
+    expect(evaluateSpineCameraTrack(cameraTrack!, frame.evaluation.time, 1920, 1080, null)?.frame.centerX).toBeCloseTo(17.5);
   });
 
   test("composition arrangement plans are shared schedules with section instances and idle gaps", () => {
